@@ -77,7 +77,7 @@ flowchart TB
 1. **Keys sign; stores keep secrets.** Passkey private keys stay in the TPM or KeePassXC and are used by the broker to sign. The Secret Service holds only resulting tokens, never passkey private keys.
 2. **Unlock gates use, never release.** Biometric verification unlocks a key's use. It never hands key material to a caller.
 3. **Operator chooses custody.** The routing policy decides TPM vs KeePassXC per relying party; the default for high-value accounts is TPM.
-4. **One path for all clients.** Browsers, native and Electron apps use the same portal. The browser-extension path is a transitional fallback.
+4. **One path for all clients.** Browsers, native and Electron apps use the same portal. The browser-extension path is a transitional fallback, and it is the only browser path until Firefox and Chromium call the portal ([spike 0006](../spikes/0006-browser-webauthn-portal.md): neither does in current source).
 5. **Short token lifetimes are respected.** The aim is invisible reissue, not longer tokens.
 
 ### Constraints
@@ -595,7 +595,7 @@ Sources: [FOSDEM 2026 talk](https://archive.fosdem.org/2026/schedule/event/838A8
 ## Open questions
 
 - Maturity and API of credentialsd and its portal on KDE Plasma — [spike 0005](../spikes/0005-credentialsd-provider-api.md): v0.3.1 has **no third-party provider API** (upstream issue is a stub) and no KDE portal backend. Providers need upstream design work first; build and run untested.
-- Whether Firefox and Chromium on Linux call a portal WebAuthn API today — **unverified**.
+- Whether Firefox and Chromium on Linux call a portal WebAuthn API today — [spike 0006](../spikes/0006-browser-webauthn-portal.md): **No** in current source (Firefox 161.0a1, Chromium main). Only add-ons and an experimental patched Firefox reach credentialsd, so the browser-extension fallback stays on the 1.0 critical path. Source read only; upstream trackers and a live run were not available.
 - Claude Desktop token lifetime and storage backend (KWallet vs libsecret) — observed by operator, not measured.
 - Classification rule for which accounts must be device-bound — needs a data-classification rule.
 - Who owns the threat model and the security property list.
