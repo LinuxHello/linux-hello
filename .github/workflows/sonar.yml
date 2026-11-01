@@ -1,0 +1,36 @@
+name: Sonar
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# Actions are pinned to commit SHAs; Dependabot updates the SHA and the version comment.
+permissions:
+  contents: read
+
+jobs:
+  sonar:
+    name: sonar
+    # Off until SonarQube Cloud is set up (repository variable SONAR_ENABLED=true).
+    # Pull requests from forks get no secrets; skip them rather than fail.
+    if: >-
+      vars.SONAR_ENABLED == 'true' &&
+      (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # Sonar needs history for new-code detection and blame
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: stable
+          components: clippy, llvm-tools-preview
+      - run: cargo install cargo-llvm-cov --version 0.9.1 --locked
+      - name: Clippy report for Sonar
+        run: cargo clippy --workspace --all-targets --message-format=json > clippy-report.json
+      - name: Coverage
+        run: cargo llvm-cov --workspace --lcov --output-path lcov.info
+      - uses: SonarSource/sonarqube-scan-action@4d1dc0c91ee400dcf8a6dddf2f705ac36542e304 # v8.4.0
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}

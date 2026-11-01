@@ -1,0 +1,7 @@
+{
+  "github.copilot.chat.commitMessageGeneration.instructions": [
+    { "file": ".github/copilot-commit-message.md" }
+  ],
+  "git.alwaysSignOff": true,
+  "rust-analyzer.check.command": "clippy"
+}
