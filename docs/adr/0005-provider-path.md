@@ -35,6 +35,8 @@ The options:
 
 **Option A.** Engage before code: offer upstream to implement the #26 draft, agree the interface, then implement it in credentialsd and build the TPM provider as its first consumer. Keep **C** open for the TPM side only, if upstream prefers a first-party platform authenticator in-tree. Do not build **B** as a product path.
 
+Upstream engagement started on 2026-11-01 with an offer to implement the draft and three questions on design, PR sequencing and an in-tree TPM authenticator ([comment on credentialsd#26](https://github.com/linux-credentials/credentialsd/issues/26#issuecomment-6559782108)). The answer is recorded here when it arrives.
+
 Until upstream agrees an interface, Linux Hello work that does not depend on it continues: routing policy, PIN and TPM root key (spike on in-place auth change), PAM and Agent, Plasma prompts.
 
 ## Consequences
