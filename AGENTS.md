@@ -43,7 +43,7 @@ Never propose or write anything that breaks these. If a task seems to need it, s
 5. **Licence boundaries.** Link only to LGPL or permissive code. Reach GPL components (KeePassXC, fprintd) across a process boundary only. All code here is LGPL-3.0-or-later ([ADR-0002](docs/adr/0002-licence-lgpl-3-or-later.md)).
 6. **Upstream first.** Changes to upstream projects go upstream as contributions, not into forks or vendored patches.
 7. **One-way doors need an ADR:** licence, names, D-Bus names (`io.github.LinuxHello.*`), crate and package names, the reset model ([ADR-0003](docs/adr/0003-destructive-reset.md)), repository topology.
-8. **Public repository.** Never write secrets, tokens, personal data, or details of anyone's machines (hostnames, home paths, hardware, local endpoints, model names) into code, docs, issues, commit messages or PR descriptions.
+8. **Public repository.** Never write secrets, tokens, personal data, or details of anyone's machines (hostnames, home paths, hardware, local endpoints, machine-specific model identifiers) into code, docs, issues, commit messages or PR descriptions. A local model's family and size may be recorded for attribution.
 9. **No secrets in the loop.** Never ask for, read, print or store a token or key. GitHub operations run through `gh` on the maintainer's machine; produce scripts, not requests for credentials.
 
 ## How to work
