@@ -31,10 +31,29 @@ PIN-rooted, biometric-unlocked passkeys and secrets for the Linux desktop: a Win
 
 ## Build
 
+### Prerequisites
+
+On Ubuntu or Kubuntu 24.04 and later, install a C toolchain and rustup from the distribution, then the stable Rust toolchain:
+
+```sh
+sudo apt install curl build-essential rustup   # system packages: C compiler and linker, rustup
+rustup default stable                          # installs and selects the stable toolchain (rustc, cargo, clippy, rustfmt) for your user
+```
+
+The workspace needs Rust 1.80 or later (`rust-version` in `Cargo.toml`). For the supply-chain checks that CI runs, install the two cargo tools once:
+
+```sh
+cargo install --locked cargo-deny cargo-audit   # into ~/.cargo/bin
+```
+
+### Build and test
+
 ```sh
 cargo build --workspace
 cargo test --workspace
 ```
+
+Before opening a pull request, run every gate CI runs; the list is in [AGENTS.md](AGENTS.md#gates).
 
 ## Licence
 
