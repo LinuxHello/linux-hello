@@ -12,7 +12,10 @@ repository = "https://github.com/LinuxHello/linux-hello"
 publish = false
 
 [workspace.lints.rust]
-unsafe_code = "forbid"
+# "deny", not "forbid": forbid cannot be relaxed per module, and the TPM FFI and PAM
+# entry-point modules need a reviewed #[allow(unsafe_code)]. Every other crate root
+# sets #![forbid(unsafe_code)]; scripts/ci/unsafe-policy.sh enforces both rules.
+unsafe_code = "deny"
 
 [workspace.lints.clippy]
 all = { level = "deny", priority = -1 }

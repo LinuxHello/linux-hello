@@ -29,7 +29,7 @@ Roles are fixed by [ADR-0004](docs/adr/0004-agent-roles.md). Know which one you 
 | :-- | :-- | :-- | :-- |
 | **Implementer** | Local model via Claude Code | Implements one issue from its brief: tests first, then code; runs the gates; opens a pull request | Pick issues without a brief; change scope; touch files the brief does not list; edit `docs/adr/` or CI |
 | **Lead** | Claude | Writes briefs; keeps labels, milestones and `docs/` current; reviews and fixes pull requests; runs spikes | Merge |
-| **Assistant** | GitHub Copilot | Pull request summaries; commit messages for hand-made commits; automated review comments | Push code |
+| **Assistant** | GitHub Copilot | Pull request summaries; commit messages for hand-made commits; review comments with suggested changes | Push commits unless the maintainer asks it to |
 | **Maintainer** | @atterdag | Decides and merges | — |
 
 ### Issue status
@@ -71,6 +71,13 @@ The lead reviews every pull request against its brief before the maintainer sees
 
 Small faults the lead fixes by pushing to the pull request branch; larger ones go back to the implementer with a review comment. Copilot's review and the code scanners are a second opinion, not a substitute.
 
+### Copilot suggestions and the DCO
+
+Every commit needs the maintainer's sign-off, including commits that apply a Copilot suggestion.
+
+- **"Commit suggestion"** on a review comment creates a commit authored by the maintainer through the web interface; the organisation requires sign-off on web commits, so it passes the `dco` check.
+- **Changes made by the Copilot coding agent** (for example "Fix with Copilot" or `@copilot`) are authored by a bot and carry no sign-off. The maintainer reviews them and certifies them before merging with the bootstrap script `dco-signoff.sh <pr>`, which adds his sign-off and re-signs the branch.
+
 ## Source of truth
 
 Resolve conflicts in this order, and say which source you used:
@@ -89,7 +96,7 @@ Never propose or write anything that breaks these. If a task seems to need it, s
 1. **The PIN is the root.** Keys hang off a TPM root key authorised by the PIN. Biometrics only satisfy a TPM policy; they are never the root and never a flag in a daemon.
 2. **Keys sign, never leave.** Private key material never leaves the TPM or KeePassXC. The Secret Service stores tokens, never passkey private keys.
 3. **Fail closed.** Unparseable policy denies everything except the PIN. A daemon whose AppArmor profile is not loaded in enforce mode refuses to start. No fallback silently weakens authentication.
-4. **No `unsafe`**, except the TPM FFI module and the PAM entry-point module, each small and audited. The workspace currently sets `unsafe_code = "forbid"`, which cannot be relaxed by a module-level override; those exceptions require an explicitly reviewed lint arrangement before implementation.
+4. **No `unsafe`**, except in one small, audited module each in the TPM provider and the PAM module. The workspace denies `unsafe_code`; every other crate root sets `#![forbid(unsafe_code)]`. A module may carry `#[allow(unsafe_code)]` only if it is listed in `scripts/ci/unsafe-allowlist.txt`, and adding it needs the maintainer's review. The `unsafe-policy` CI job enforces this.
 5. **Licence boundaries.** Link only to LGPL or permissive code. Reach GPL components (KeePassXC, fprintd) across a process boundary only. All code here is LGPL-3.0-or-later ([ADR-0002](docs/adr/0002-licence-lgpl-3-or-later.md)).
 6. **Upstream first.** Changes to upstream projects go upstream as contributions, not into forks or vendored patches.
 7. **One-way doors need an ADR:** licence, names, D-Bus names (`io.github.LinuxHello.*`), crate and package names, the reset model ([ADR-0003](docs/adr/0003-destructive-reset.md)), repository topology.

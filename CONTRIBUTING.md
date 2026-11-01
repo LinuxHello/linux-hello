@@ -12,7 +12,7 @@ Every commit must be signed off (`git commit -s`), certifying the [DCO](https://
 
 ## Rules
 
-- `unsafe` is forbidden workspace-wide. The only exceptions will be the TPM FFI and the PAM entry points, each in one small, audited module with a narrow override.
+- `unsafe` is forbidden in every crate except the TPM provider and the PAM module, where it is denied except in one small, audited module listed in `scripts/ci/unsafe-allowlist.txt` (checked by the `unsafe-policy` CI job).
 - A security property change needs a test whose name states the property, e.g. `caller_from_other_origin_is_refused`.
 - New dependencies must pass `cargo-deny` (licences and advisories).
 - Changes to an upstream project go upstream first.
