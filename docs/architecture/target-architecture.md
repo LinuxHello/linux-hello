@@ -594,7 +594,7 @@ Sources: [FOSDEM 2026 talk](https://archive.fosdem.org/2026/schedule/event/838A8
 
 ## Open questions
 
-- Maturity and API of credentialsd and its portal on KDE Plasma — **unverified**.
+- Maturity and API of credentialsd and its portal on KDE Plasma — [spike 0005](../spikes/0005-credentialsd-provider-api.md): v0.3.1 has **no third-party provider API** (upstream issue is a stub) and no KDE portal backend. Providers need upstream design work first; build and run untested.
 - Whether Firefox and Chromium on Linux call a portal WebAuthn API today — **unverified**.
 - Claude Desktop token lifetime and storage backend (KWallet vs libsecret) — observed by operator, not measured.
 - Classification rule for which accounts must be device-bound — needs a data-classification rule.
