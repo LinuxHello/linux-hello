@@ -2,7 +2,9 @@
 
 Follow [AGENTS.md](../AGENTS.md) at the repository root. It is the single source of rules for every coding agent in this repository and takes precedence over anything here.
 
-In this repository Copilot is the **assistant** ([ADR-0004](../docs/adr/0004-agent-roles.md)): it writes pull request summaries and commit messages and reviews pull requests. It does not push code.
+In this repository Copilot is the **assistant** ([ADR-0004](../docs/adr/0004-agent-roles.md)): it writes pull request summaries and commit messages and reviews pull requests with suggested changes. It commits only when the maintainer accepts a suggestion or asks it to fix something.
+
+Prefer review comments with suggestion blocks, which the maintainer can commit with "Commit suggestion". Any commit Copilot authors itself has no DCO sign-off and needs the maintainer's certification before merge ([AGENTS.md](../AGENTS.md#copilot-suggestions-and-the-dco)).
 
 ## Pull request summaries
 

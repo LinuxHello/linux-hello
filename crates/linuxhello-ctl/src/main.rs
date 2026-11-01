@@ -1,5 +1,7 @@
 //! linuxhello-ctl: skeleton. Implementation starts after Milestone 0.
 
+#![forbid(unsafe_code)]
+
 fn main() {
     println!(
         "linuxhello-ctl {} (skeleton, bus name {})",
