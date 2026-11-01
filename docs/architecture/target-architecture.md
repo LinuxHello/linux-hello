@@ -90,7 +90,7 @@ flowchart TB
 | C4 | Modifications to an upstream component go upstream as contributions, not into a private fork | Keeps LGPL/GPL obligations trivial and the ecosystem shared |
 | C5 | Linux Hello itself is LGPL-3.0-or-later ([ADR-0002](../adr/0002-licence-lgpl-3-or-later.md)) | Compatible with credentialsd (LGPL-3.0-only) and other LGPL dependencies |
 
-Licences: credentialsd **LGPL-3.0-only** (verified in `credentialsd/Cargo.toml` at v0.3.1, spike 0005). To verify before publishing (from search snippets or general knowledge, not checked): libwebauthn unverified; KeePassXC GPL; fprintd GPL; Howdy MIT. Scoping-stage assessment, not legal advice.
+Licences (verified in [spike 0013](../spikes/0013-upstream-licences.md)): credentialsd LGPL-3.0-only and libwebauthn LGPL-2.1-or-later, both linked; KeePassXC GPL-2.0 or GPL-3.0 and fprintd GPL-2.0-or-later, both reached across a process boundary; Howdy MIT. Not legal advice.
 
 ### Token reissue (the Claude Desktop case)
 

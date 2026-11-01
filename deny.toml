@@ -9,6 +9,9 @@ yanked = "deny"
 version = 2
 allow = [
   "LGPL-3.0-or-later",
+  # Linked upstream libraries (spike 0013): credentialsd, libwebauthn. No GPL licence belongs here (C3).
+  "LGPL-3.0-only",
+  "LGPL-2.1-or-later",
   "Apache-2.0",
   "MIT",
   "BSD-2-Clause",
