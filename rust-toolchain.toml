@@ -1,0 +1,6 @@
+# The toolchain every build uses: local, agents and CI. rustup installs it on first use.
+# Bump by pull request; rust-version in Cargo.toml is the separate minimum (MSRV).
+[toolchain]
+channel = "1.99.1"
+components = ["clippy", "rustfmt", "llvm-tools-preview"]
+profile = "minimal"
