@@ -82,7 +82,7 @@ Merging uses "most restrictive" per key:
 
 The engine enters the **PIN-only state** when any of these hold:
 
-- a policy file exists but cannot be read, is not valid UTF-8, does not parse, or breaks the schema;
+- a policy file exists but cannot be read, is not valid UTF-8, does not parse, or breaks the schema, or an existing admin policy directory cannot be enumerated;
 - an admin file or the admin directory is not owned by root, or is writable by group or others;
 - the merged result is contradictory (`max_length` < `min_length`, `required` against `disallowed`).
 
