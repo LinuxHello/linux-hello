@@ -48,7 +48,7 @@ A relying-party pattern is either an exact domain (`bank.example`) or `*.` follo
 | PIN | `min_length` 6, `max_length` 127, `digits` required, other classes allowed, `history` 0, no expiry, `lockout_attempts` 5, `lockout_minutes` 15 |
 | Methods | `biometrics_allowed` true, `face_requires_ir` true, `require_hardware_tpm` true |
 | Every context | `methods` = pin, fingerprint, face; `factors` 1; no `reverify_after` |
-| Relying parties | no classes; an unmatched relying party gets provider `any`, prompt `presence`, factors 1, no second credential |
+| Relying parties | no classes; decision defaults are provider `any`, prompt `presence`, factors 1, no second credential. These apply to unmatched relying parties and to decision fields still absent after merging explicit settings from the selected matching classes, including specificity ties |
 
 ## Restrictiveness
 
