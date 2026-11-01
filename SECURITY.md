@@ -55,7 +55,7 @@ These properties are the yardstick for a report. Breaking any of them is a vulne
 5. **Fail closed.** If the policy cannot be parsed, only the PIN is allowed. A daemon whose AppArmor profile is not loaded in enforce mode refuses to start. No fallback silently weakens authentication.
 6. **Reset is destructive.** The account password authorises a reset only. A reset wipes the root key and every TPM-bound passkey, and never unlocks them ([ADR-0003](docs/adr/0003-destructive-reset.md)).
 
-The full threat model and the list of security properties live in [`docs/security/`](docs/security/). Each property has a test named after it.
+The full threat model and the list of security properties are planned for [`docs/security/`](docs/security/), with a test named after each property. Until then, use the security model above when describing a report's impact.
 
 ## Scope
 
