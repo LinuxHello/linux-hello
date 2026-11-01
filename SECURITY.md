@@ -48,7 +48,7 @@ Once releases exist, the latest minor release of each crate receives security fi
 
 These properties are the yardstick for a report. Breaking any of them is a vulnerability.
 
-1. **The PIN is the root.** Every key hangs off a per-user TPM 2.0 root key that the PIN authorises. TPM anti-hammering limits PIN guessing.
+1. **The PIN is the root.** Every TPM-bound passkey hangs off a per-user TPM 2.0 root key that the PIN authorises. TPM anti-hammering limits PIN guessing.
 2. **Biometrics are a shortcut, not the root.** Face or fingerprint only satisfies a TPM policy. A daemon flag or D-Bus call that unlocks keys without the TPM policy is a vulnerability.
 3. **Keys sign, never leave.** Passkey private keys never leave the TPM or KeePassXC. The Secret Service stores tokens, never passkey private keys.
 4. **Callers are verified.** Every caller of the Agent's D-Bus API is checked by peer credentials. A request for one relying party is never answered with another relying party's credential.
