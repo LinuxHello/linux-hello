@@ -84,13 +84,13 @@ flowchart TB
 
 | ID | Constraint | Rationale |
 | :-- | :-- | :-- |
-| C1 | Linux Hello is an integration layer: it reuses credentialsd, libwebauthn, KeePassXC, fprintd and Howdy unmodified and adds only providers, unlock policy, the KDE portal backend and settings UI | No reimplementation of existing upstream work |
+| C1 | Linux Hello is an integration layer: it reuses credentialsd, libwebauthn, KeePassXC, fprintd and Howdy and adds only providers, unlock policy, the KDE portal backend and settings UI. **credentialsd v0.3.1 has no provider API** ([spike 0005](../spikes/0005-credentialsd-provider-api.md)); how providers attach is decided in [ADR-0005](../adr/0005-provider-path.md) | No reimplementation of existing upstream work |
 | C2 | Link only to LGPL (or permissive) libraries, e.g. libwebauthn, credentialsd | LGPL permits linking from code under any licence |
 | C3 | Reach GPL components only across a process boundary (D-Bus, PAM, socket, KeePassXC browser protocol), never by linking | FSF treats linking as creating a derivative work; separate programs are not |
 | C4 | Modifications to an upstream component go upstream as contributions, not into a private fork | Keeps LGPL/GPL obligations trivial and the ecosystem shared |
-| C5 | Linux Hello itself is LGPL-3.0-or-later ([ADR-0002](../adr/0002-licence-lgpl-3-or-later.md)) | Matches credentialsd; removes compatibility questions with LGPL dependencies |
+| C5 | Linux Hello itself is LGPL-3.0-or-later ([ADR-0002](../adr/0002-licence-lgpl-3-or-later.md)) | Compatible with credentialsd (LGPL-3.0-only) and other LGPL dependencies |
 
-Licences to verify before publishing (from search snippets or general knowledge, not checked): credentialsd LGPL-3.0; libwebauthn unverified; KeePassXC GPL; fprintd GPL; Howdy MIT. Scoping-stage assessment, not legal advice.
+Licences: credentialsd **LGPL-3.0-only** (verified in `credentialsd/Cargo.toml` at v0.3.1, spike 0005). To verify before publishing (from search snippets or general knowledge, not checked): libwebauthn unverified; KeePassXC GPL; fprintd GPL; Howdy MIT. Scoping-stage assessment, not legal advice.
 
 ### Token reissue (the Claude Desktop case)
 
@@ -306,8 +306,8 @@ Linux Hello is the only software system modelled inside; everything it reuses is
 | :-- | :-- | :-- |
 | Linux Hello Agent | Rust daemon, D-Bus (session) | Unlock state, auth state, routing policy, PIN, enrolment and reset orchestration |
 | PAM module `pam_linuxhello` | Rust `cdylib` | Runs face, fingerprint and PIN in parallel; PIN verified against the TPM root key; reports state to the Agent |
-| TPM Credential Provider | Rust daemon, credentialsd Provider API | Creates and uses device-bound passkeys under the per-user TPM root key |
-| KeePassXC Provider Bridge | Rust daemon, credentialsd Provider API | Serves portable passkeys from KeePassXC over its browser protocol |
+| TPM Credential Provider | Rust daemon; attachment to credentialsd per ADR-0005 (no provider API at v0.3.1) | Creates and uses device-bound passkeys under the per-user TPM root key |
+| KeePassXC Provider Bridge | Rust daemon; attachment to credentialsd per ADR-0005 (no provider API at v0.3.1) | Serves portable passkeys from KeePassXC over its browser protocol |
 | Plasma Integration | Rust/cxx-qt, QML, KCM | Prompts, greeter and lock-screen integration, enrolment, PIN and settings |
 | `linuxhello-ctl` | Rust CLI | Enrol, change PIN, reset trust chain (ADR-0003), inspect policy |
 | User Policy | TOML (`~/.config/linuxhello/policy.toml`) | User layer of the policy |
@@ -570,10 +570,10 @@ Build on credentialsd rather than writing a new broker. It already covers layers
 
 | Project | What it does | State | Fit |
 | :-- | :-- | :-- | :-- |
-| [Credentials for Linux](https://github.com/linux-credentials) — libwebauthn + [credentialsd](https://github.com/linux-credentials/credentialsd) | FIDO2 platform library; D-Bus credentials portal for apps and third-party providers; reference UI; Firefox add-on and patched Flatpak | v0.3.1 pre-release (7 Sep 2026); needs a patched xdg-desktop-portal; TPM provider planned, not built; packaged for Fedora/openSUSE | Layers 2–4. Adopt |
+| [Credentials for Linux](https://github.com/linux-credentials) — libwebauthn + [credentialsd](https://github.com/linux-credentials/credentialsd) | FIDO2 platform library; D-Bus credentials portal for apps (third-party provider API planned, not in v0.3.1, see spike 0005); reference GTK UI; Firefox add-on and patched Flatpak | v0.3.1 pre-release (7 Sep 2026); needs a patched xdg-desktop-portal; TPM provider planned, not built; packaged for Fedora/openSUSE | Layers 2–4. Adopt |
 | [kpasskey](https://github.com/Tojori/kpasskey) | Passkeys stored in KWallet, exposed as a virtual CTAP 2.1 security key to unmodified Firefox and Chromium | Prototype | KDE-native interim path; software keys, browsers only |
 | tpm-fido | Virtual USB FIDO device backed by the TPM | Not re-checked in this pass | TPM custody without a portal |
-| KeePassXC (≥ 2.7.7) | Passkeys in KDBX via browser extension | Released | Portable provider, once it speaks the credentialsd provider API |
+| KeePassXC (≥ 2.7.7) | Passkeys in KDBX via browser extension | Released | Portable provider, once a credentialsd provider API exists (ADR-0005) |
 
 Sources: [FOSDEM 2026 talk](https://archive.fosdem.org/2026/schedule/event/838A8N-credentials-for-linux-bringing-passkeys-to-linux/), [slides](https://archive.fosdem.org/2026/events/attachments/838A8N-credentials-for-linux-bringing-passkeys-to-linux/slides/267430/fosdem_ravbuub.pdf), [freedom-browser issue #733](https://github.com/solardev-xyz/freedom-browser/issues/733). Taken from search snippets; repositories not yet opened.
 
