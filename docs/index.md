@@ -1,9 +1,12 @@
 ---
 type: index
 subject: Linux Hello documentation map
+artifact: index
 status: active
 owner: "@atterdag"
+concepts: []
 tags: [index]
+sources: []
 date: 2026-11-01
 ---
 

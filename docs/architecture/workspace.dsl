@@ -13,13 +13,13 @@ workspace "Linux Hello" "Biometric- and PIN-gated passkeys and secrets for the L
         linuxHello = softwareSystem "Linux Hello" "PIN-rooted, biometric-unlocked credential layer integrating upstream Linux components" {
 
             agent = container "Linux Hello Agent" "Unlock state, auth state, routing policy, PIN, enrolment and reset orchestration" "Rust daemon, D-Bus" {
-                dbusApi = component "D-Bus API" "org.linuxhello.Agent1; verifies peer credentials of every caller" "zbus"
+                dbusApi = component "D-Bus API" "io.github.LinuxHello.Agent1; verifies peer credentials of every caller" "zbus"
                 unlockState = component "Unlock State Manager" "Session unlock, expiry and re-prompt rules; state proven by TPM policy sessions, not flags" "Rust"
                 authState = component "Auth State Publisher" "Signals MethodsAvailable, ActiveMethod, State, Result per prompt (UX1-UX4)" "zbus signals"
                 policyEngine = component "Routing Policy Engine" "Merges default, user and admin layers; answers allowed methods per context, provider and prompt level per relying party, PIN rules; fails closed on unparseable policy" "Rust"
                 pinManager = component "PIN Manager" "Change PIN in place, PIN rules, lockout status (UX7b)" "Rust"
                 enrolment = component "Enrolment Orchestrator" "First-run PIN, root key creation, second-credential prompts (UX8)" "Rust"
-                resetCoord = component "Reset Coordinator" "Destructive reset per LH-1" "Rust"
+                resetCoord = component "Reset Coordinator" "Destructive reset per ADR-0003 (LH-1)" "Rust"
                 auditLog = component "Audit Logger" "Structured journald events for every unlock, sign, PIN change and reset" "Rust"
             }
 

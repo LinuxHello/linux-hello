@@ -1,3 +1,15 @@
+---
+type: adr
+subject: "Repository topology: one monorepo with split guardrails"
+artifact: adr
+status: accepted
+owner: "@atterdag"
+concepts: [repository-topology, governance]
+tags: [adr, one-way-door]
+sources: ["../../GOVERNANCE.md"]
+date: 2026-11-01
+---
+
 # ADR-0001: Monorepo with split guardrails
 
 ## Status
