@@ -21,7 +21,7 @@ Every commit must be signed off (`git commit -s`), certifying the [DCO](https://
 
 Code here is largely written with coding agents (Claude Code, GitHub Copilot, local models). The same rules apply whoever or whatever wrote a line:
 
-- Agents follow [AGENTS.md](AGENTS.md), the single source of agent rules.
+- Agents follow [AGENTS.md](AGENTS.md), the single source of agent rules; their roles are fixed in [ADR-0004](docs/adr/0004-agent-roles.md).
 - The human who submits a commit signs it off and is accountable for it under the DCO. An agent never signs off.
 - The same required checks apply; generated code gets no exemption.
 - Name the tool behind a substantial part of a change with an `Assisted-by:` trailer (see [AGENTS.md](AGENTS.md#commits-and-pull-requests)). Name a local model by family and size at most, never by host or endpoint.

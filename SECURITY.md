@@ -48,14 +48,14 @@ Once releases exist, the latest minor release of each crate receives security fi
 
 These properties are the yardstick for a report. Breaking any of them is a vulnerability.
 
-1. **The PIN is the root.** Every TPM-bound passkey hangs off a per-user TPM 2.0 root key that the PIN authorises. TPM anti-hammering limits PIN guessing.
+1. **The PIN is the root.** Every key hangs off a per-user TPM 2.0 root key that the PIN authorises. TPM anti-hammering limits PIN guessing.
 2. **Biometrics are a shortcut, not the root.** Face or fingerprint only satisfies a TPM policy. A daemon flag or D-Bus call that unlocks keys without the TPM policy is a vulnerability.
 3. **Keys sign, never leave.** Passkey private keys never leave the TPM or KeePassXC. The Secret Service stores tokens, never passkey private keys.
 4. **Callers are verified.** Every caller of the Agent's D-Bus API is checked by peer credentials. A request for one relying party is never answered with another relying party's credential.
 5. **Fail closed.** If the policy cannot be parsed, only the PIN is allowed. A daemon whose AppArmor profile is not loaded in enforce mode refuses to start. No fallback silently weakens authentication.
 6. **Reset is destructive.** The account password authorises a reset only. A reset wipes the root key and every TPM-bound passkey, and never unlocks them ([ADR-0003](docs/adr/0003-destructive-reset.md)).
 
-The full threat model and the list of security properties are planned for [`docs/security/`](docs/security/), with a test named after each property. Until then, use the security model above when describing a report's impact.
+The full threat model and the list of security properties live in [`docs/security/`](docs/security/). Each property has a test named after it.
 
 ## Scope
 

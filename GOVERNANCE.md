@@ -45,4 +45,6 @@ Changes to upstream components (credentialsd, libwebauthn, Howdy, fprintd, KeePa
 
 - All changes reach `main` through a pull request; squash merge only.
 - Required checks: format, clippy, tests, cargo-deny, cargo-audit, DCO.
+- Code scanning: CodeQL (default setup) blocks a merge on errors and on high or critical security alerts. Dependency review and SonarQube Cloud run on every pull request; Sonar's quality gate becomes required once its check name is stable.
+- Roles of the coding agents and the review flow: [ADR-0004](docs/adr/0004-agent-roles.md).
 - Commits on `main` are signed.

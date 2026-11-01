@@ -1,6 +1,6 @@
 ---
 type: adr
-subject: "Repository topology: one monorepo with split guardrails"
+subject: Repository topology: one monorepo with split guardrails
 artifact: adr
 status: accepted
 owner: "@atterdag"
