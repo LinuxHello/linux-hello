@@ -11,3 +11,8 @@ docs/.trash/
 # Personal agent settings (model, endpoint, permissions); never committed
 .claude/settings.local.json
 .claude/*.local.*
+
+# Scanner reports (CI only)
+clippy-report.json
+lcov.info
+.scannerwork/
