@@ -4,6 +4,8 @@
 //! portals hard-code them. `io.github.LinuxHello` follows the reverse-DNS
 //! convention for projects hosted at github.com/LinuxHello.
 
+#![forbid(unsafe_code)]
+
 /// Well-known bus name of the Agent.
 pub const AGENT_BUS_NAME: &str = "io.github.LinuxHello.Agent1";
 /// Object path of the Agent.

@@ -1,0 +1,3 @@
+# Files allowed to contain #[allow(unsafe_code)], one repository-relative path per line.
+# Only modules in the TPM provider and the PAM module may appear here (AGENTS.md invariant 4),
+# and each addition needs the maintainer's review.
