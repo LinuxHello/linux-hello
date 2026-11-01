@@ -39,7 +39,7 @@ Never propose or write anything that breaks these. If a task seems to need it, s
 1. **The PIN is the root.** Keys hang off a TPM root key authorised by the PIN. Biometrics only satisfy a TPM policy; they are never the root and never a flag in a daemon.
 2. **Keys sign, never leave.** Private key material never leaves the TPM or KeePassXC. The Secret Service stores tokens, never passkey private keys.
 3. **Fail closed.** Unparseable policy denies everything except the PIN. A daemon whose AppArmor profile is not loaded in enforce mode refuses to start. No fallback silently weakens authentication.
-4. **No `unsafe`**, except the TPM FFI module and the PAM entry-point module, each small, audited and with a narrow lint override. `unsafe_code = "forbid"` is set for the workspace.
+4. **No `unsafe`**, except the TPM FFI module and the PAM entry-point module, each small and audited. The workspace currently sets `unsafe_code = "forbid"`, which cannot be relaxed by a module-level override; those exceptions require an explicitly reviewed lint arrangement before implementation.
 5. **Licence boundaries.** Link only to LGPL or permissive code. Reach GPL components (KeePassXC, fprintd) across a process boundary only. All code here is LGPL-3.0-or-later ([ADR-0002](docs/adr/0002-licence-lgpl-3-or-later.md)).
 6. **Upstream first.** Changes to upstream projects go upstream as contributions, not into forks or vendored patches.
 7. **One-way doors need an ADR:** licence, names, D-Bus names (`io.github.LinuxHello.*`), crate and package names, the reset model ([ADR-0003](docs/adr/0003-destructive-reset.md)), repository topology.
