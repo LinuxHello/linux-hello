@@ -30,7 +30,7 @@ Read upstream at tag `v0.3.1` (commit `861e04c`, published 2026-09-07, marked pr
 
 ```sh
 git clone --depth 1 --branch v0.3.1 https://github.com/linux-credentials/credentialsd
-grep -rn -i -E "provider|register_|plugin" --include=*.rs --include=*.xml --include=*.build credentialsd credentialsd-common doc/*.xml portal dbus
+grep -rn -i -E "provider|register_|plugin" --include=*.rs --include=*.xml --include=*.build credentialsd credentialsd-common credentialsd-ui doc/*.xml portal dbus
 grep -n "<interface" doc/*.xml
 gh api repos/linux-credentials/credentialsd/issues/26
 ```
