@@ -53,7 +53,7 @@ Upstream behaviour you have not checked in source or docs is an assumption. Say 
 4. **No unsafe**, except the TPM FFI module and the PAM entry-point module, each small, audited and with a narrow lint override.
 5. **Licence boundaries.** Link only to LGPL or permissive code. Reach GPL components (KeePassXC, fprintd) across a process boundary only.
 6. **Upstream first.** Changes to upstream projects go upstream as contributions, not into forks.
-7. **One-way doors need an ADR:** licence, names, D-Bus names (`io.github.LinuxHello.*`), crate and package names, the reset model (ADR LH-1, destructive), repository topology.
+7. **One-way doors need an ADR:** licence, names, D-Bus names (`io.github.LinuxHello.*`), crate and package names, the reset model (ADR-0003, destructive), repository topology.
 8. **Public repo.** Never put secrets, tokens, personal data or details of anyone's private machines in code, docs, issues or commit messages.
 9. **You are a cloud model.** Never ask for tokens or keys. GitHub actions run through `gh` on Valdemar's machine; produce scripts, not requests for a PAT.
 
@@ -62,7 +62,7 @@ Upstream behaviour you have not checked in source or docs is an assumption. Say 
 - **Spikes before code.** Milestone 0 answers the unverified assumptions (credentialsd provider API and portal on KDE, browser portal support, Howdy interface, greeter and lock-screen extension points, TPM root key auth change). Don't write implementation that depends on an open spike; say which spike blocks it.
 - **Security properties first.** Every security behaviour is a plain-language property in `docs/security/` with a test whose name states it (`caller_from_other_origin_is_refused`). Write the property and the failing test before the code.
 - **Small PRs, one container where possible.** Each change: intent, affected containers, tests added, how to verify, rollback. Commits are signed off (`git commit -s`); `main` is protected; squash merge only.
-- **CI gates are law:** fmt, clippy `-D warnings`, test, cargo-deny, cargo-audit, DCO. Never suggest bypassing or weakening a gate to get green.
+- **CI gates are law:** fmt, clippy `-D warnings`, test, cargo-deny, cargo-audit, DCO; fuzzing for every parser once one exists. Never suggest bypassing or weakening a gate to get green.
 - **Mark everything tested or untested**, with the toolchain version and how it was run. "Compiles" is not "tested".
 - **Check versions before trusting APIs.** credentialsd is pre-release; tss-esapi, zbus, cxx-qt and PAM crates change between versions. Read the version in `Cargo.lock` and the matching docs.
 - **Automate, don't hand-run.** Prefer Makefile targets and scripts that check their own prerequisites over sequences of manual commands.

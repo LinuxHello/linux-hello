@@ -1,3 +1,15 @@
+---
+type: architecture
+subject: Target architecture of Linux Hello
+artifact: target-architecture
+status: active
+owner: "@atterdag"
+concepts: [credential-broker, passkeys, trust-chain, policy, c4]
+tags: [architecture, c4]
+sources: ["workspace.dsl", "../adr/"]
+date: 2026-11-01
+---
+
 
 # Linux Hello — Target Architecture
 
@@ -76,7 +88,7 @@ flowchart TB
 | C2 | Link only to LGPL (or permissive) libraries, e.g. libwebauthn, credentialsd | LGPL permits linking from code under any licence |
 | C3 | Reach GPL components only across a process boundary (D-Bus, PAM, socket, KeePassXC browser protocol), never by linking | FSF treats linking as creating a derivative work; separate programs are not |
 | C4 | Modifications to an upstream component go upstream as contributions, not into a private fork | Keeps LGPL/GPL obligations trivial and the ecosystem shared |
-| C5 | Licence of Linux Hello itself: open; LGPL-3 or GPL-3 as the default hedge | Removes compatibility questions |
+| C5 | Linux Hello itself is LGPL-3.0-or-later ([ADR-0002](../adr/0002-licence-lgpl-3-or-later.md)) | Matches credentialsd; removes compatibility questions with LGPL dependencies |
 
 Licences to verify before publishing (from search snippets or general knowledge, not checked): credentialsd LGPL-3.0; libwebauthn unverified; KeePassXC GPL; fprintd GPL; Howdy MIT. Scoping-stage assessment, not legal advice.
 
@@ -99,11 +111,7 @@ The PIN is the root, biometrics are a shortcut, and the account password is a de
 
 ### Decision LH-1: destructive reset, no recovery key
 
-- **Status:** Accepted (2026-10-27, scoping).
-- **Context:** A non-destructive reset needs a second protector on the root key (a recovery key, LUKS-style QR code). That requires the root key to be created outside the TPM or to be duplicable, so it is less sealed. Reusing the LUKS recovery key is ruled out: a forgotten PIN must never touch disk encryption.
-- **Decision:** A reset wipes the user's root key and every TPM-bound passkey. Recovery happens through the relying parties.
-- **Easier:** Root keys are generated in the TPM and never exportable; no recovery secret to store, rotate or leak; same model as Windows Hello.
-- **Harder:** A reset orphans every TPM-bound passkey; each high-value account needs a second registered credential (hardware key or a portable passkey in KeePassXC); re-registration is manual, per service.
+A reset wipes the root key and every TPM-bound passkey; there is no recovery key, and recovery goes through the relying parties. Recorded as [ADR-0003](../adr/0003-destructive-reset.md).
 
 ## User journeys
 
@@ -202,7 +210,7 @@ At every prompt the user can see which method is active, switch to another, and 
 
 - Change PIN: enter the current PIN, then the new one twice. The TPM root key's authorisation value is changed in place, so passkeys survive (non-destructive).
 - PIN rules shown up front (minimum length, digits only or alphanumeric) and checked as the user types.
-- "I forgot my PIN" links to the destructive reset (LH-1), with a clear warning that device-bound passkeys will be wiped.
+- "I forgot my PIN" links to the destructive reset (ADR-0003), with a clear warning that device-bound passkeys will be wiped.
 - Lockout state from the TPM is shown ("PIN locked for N min").
 
 ### Design consequence
@@ -301,7 +309,7 @@ Linux Hello is the only software system modelled inside; everything it reuses is
 | TPM Credential Provider | Rust daemon, credentialsd Provider API | Creates and uses device-bound passkeys under the per-user TPM root key |
 | KeePassXC Provider Bridge | Rust daemon, credentialsd Provider API | Serves portable passkeys from KeePassXC over its browser protocol |
 | Plasma Integration | Rust/cxx-qt, QML, KCM | Prompts, greeter and lock-screen integration, enrolment, PIN and settings |
-| `linuxhello-ctl` | Rust CLI | Enrol, change PIN, reset trust chain (LH-1), inspect policy |
+| `linuxhello-ctl` | Rust CLI | Enrol, change PIN, reset trust chain (ADR-0003), inspect policy |
 | User Policy | TOML (`~/.config/linuxhello/policy.toml`) | User layer of the policy |
 | Admin Policy | TOML (`/etc/linuxhello/policy.d/*.toml`) | Admin layer; locked keys win |
 | Security Profiles | AppArmor, Tetragon, alert rules | Confinement and detection shipped with Linux Hello |
@@ -318,13 +326,13 @@ workspace "Linux Hello" "Biometric- and PIN-gated passkeys and secrets for the L
         linuxHello = softwareSystem "Linux Hello" "PIN-rooted, biometric-unlocked credential layer integrating upstream Linux components" {
 
             agent = container "Linux Hello Agent" "Unlock state, auth state, routing policy, PIN, enrolment and reset orchestration" "Rust daemon, D-Bus" {
-                dbusApi = component "D-Bus API" "org.linuxhello.Agent1; verifies peer credentials of every caller" "zbus"
+                dbusApi = component "D-Bus API" "io.github.LinuxHello.Agent1; verifies peer credentials of every caller" "zbus"
                 unlockState = component "Unlock State Manager" "Session unlock, expiry and re-prompt rules; state proven by TPM policy sessions, not flags" "Rust"
                 authState = component "Auth State Publisher" "Signals MethodsAvailable, ActiveMethod, State, Result per prompt (UX1-UX4)" "zbus signals"
                 policyEngine = component "Routing Policy Engine" "Merges default, user and admin layers; answers allowed methods per context, provider and prompt level per relying party, PIN rules; fails closed on unparseable policy" "Rust"
                 pinManager = component "PIN Manager" "Change PIN in place, PIN rules, lockout status (UX7b)" "Rust"
                 enrolment = component "Enrolment Orchestrator" "First-run PIN, root key creation, second-credential prompts (UX8)" "Rust"
-                resetCoord = component "Reset Coordinator" "Destructive reset per LH-1" "Rust"
+                resetCoord = component "Reset Coordinator" "Destructive reset per ADR-0003 (LH-1)" "Rust"
                 auditLog = component "Audit Logger" "Structured journald events for every unlock, sign, PIN change and reset" "Rust"
             }
 
@@ -582,7 +590,7 @@ Sources: [FOSDEM 2026 talk](https://archive.fosdem.org/2026/schedule/event/838A8
 
 **Easier:** one unlock for passkeys and secrets; device-bound keys for high-value accounts; native and Electron apps join the passkey flow; enterprise-style policy (PIN complexity, allowed methods per context); a clean path to DBSC.
 
-**Harder:** a new trust-critical daemon to operate, confine and monitor; policy must be maintained per context and relying party; TPM-bound keys are lost if the TPM is cleared or the root key is reset (LH-1); upstream contributions to credentialsd, Howdy and plasma-desktop are on the critical path; portal support in KDE and browsers is immature.
+**Harder:** a new trust-critical daemon to operate, confine and monitor; policy must be maintained per context and relying party; TPM-bound keys are lost if the TPM is cleared or the root key is reset (ADR-0003); upstream contributions to credentialsd, Howdy and plasma-desktop are on the critical path; portal support in KDE and browsers is immature.
 
 ## Open questions
 

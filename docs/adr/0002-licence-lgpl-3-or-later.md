@@ -1,3 +1,15 @@
+---
+type: adr
+subject: Licence of Linux Hello
+artifact: adr
+status: accepted
+owner: "@atterdag"
+concepts: [licensing, governance]
+tags: [adr, one-way-door]
+sources: ["../../COPYING.LESSER", "../../GOVERNANCE.md"]
+date: 2026-11-01
+---
+
 # ADR-0002: Licence LGPL-3.0-or-later
 
 ## Status

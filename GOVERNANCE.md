@@ -24,6 +24,7 @@ These need an ADR before they change, because they are hard or impossible to rev
 | Project and organisation name | Linux Hello, github.com/LinuxHello |
 | D-Bus names | `io.github.LinuxHello.*` |
 | Crate and package names | Not published; `publish = false` until decided |
+| Reset model | Destructive, no recovery key ([ADR-0003](docs/adr/0003-destructive-reset.md)) |
 
 ## Repository topology
 
@@ -31,7 +32,7 @@ One monorepo, one crate per container, kept splittable:
 
 1. Containers talk only through `linuxhello-dbus` or over D-Bus, never through each other's internals.
 2. Each crate is versioned and tagged on its own (`agent-v0.1.0`).
-3. CI is filtered by path, one job per crate.
+3. CI is filtered by path, one job per crate. Deferred until the crates hold real code: it then needs one aggregate required check, because a required check whose workflow a path filter skips stays pending and blocks the merge.
 4. Every issue carries a `container:` label.
 
 **Split trigger:** a crate leaves the monorepo when it gets its own maintainer, its own release cadence, or a distribution packages it separately. Reviewed before 1.0 at the latest.
