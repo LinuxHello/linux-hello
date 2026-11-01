@@ -84,7 +84,7 @@ The engine enters the **PIN-only state** when any of these hold:
 
 - a policy file exists but cannot be read, is not valid UTF-8, does not parse, or breaks the schema, or an existing admin policy directory cannot be enumerated;
 - an admin file or the admin directory is not owned by root, or is writable by group or others;
-- the merged result is contradictory (`max_length` < `min_length`, `required` against `disallowed`).
+- the merged result is contradictory (`max_length` < `min_length`, `required` against `disallowed`, or all four PIN character classes are `disallowed`).
 
 In the PIN-only state every context allows only `pin` with `factors` 1, PIN rules are the built-in defaults, relying parties get provider `tpm` and prompt `reverify`, and the engine reports why. A missing file is not an error: it contributes nothing.
 
