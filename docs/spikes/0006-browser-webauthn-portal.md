@@ -67,7 +67,6 @@ All commands: **tested** (run from a cloud container with `git`, `curl`, `gh`; n
 3. **Chromium creates platform discoveries only for macOS and ChromeOS.** `device/fido/fido_discovery_factory.cc` calls `MaybeCreatePlatformDiscovery()` under `BUILDFLAG(IS_MAC) || BUILDFLAG(IS_CHROMEOS)`; Windows has its own plugin-authenticator path. There is no `IS_LINUX` branch. The `dbus` and `tpm_manager` matches in `device/fido/BUILD.gn` sit under `chromeos/` targets.
 4. **credentialsd's browser support is an add-on plus one experimental build.** `README.md` at `v0.3.1` lists (a) a web extension that overrides `navigator.credentials.create()` and `get()` and calls the D-Bus service through a native-messaging helper, for Firefox 140+ and Chrome/Edge 111+ (Chromium loaded unpacked); (b) an experimental Firefox build with a patch that talks to credentialsd directly, shipped as a Flatpak on OBS. The README states the extension "only works for https://webauthn.io and https://demo.yubico.com". Both are described as testing aids.
 5. **The extension supplies the origin itself.** `webext/app/credential_manager_shim.py` passes `origin` and `top_origin` from the page script to `CreateCredential`. In this path the trusted caller is a native-messaging helper, not the browser. This bears on the "Caller impersonation" threat in the [target architecture](../architecture/target-architecture.md): origin must not be trusted from an unprivileged client.
-6. **Upstream authorship overlap (inference).** `authrs_bridge/Cargo.toml` lists Martin Sirringhaus as an author, and the patched Flatpak lives under the OBS project `home:MSirringhaus`. Same person is an inference from the name; I did not verify it. If true, the Firefox patch is written by someone who maintains the code it modifies.
 
 ## Answer
 
@@ -91,3 +90,11 @@ What this changes:
 - Combined with spike 0005, browser coverage depends on three upstream deliverables: a provider API in credentialsd, an unpatched portal, and browser clients. None exists in a release.
 
 Not answered here: behaviour of the patched Firefox on Plasma, whether the extension works with arbitrary sites once its site allow-list is removed, and whether Chromium upstream has accepted or rejected a Linux platform authenticator.
+
+## Lead review (2026-11-01)
+
+Spot-checked at the pinned commits: Firefox `dom/webauthn/moz.build` (Android and Windows services only) and the "no platform authenticator to offer" comment in `WebAuthnService.cpp`; Chromium `fido_discovery_factory.cc` (platform discoveries under `IS_MAC` and `IS_CHROMEOS`, Windows separately); credentialsd `README.md` (extension limited to webauthn.io and demo.yubico.com, experimental Firefox Flatpak) and `webext/app/credential_manager_shim.py` (origin passed from the page side). **Tested** by reading source; nothing run.
+
+- **Confirmed:** the answer (Partly) and the consequence for design rule 4.
+- **Removed:** an inference about the identity of an upstream author. It added nothing to the answer and a public spike note should not speculate about individuals.
+- **Follow-up:** which browser fallback ships in 1.0 (KeePassXC-Browser or the credentialsd extension) is a decision once the origin-trust issue in evidence 5 is understood; tracked as a new issue.
