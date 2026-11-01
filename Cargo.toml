@@ -5,7 +5,7 @@ members = ["crates/*"]
 [workspace.package]
 version = "0.0.0"
 edition = "2021"
-rust-version = "1.80"
+rust-version = "1.85"
 license = "LGPL-3.0-or-later"
 repository = "https://github.com/LinuxHello/linux-hello"
 # Guardrail: nothing is published to crates.io until crate names are decided (one-way door).

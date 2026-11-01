@@ -37,10 +37,10 @@ On Ubuntu or Kubuntu 24.04 and later, install a C toolchain and rustup from the 
 
 ```sh
 sudo apt install curl build-essential rustup   # system packages: C compiler and linker, rustup
-rustup default stable                          # installs and selects the stable toolchain (rustc, cargo, clippy, rustfmt) for your user
+rustup default stable                          # a default toolchain for cargo tools outside this repository
 ```
 
-The workspace needs Rust 1.80 or later (`rust-version` in `Cargo.toml`). For the supply-chain checks that CI runs, install the two cargo tools once:
+Inside the repository, `rust-toolchain.toml` pins the Rust version and components; rustup installs them on the first `cargo` command. The minimum supported Rust version is in `Cargo.toml` (`rust-version`). For the supply-chain checks that CI runs, install the two cargo tools once:
 
 ```sh
 cargo install --locked cargo-deny cargo-audit   # into ~/.cargo/bin
