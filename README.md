@@ -1,0 +1,45 @@
+# Linux Hello
+
+PIN-rooted, biometric-unlocked passkeys and secrets for the Linux desktop: a Windows Hello equivalent built as an integration layer on [credentialsd](https://github.com/linux-credentials/credentialsd), fprintd, Howdy, KeePassXC and TPM 2.0.
+
+**Status:** pre-alpha. Nothing here authenticates anyone yet. Milestone 0 (spikes) runs before any implementation.
+
+## What it is
+
+- One session credential broker: unlock once with face, fingerprint or PIN, and passkeys work in browsers, native apps and Electron apps.
+- PIN as the root of trust (TPM2 authorisation on a per-user root key), biometrics as a shortcut, account password as a destructive reset.
+- Per relying party custody: device-bound (TPM) or portable (KeePassXC), set by policy.
+- KDE Plasma first: one prompt that shows which method is active, the same on the login manager, lock screen and in-session.
+
+## Layout
+
+| Path | Container |
+| :-- | :-- |
+| `crates/linuxhello-dbus` | Shared D-Bus interface names and types |
+| `crates/linuxhello-agent` | Agent: unlock state, auth state, routing policy, PIN, enrolment, reset |
+| `crates/pam-linuxhello` | PAM module: parallel face, fingerprint and PIN |
+| `crates/linuxhello-tpm-provider` | credentialsd provider for device-bound passkeys |
+| `crates/linuxhello-kpxc-bridge` | credentialsd provider for portable passkeys from KeePassXC |
+| `crates/linuxhello-ctl` | CLI |
+| `plasma/` | Prompts, greeter integration, enrolment, settings |
+| `security/` | AppArmor profiles, Tetragon policies, alert rules |
+| `policy/` | Policy schema and examples |
+| `docs/` | Obsidian vault (open `docs/` as a vault); renders on GitHub. Start at [docs/index.md](docs/index.md) |
+| `docs/architecture/` | Target architecture and C4 workspace (`workspace.dsl`) |
+| `docs/adr/` | Architecture decision records |
+| `docs/spikes/`, `docs/security/` | Milestone 0 spikes; threat model and security properties |
+
+## Build
+
+```sh
+cargo build --workspace
+cargo test --workspace
+```
+
+## Licence
+
+LGPL-3.0-or-later. See [COPYING.LESSER](COPYING.LESSER) and [COPYING](COPYING).
+
+## Contributing and security
+
+See [CONTRIBUTING.md](CONTRIBUTING.md), [GOVERNANCE.md](GOVERNANCE.md) and [SECURITY.md](SECURITY.md). Report vulnerabilities privately, never in a public issue.

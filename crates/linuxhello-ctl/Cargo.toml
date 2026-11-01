@@ -1,0 +1,15 @@
+[package]
+name = "linuxhello-ctl"
+description = "Command-line tool: enrol, change PIN, reset, inspect policy"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+linuxhello-dbus = { path = "../linuxhello-dbus" }
+
+[lints]
+workspace = true

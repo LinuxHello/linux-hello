@@ -1,0 +1,9 @@
+/target
+**/.structurizr/
+
+# Obsidian: commit shared settings, ignore per-user state
+docs/.obsidian/workspace*.json
+docs/.obsidian/cache
+docs/.obsidian/plugins/
+docs/.obsidian/community-plugins.json
+docs/.trash/

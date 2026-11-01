@@ -1,0 +1,16 @@
+[package]
+name = "pam-linuxhello"
+description = "PAM module: parallel face, fingerprint and PIN authentication"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+name = "pam_linuxhello"
+crate-type = ["cdylib", "rlib"]

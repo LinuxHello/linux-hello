@@ -1,0 +1,5 @@
+# Default owner for everything until more maintainers join.
+*                @atterdag
+/security/       @atterdag
+/crates/linuxhello-tpm-provider/ @atterdag
+/crates/pam-linuxhello/          @atterdag
