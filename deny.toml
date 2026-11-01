@@ -18,6 +18,7 @@ allow = [
   "Zlib",
 ]
 confidence-threshold = 0.9
+unused-allowed-license = "allow"
 
 [licenses.private]
 # Workspace crates are publish = false; their licence comes from the workspace manifest.
@@ -26,6 +27,7 @@ ignore = true
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
+allow-wildcard-paths = true
 
 [sources]
 unknown-registry = "deny"
