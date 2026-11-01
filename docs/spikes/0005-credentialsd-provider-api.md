@@ -30,7 +30,7 @@ Read upstream at tag `v0.3.1` (commit `861e04c`, published 2026-09-07, marked pr
 
 ```sh
 git clone --depth 1 --branch v0.3.1 https://github.com/linux-credentials/credentialsd
-grep -rn -i -E "provider|register_|plugin" --include=*.rs --include=*.xml --include=*.build credentialsd credentialsd-common doc/*.xml portal dbus
+grep -rn -i -E "provider|register_|plugin" --include=*.rs --include=*.xml --include=*.build credentialsd credentialsd-common credentialsd-ui doc/*.xml portal dbus
 grep -n "<interface" doc/*.xml
 gh api repos/linux-credentials/credentialsd/issues/26
 ```
@@ -41,13 +41,14 @@ All three: **tested** (ran on the maintainer's workstation, Kubuntu, `git` and `
 
 ## Evidence
 
-1. **No provider interface exists in v0.3.1.** The grep for `provider`, `register_` and `plugin` over all Rust sources, D-Bus XML, portal and service files returns no matches. The only D-Bus interfaces defined are the client-facing portal (`org.freedesktop.portal.experimental.Credential`), the handler (`org.freedesktop.handler.portal.experimental.Credential`) and the UI backend (`org.freedesktop.impl.portal.experimental.Credential` with `.Ceremony`), in `doc/*.xml`.
+1. **No provider interface exists in v0.3.1.** The grep for `provider`, `register_` and `plugin` over all Rust sources, D-Bus XML, portal and service files finds only a GTK CSS provider in the UI and a commented-out placeholder, `// Transport::PasskeyProvider => (..., "ACME Password Manager")`, in `credentialsd-ui/src/gui/view_model/gtk/device.rs`: the UI anticipates providers, the daemon has none. The D-Bus interfaces defined in `doc/*.xml` are the client-facing portal (`org.freedesktop.portal.experimental.Credential`), the handler (`org.freedesktop.handler.portal.experimental.Credential`), the daemon's own `xyz.iinuwa.credentialsd.Credentials1`, and the UI backend (`org.freedesktop.impl.portal.experimental.Credential` with `.Ceremony`).
 2. **Authenticators are compiled in.** `credentialsd/src/credential_service/mod.rs` defines `CredentialService<H: HybridHandler, N: NfcHandler, U: UsbHandler>`; the `ManageDevice` trait covers those three transports. Nothing there discovers D-Bus services.
-3. **Upstream treats it as undesigned.** Issue [credentialsd#26](https://github.com/linux-credentials/credentialsd/issues/26), "Design third-party password management", is open and its body reads "This is a stub." The thread (2025-05 to 2025-11) discusses a D-Bus `Authenticator` interface, and registration by opt-in through a trusted settings app so a malicious program cannot self-register. No interface is specified. `GOALS.md` lists "a uniform interface for third-party credential providers" as a goal.
+3. **Upstream has a draft, not a design.** Issue [credentialsd#26](https://github.com/linux-credentials/credentialsd/issues/26), "Design third-party password management", opens with "This is a stub." The thread holds two proposals: a D-Bus `Authenticator` interface (`GetCredential`, `CreateCredential`, `ClearCredential`), and a more detailed draft by the credentialsd maintainer with a `CredentialProvider` interface that credentialsd calls, a `CredentialProviderManager` that providers call to register, a privileged manager interface so only a trusted settings app can enable providers, and a Noise handshake for an authenticated, encrypted channel. The draft is acknowledged as not final; no pull request implements it. `GOALS.md` lists "a uniform interface for third-party credential providers" as a goal.
 4. **`doc/api.md` mentions providers only in prose** (a "locked passkey provider" as a kind of device in `GetAvailablePublicKeyDevices`). It defines no provider-side methods.
 5. **The portal path needs a patched xdg-desktop-portal.** `CHANGELOG.md` for 0.3.0 states a dependency on [linux-credentials/xdg-desktop-portal](https://github.com/linux-credentials/xdg-desktop-portal) (branch `credentials-portal`) "while we work on upstreaming the changes". xdg-desktop-portal is the trusted caller.
 6. **No KDE backend.** `portal/credentialsd.portal` declares `Interfaces=org.freedesktop.impl.portal.experimental.Credential`, served by `credentialsd-ui`, a GTK application. A code search of the KDE organisation for that interface name returns nothing. Upstream `GOALS.md` lists full desktop-environment integration as a non-goal and leaves it to others. Whether the GTK backend runs under Plasma was not tested.
-7. **Local state.** The workstation runs `org.freedesktop.impl.portal.desktop.kde` and stock `org.freedesktop.portal.Desktop` with no credentials interface (`busctl --user list`), as expected for an unpatched portal.
+7. **Licence.** The `credentialsd` crate declares `LGPL-3.0-only` (`credentialsd/Cargo.toml` at v0.3.1). Linking it from LGPL-3.0-or-later code is compatible, but `deny.toml` allows only `LGPL-3.0-or-later` today, and anything contributed into credentialsd is LGPL-3.0-only.
+8. **Local state.** The workstation runs `org.freedesktop.impl.portal.desktop.kde` and stock `org.freedesktop.portal.Desktop` with no credentials interface (`busctl --user list`), as expected for an unpatched portal.
 
 ## Answer
 
@@ -63,3 +64,11 @@ What this changes (constraint C1, "integration layer on credentialsd"):
 - Milestone 0 should not schedule provider implementation until one of these is chosen. The routing policy is not blocked by this spike, since it sits above the providers.
 
 Not answered here: whether a stub registered through a future API would work end to end, and how the GTK backend behaves on Plasma. Both need the build that this spike could not do.
+
+## Lead review (2026-11-01)
+
+Claims re-checked against a fresh clone of v0.3.1 (commit `861e04c`) and issue #26; **tested** by reading source, not by building.
+
+- **Confirmed:** no provider interface in the daemon; authenticators compiled in as hybrid, NFC and USB handlers; the patched xdg-desktop-portal dependency; the only portal backend is the GTK `credentialsd-ui`.
+- **Corrected above:** Evidence 1 (the grep has matches, one of them a provider placeholder in the UI), Evidence 3 (the maintainer has a concrete draft API in #26, which makes upstream contribution more realistic than "a stub" suggests), and a new Evidence 7 (credentialsd is LGPL-3.0-only).
+- **Consequence:** constraint C1 cannot hold as written. The provider path is now a decision: [ADR-0005](../adr/0005-provider-path.md), accepted 2026-11-01: contribute the provider API upstream (option A).
