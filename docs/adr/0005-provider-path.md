@@ -2,7 +2,7 @@
 type: adr
 subject: How the TPM provider and the KeePassXC bridge attach while credentialsd has no provider API
 artifact: adr
-status: proposed
+status: accepted
 owner: "@atterdag"
 concepts: [credentialsd, provider-api, upstream, tpm, keepassxc]
 tags: [adr, upstream]
@@ -14,7 +14,7 @@ date: 2026-11-01
 
 ## Status
 
-Proposed, 2026-11-01. Awaiting the maintainer's decision.
+Accepted, 2026-11-01 (option A).
 
 ## Context
 
@@ -33,11 +33,11 @@ The options:
 
 ## Decision
 
-Pending. **Proposed: A**, with engagement before code: offer upstream to implement the #26 draft, agree the interface, then implement it in credentialsd and build the TPM provider as its first consumer. Keep **C** open for the TPM side only, if upstream prefers a first-party platform authenticator in-tree. Do not build **B** as a product path.
+**Option A.** Engage before code: offer upstream to implement the #26 draft, agree the interface, then implement it in credentialsd and build the TPM provider as its first consumer. Keep **C** open for the TPM side only, if upstream prefers a first-party platform authenticator in-tree. Do not build **B** as a product path.
 
 Until upstream agrees an interface, Linux Hello work that does not depend on it continues: routing policy, PIN and TPM root key (spike on in-place auth change), PAM and Agent, Plasma prompts.
 
-## Consequences (if A is accepted)
+## Consequences
 
 **Easier:** one provider mechanism for every custody option; upstream reviews the security-critical interface; KeePassXC and other managers can use the same API; Linux Hello stays an integration layer.
 

@@ -71,4 +71,4 @@ Claims re-checked against a fresh clone of v0.3.1 (commit `861e04c`) and issue #
 
 - **Confirmed:** no provider interface in the daemon; authenticators compiled in as hybrid, NFC and USB handlers; the patched xdg-desktop-portal dependency; the only portal backend is the GTK `credentialsd-ui`.
 - **Corrected above:** Evidence 1 (the grep has matches, one of them a provider placeholder in the UI), Evidence 3 (the maintainer has a concrete draft API in #26, which makes upstream contribution more realistic than "a stub" suggests), and a new Evidence 7 (credentialsd is LGPL-3.0-only).
-- **Consequence:** constraint C1 cannot hold as written. The provider path is now a decision: [ADR-0005](../adr/0005-provider-path.md) (proposed).
+- **Consequence:** constraint C1 cannot hold as written. The provider path is now a decision: [ADR-0005](../adr/0005-provider-path.md), accepted 2026-11-01: contribute the provider API upstream (option A).
