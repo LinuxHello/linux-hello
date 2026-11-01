@@ -7,3 +7,7 @@ docs/.obsidian/cache
 docs/.obsidian/plugins/
 docs/.obsidian/community-plugins.json
 docs/.trash/
+
+# Personal agent settings (model, endpoint, permissions); never committed
+.claude/settings.local.json
+.claude/*.local.*
