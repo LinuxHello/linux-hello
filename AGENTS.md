@@ -21,6 +21,56 @@ The maintainer (@atterdag) owns the architecture, the threat model and every mer
 | `plasma/`, `security/`, `policy/` | Plasma integration; AppArmor, Tetragon, alerts; policy schema |
 | `docs/` | Obsidian vault: architecture, ADRs, spikes, threat model, security properties |
 
+## Roles and workflow
+
+Roles are fixed by [ADR-0004](docs/adr/0004-agent-roles.md). Know which one you are playing.
+
+| Role | Agent | Does | Does not |
+| :-- | :-- | :-- | :-- |
+| **Implementer** | Local model via Claude Code | Implements one issue from its brief: tests first, then code; runs the gates; opens a pull request | Pick issues without a brief; change scope; touch files the brief does not list; edit `docs/adr/` or CI |
+| **Lead** | Claude | Writes briefs; keeps labels, milestones and `docs/` current; reviews and fixes pull requests; runs spikes | Merge |
+| **Assistant** | GitHub Copilot | Pull request summaries; commit messages for hand-made commits; automated review comments | Push code |
+| **Maintainer** | @atterdag | Decides and merges | — |
+
+### Issue status
+
+Each issue carries one `status:` label; the lead moves it.
+
+```mermaid
+flowchart LR
+  A[status:needs-brief] -->|lead posts brief| B[status:ready]
+  B -->|implementer starts| C[status:in-progress]
+  C -->|pull request opened| D[status:in-review]
+  D -->|changes needed| C
+  D -->|maintainer merges| E[closed]
+```
+
+Spikes skip the implementer: the lead takes them from `status:needs-brief` to `status:in-review` directly.
+
+### The brief
+
+The lead posts the brief as an issue comment headed `## Implementation brief`. It must fit a small context window, so it is self-contained:
+
+1. **Goal**: one sentence of behaviour.
+2. **Files**: the exact files to create or change (at most five).
+3. **Properties and tests first**: the security properties involved and the test names to write before the code.
+4. **Constraints**: the invariants and ADRs that apply, quoted, not referenced.
+5. **Acceptance**: the exact commands that must pass.
+6. **Out of scope**: what not to touch.
+
+A task that needs more than about 300 changed lines or five files is split into several issues.
+
+### Review
+
+The lead reviews every pull request against its brief before the maintainer sees it:
+
+- the brief's tests exist, are named after their property and fail without the change;
+- no invariant is broken; no new `unsafe`; no new dependency without a reason;
+- the gates pass when run locally, not just in CI;
+- docs changed with the code.
+
+Small faults the lead fixes by pushing to the pull request branch; larger ones go back to the implementer with a review comment. Copilot's review and the code scanners are a second opinion, not a substitute.
+
 ## Source of truth
 
 Resolve conflicts in this order, and say which source you used:
@@ -43,7 +93,7 @@ Never propose or write anything that breaks these. If a task seems to need it, s
 5. **Licence boundaries.** Link only to LGPL or permissive code. Reach GPL components (KeePassXC, fprintd) across a process boundary only. All code here is LGPL-3.0-or-later ([ADR-0002](docs/adr/0002-licence-lgpl-3-or-later.md)).
 6. **Upstream first.** Changes to upstream projects go upstream as contributions, not into forks or vendored patches.
 7. **One-way doors need an ADR:** licence, names, D-Bus names (`io.github.LinuxHello.*`), crate and package names, the reset model ([ADR-0003](docs/adr/0003-destructive-reset.md)), repository topology.
-8. **Public repository.** Never write secrets, tokens, personal data, or details of anyone's machines (hostnames, home paths, hardware, local endpoints, machine-specific model identifiers) into code, docs, issues, commit messages or PR descriptions. A local model's family and size may be recorded for attribution.
+8. **Public repository.** Never write secrets, tokens, personal data, or details of anyone's machines (hostnames, home paths, hardware, local endpoints, model names) into code, docs, issues, commit messages or PR descriptions.
 9. **No secrets in the loop.** Never ask for, read, print or store a token or key. GitHub operations run through `gh` on the maintainer's machine; produce scripts, not requests for credentials.
 
 ## How to work
@@ -68,6 +118,8 @@ cargo deny check
 cargo audit
 ```
 
+CI also runs CodeQL (security), dependency review (new vulnerable or disallowed dependencies) and SonarQube Cloud (code quality and coverage). Treat their findings like a failing test: fix the cause, or explain in the pull request why it is a false positive.
+
 Fuzzing is required for every parser once one exists. Never weaken, skip or bypass a gate, a lint level or a test to get green; fix the cause or stop and report it.
 
 **Report results honestly.** Mark every change *tested* or *untested*, with the toolchain version and the exact command. "Compiles" is not "tested". A test you did not run did not pass.
@@ -75,7 +127,7 @@ Fuzzing is required for every parser once one exists. Never weaken, skip or bypa
 ## Commits and pull requests
 
 - `main` is protected: branch, open a pull request, squash merge. Never push to `main`.
-- Every commit carries `Signed-off-by:` (`git commit -s`) from the human who submits it. An agent never signs off on someone's behalf; the human who runs the commit certifies the [DCO](https://developercertificate.org/).
+- Every commit carries `Signed-off-by:` (`git commit -s`) from the human who submits it, certifying the [DCO](https://developercertificate.org/). An agent runs `git commit -s` only in a session that human started and with that human's git identity; it never adds a sign-off for anyone else.
 - Commits on `main` are signed.
 - Name the tool that produced a substantial part of a change with a trailer, one per tool:
 

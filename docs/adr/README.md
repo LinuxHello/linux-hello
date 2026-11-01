@@ -15,5 +15,6 @@ date: 2026-11-01
 - [ADR-0001: Monorepo with split guardrails](0001-monorepo-with-split-guardrails.md)
 - [ADR-0002: Licence LGPL-3.0-or-later](0002-licence-lgpl-3-or-later.md)
 - [ADR-0003: Destructive reset, no recovery key](0003-destructive-reset.md)
+- [ADR-0004: Roles of the coding agents](0004-agent-roles.md)
 
 New ADRs start from [the template](../templates/adr.md).
