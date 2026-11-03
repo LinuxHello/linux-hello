@@ -73,7 +73,7 @@ A **passed quality gate** for a commit means every CI job listed in [`scripts/ci
 
 - Pull requests from forks cannot be attested (forks get no OIDC token), so their `quality-gate` fails. The maintainer pushes the reviewed branch to this repository to attest it.
 - CI takes longer: about two minutes for the fuzz build and run, plus the attestation job.
-- A nightly toolchain is pinned for fuzzing and must be bumped by pull request. The fuzz crate is a separate workspace, so the root `cargo deny` and `cargo audit` do not cover its `Cargo.lock` (libfuzzer-sys only); Dependabot does.
+- A nightly toolchain is pinned for fuzzing and must be bumped by pull request. The fuzz crate is a separate workspace, so the root `cargo deny` and `cargo audit` do not cover its `Cargo.lock`; Dependabot does. Its one dependency, `libfuzzer-sys`, is `(MIT OR Apache-2.0) AND NCSA`. NCSA is permissive but not on the allow-list, so dependency review exempts that one package. It is linked only into fuzz binaries, which are never released.
 - Changing `quality-gates.txt` changes what later attestations claim, so it needs the same review as a gate change.
 - A tag pushed before CI on `main` finishes fails the release gate and must be re-run.
 - The release workflow has not run yet. The first tag is its first test.

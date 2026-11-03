@@ -33,7 +33,7 @@ args=(
 )
 # On main the signing run's commit is the commit itself. A pull request run
 # signs from the merge ref, whose commit differs from the head named in the subject.
-[ "$ref" = "refs/heads/main" ] && args+=(--source-digest "$sha")
+[[ "$ref" = "refs/heads/main" ]] && args+=(--source-digest "$sha")
 
 gh attestation verify "$work/quality-gate-$sha.json" "${args[@]}"
 echo "Quality gate attested for $sha ($ref)."

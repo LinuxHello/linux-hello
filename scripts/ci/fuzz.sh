@@ -21,7 +21,7 @@ cargo fuzz --version >/dev/null 2>&1 || { # cargo finds subcommands in ~/.cargo/
 # target before it is committed.
 mapfile -t fuzz_dirs < <(git ls-files --cached --others --exclude-standard '*/fuzz/Cargo.toml' |
   sort -u | xargs -r -n1 dirname)
-if [ "${#fuzz_dirs[@]}" -eq 0 ]; then
+if [[ "${#fuzz_dirs[@]}" -eq 0 ]]; then
   echo "No fuzz targets found." >&2
   exit 1
 fi
@@ -33,13 +33,13 @@ for dir in "${fuzz_dirs[@]}"; do
   # Name the pinned channel explicitly: older rustup releases cannot install from
   # rust-toolchain.toml without one.
   channel="$(sed -n 's/^channel *= *"\(.*\)"/\1/p' rust-toolchain.toml)"
-  [ -n "$channel" ] || { echo "$dir/rust-toolchain.toml names no channel" >&2; exit 1; }
+  [[ -n "$channel" ]] || { echo "$dir/rust-toolchain.toml names no channel" >&2; exit 1; }
   rustup toolchain install "$channel" --profile minimal >/dev/null
   for target in $(cargo fuzz list --fuzz-dir .); do
     echo "::group::fuzz $dir/$target (${seconds}s)"
     mkdir -p "corpus/$target"
     seeds=()
-    [ -d "seeds/$target" ] && seeds=("seeds/$target")
+    [[ -d "seeds/$target" ]] && seeds=("seeds/$target")
     cargo fuzz run --fuzz-dir . "$target" "corpus/$target" "${seeds[@]}" -- \
       -max_total_time="$seconds"
     echo "::endgroup::"

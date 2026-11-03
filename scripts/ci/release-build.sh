@@ -30,12 +30,12 @@ esac
 
 crate_version="$(cargo metadata --format-version 1 --no-deps --locked |
   jq -r --arg c "$crate" '.packages[] | select(.name == $c) | .version')"
-if [ "$crate_version" != "$version" ]; then
+if [[ "$crate_version" != "$version" ]]; then
   echo "Tag $tag says $version but $crate is $crate_version" >&2
   exit 1
 fi
 
-if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
+if [[ -n "$(git status --porcelain --untracked-files=no)" ]]; then
   echo "Working tree is dirty; release builds come from a clean checkout" >&2
   exit 1
 fi
@@ -52,7 +52,7 @@ mapfile -t artifacts < <(
       | select(any(.target.kind[]; . == "bin" or . == "cdylib"))
       | (.executable // (.filenames[] | select(endswith(".so"))))'
 )
-if [ "${#artifacts[@]}" -eq 0 ]; then
+if [[ "${#artifacts[@]}" -eq 0 ]]; then
   echo "$crate has no bin or cdylib target; nothing to release" >&2
   exit 1
 fi
