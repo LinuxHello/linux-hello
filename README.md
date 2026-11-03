@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/assets/linuxhello-logo.svg" alt="Linux Hello logo" width="240">
+</p>
+
 # Linux Hello
 
 PIN-rooted, biometric-unlocked passkeys and secrets for the Linux desktop: a Windows Hello equivalent built as an integration layer on [credentialsd](https://github.com/linux-credentials/credentialsd), fprintd, Howdy, KeePassXC and TPM 2.0.
