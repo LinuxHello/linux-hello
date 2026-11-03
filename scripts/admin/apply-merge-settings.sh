@@ -5,7 +5,8 @@
 #   scripts/admin/apply-merge-settings.sh [--dry-run]
 #
 # --dry-run   print each change instead of applying it.
-# RULESET_ID  pick the ruleset to update when more than one protects main.
+# RULESET_ID  pick the ruleset to update when more than one active ruleset protects main;
+#             it must be one of them.
 #
 # Required checks are pinned to the GitHub Actions app, so that no other app or
 # commit status can satisfy them by posting a passing result with the same name.
@@ -22,9 +23,15 @@ case "${1:-}" in
   *) echo "usage: $0 [--dry-run]" >&2; exit 2 ;;
 esac
 
+die() { echo "$*" >&2; exit 1; }
+
 command -v gh >/dev/null || { echo "gh is not installed" >&2; exit 1; }
 command -v jq >/dev/null || { echo "jq is not installed" >&2; exit 1; }
 gh auth status >/dev/null 2>&1 || { echo "Log in first: gh auth login" >&2; exit 1; }
+
+# The ruleset conditions below are matched against main, so main must be the default branch.
+default_branch="$(gh api "repos/$repo" --jq .default_branch)" || die "Could not read $repo."
+[[ "$default_branch" == main ]] || die "The default branch is '$default_branch', not main; nothing pinned."
 
 checks_json="$(printf '%s\n' "${checks[@]}" | jq -R . | jq -sc .)"
 
@@ -68,18 +75,46 @@ pin_classic() {
   fi
 }
 
-# Rulesets defined on this repository (not inherited from the organisation)
-# that target branches and include main.
+# Does a ref_name pattern of a ruleset condition match refs/heads/main? GitHub
+# matches these patterns with fnmatch; bash pattern matching covers * ? and [].
+pattern_matches_main() {
+  case "$1" in
+    "~ALL" | "~DEFAULT_BRANCH") return 0 ;;
+  esac
+  # shellcheck disable=SC2053 # the right-hand side is a pattern on purpose
+  [[ "refs/heads/main" == $1 ]]
+}
+
+# Does this ruleset (JSON) include main and not exclude it?
+covers_main() {
+  local p included=false
+  while IFS= read -r p; do
+    [[ -n "$p" ]] && pattern_matches_main "$p" && included=true
+  done < <(jq -r '.conditions.ref_name.include // [] | .[]' <<<"$1")
+  $included || return 1
+  while IFS= read -r p; do
+    [[ -n "$p" ]] && pattern_matches_main "$p" && return 1
+  done < <(jq -r '.conditions.ref_name.exclude // [] | .[]' <<<"$1")
+  return 0
+}
+
+# Active repository rulesets (not inherited from the organisation) that target
+# branches and cover main, one id per line. Rulesets that cover main but do not
+# enforce are reported on stderr and left out. Any failed read fails the run.
 rulesets_for_main() {
-  local id
-  for id in $(gh api "repos/$repo/rulesets" \
-      --jq '.[] | select(.source_type == "Repository" and .target == "branch") | .id'); do
-    gh api "repos/$repo/rulesets/$id" --jq '
-      select((.conditions.ref_name.include // [])
-               | any(. == "~DEFAULT_BRANCH" or . == "refs/heads/main" or . == "~ALL"))
-      | select((.conditions.ref_name.exclude // [])
-               | any(. == "~DEFAULT_BRANCH" or . == "refs/heads/main") | not)
-      | .id'
+  local list id detail enforcement
+  list="$(gh api "repos/$repo/rulesets" \
+    --jq '.[] | select(.source_type == "Repository" and .target == "branch") | .id')" \
+    || die "Could not list the rulesets of $repo; nothing pinned."
+  for id in $list; do
+    detail="$(gh api "repos/$repo/rulesets/$id")" || die "Could not read ruleset $id; nothing pinned."
+    covers_main "$detail" || continue
+    enforcement="$(jq -r .enforcement <<<"$detail")"
+    if [[ "$enforcement" == active ]]; then
+      echo "$id"
+    else
+      echo "Ruleset $id covers main but is not enforced (enforcement: $enforcement); skipped." >&2
+    fi
   done
 }
 
@@ -88,10 +123,10 @@ updatable='{name, target, enforcement, conditions, bypass_actors, rules} | with_
 
 pin_ruleset() {
   local id="$1" current wanted path="repos/$repo/rulesets/$1"
-  current="$(gh api "$path")"
-  if [[ "$(jq -r .enforcement <<<"$current")" != active ]]; then
-    echo "Warning: ruleset $id is not enforced (enforcement: $(jq -r .enforcement <<<"$current"))." >&2
-  fi
+  current="$(gh api "$path")" || die "Could not read ruleset $id; nothing pinned."
+  # Pinning checks in a ruleset that does not enforce them would protect nothing.
+  [[ "$(jq -r .enforcement <<<"$current")" == active ]] \
+    || die "Ruleset $id is not enforced; enable it first. Nothing pinned."
   wanted="$(jq -c --argjson checks "$checks_json" --argjson app "$github_actions_app_id" "$pin_filter"'
     if any((.rules // [])[]; .type == "required_status_checks") then
       .rules |= map(if .type == "required_status_checks"
@@ -114,15 +149,17 @@ pin_ruleset() {
 if gh api "repos/$repo/branches/main/protection/required_status_checks" >/dev/null 2>&1; then
   pin_classic
 else
+  ids="$(rulesets_for_main)"
   if [[ -n "${RULESET_ID:-}" ]]; then
+    # RULESET_ID only chooses among the eligible rulesets; it cannot widen them.
+    grep -qx -- "$RULESET_ID" <<<"$ids" \
+      || die "RULESET_ID=$RULESET_ID is not an active repository ruleset that covers main; nothing pinned."
     ids="$RULESET_ID"
-  else
-    ids="$(rulesets_for_main)"
   fi
   case "$(wc -w <<<"$ids")" in
     0)
-      echo "No repository ruleset or branch protection covers main; nothing pinned." >&2
-      echo "Create a branch ruleset for main, then run this again." >&2
+      echo "No active repository ruleset or branch protection covers main; nothing pinned." >&2
+      echo "Create or enable a branch ruleset for main, then run this again." >&2
       exit 1 ;;
     1) pin_ruleset "$ids" ;;
     *)

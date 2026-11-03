@@ -45,6 +45,7 @@ fixtures="" writes="" out="" status=0
 
 new_case() {
   fixtures="$work/$1"; writes="$fixtures.writes"; mkdir -p "$fixtures"; : >"$writes"
+  fixture repos/LinuxHello/linux-hello '{"default_branch":"main"}'
 }
 fixture() { # api-path json
   jq . <<<"$2" >"$fixtures/${1//\//_}.json"
@@ -62,11 +63,12 @@ put_checks() {
 }
 ruleset_writes() { grep -c "rulesets" "$writes" || true; }
 
-ruleset() { # id rules-json [include]
-  local include="${3:-[\"~DEFAULT_BRANCH\"]}"
-  jq -n --argjson id "$1" --argjson rules "$2" --argjson inc "$include" '{
-    id: $id, name: "main", target: "branch", source_type: "Repository", enforcement: "active",
-    conditions: {ref_name: {include: $inc, exclude: []}},
+ruleset() { # id rules-json [include] [exclude] [enforcement]
+  local include="${3:-[\"~DEFAULT_BRANCH\"]}" exclude="${4:-[]}" enforcement="${5:-active}"
+  jq -n --argjson id "$1" --argjson rules "$2" --argjson inc "$include" --argjson exc "$exclude" \
+        --arg enf "$enforcement" '{
+    id: $id, name: "main", target: "branch", source_type: "Repository", enforcement: $enf,
+    conditions: {ref_name: {include: $inc, exclude: $exc}},
     bypass_actors: [], rules: $rules}'
 }
 list() { jq -sc 'map({id, name, target, source_type, enforcement})' ; }
@@ -166,6 +168,76 @@ fixture repos/LinuxHello/linux-hello/rulesets "$(ruleset 7 '[]' | list)"
 run
 if grep -q '^PATCH repos/LinuxHello/linux-hello {"squash_merge_commit_title":"PR_TITLE","squash_merge_commit_message":"PR_BODY"}$' "$writes"
 then ok "$t"; else nok "$t" "writes $(cat "$writes")"; fi
+
+t=ruleset_excluding_main_by_pattern_is_not_selected
+new_case "$t"
+fixture repos/LinuxHello/linux-hello/rulesets/7 "$(ruleset 7 '[]' '["~ALL"]' '["refs/heads/m*"]')"
+fixture repos/LinuxHello/linux-hello/rulesets "$(ruleset 7 '[]' | list)"
+run
+if [[ $status != 0 && "$(ruleset_writes)" == 0 ]]; then ok "$t"; else nok "$t" "status $status, writes $(ruleset_writes)"; fi
+
+t=ruleset_including_main_by_wildcard_is_selected
+new_case "$t"
+fixture repos/LinuxHello/linux-hello/rulesets/7 "$(ruleset 7 '[]' '["refs/heads/*"]')"
+fixture repos/LinuxHello/linux-hello/rulesets "$(ruleset 7 '[]' | list)"
+run
+if [[ $status == 0 && "$(put_checks 7)" == "$(jq -c . <<<"$pinned")" ]]; then ok "$t"; else nok "$t" "status $status"; fi
+
+t=wildcard_ruleset_makes_selection_ambiguous
+new_case "$t"
+fixture repos/LinuxHello/linux-hello/rulesets/7 "$(ruleset 7 '[]')"
+fixture repos/LinuxHello/linux-hello/rulesets/8 "$(ruleset 8 '[]' '["refs/heads/*"]')"
+fixture repos/LinuxHello/linux-hello/rulesets "$( (ruleset 7 '[]'; ruleset 8 '[]') | list)"
+run
+if [[ $status != 0 && "$(ruleset_writes)" == 0 ]] && grep -q "Several rulesets" <<<"$out"; then ok "$t"
+else nok "$t" "status $status"; fi
+
+t=failed_ruleset_read_fails_closed
+new_case "$t"
+fixture repos/LinuxHello/linux-hello/rulesets/8 "$(ruleset 8 '[]')"
+fixture repos/LinuxHello/linux-hello/rulesets "$( (ruleset 7 '[]'; ruleset 8 '[]') | list)"
+run
+if [[ $status != 0 && "$(ruleset_writes)" == 0 ]] && grep -q "Could not read ruleset 7" <<<"$out"; then ok "$t"
+else nok "$t" "status $status, writes $(ruleset_writes)"; fi
+
+t=failed_ruleset_list_fails_closed
+new_case "$t"
+run
+if [[ $status != 0 && "$(ruleset_writes)" == 0 ]] && grep -q "Could not list the rulesets" <<<"$out"; then ok "$t"
+else nok "$t" "status $status"; fi
+
+t=ruleset_that_does_not_enforce_is_refused
+new_case "$t"
+fixture repos/LinuxHello/linux-hello/rulesets/7 "$(ruleset 7 '[]' '["~DEFAULT_BRANCH"]' '[]' evaluate)"
+fixture repos/LinuxHello/linux-hello/rulesets "$(ruleset 7 '[]' | list)"
+run
+if [[ $status != 0 && "$(ruleset_writes)" == 0 ]] && grep -q "not enforced" <<<"$out"; then ok "$t"
+else nok "$t" "status $status, writes $(ruleset_writes)"; fi
+
+t=disabled_ruleset_beside_an_active_one_is_skipped
+new_case "$t"
+fixture repos/LinuxHello/linux-hello/rulesets/7 "$(ruleset 7 '[]')"
+fixture repos/LinuxHello/linux-hello/rulesets/8 "$(ruleset 8 '[]' '["~DEFAULT_BRANCH"]' '[]' disabled)"
+fixture repos/LinuxHello/linux-hello/rulesets "$( (ruleset 7 '[]'; ruleset 8 '[]') | list)"
+run
+if [[ $status == 0 ]] && grep -q "rulesets/7 " "$writes" && ! grep -q "rulesets/8 " "$writes"; then ok "$t"
+else nok "$t" "status $status, writes $(cat "$writes")"; fi
+
+t=ruleset_id_outside_the_eligible_rulesets_is_refused
+new_case "$t"
+fixture repos/LinuxHello/linux-hello/rulesets/7 "$(ruleset 7 '[]')"
+fixture repos/LinuxHello/linux-hello/rulesets/9 "$(ruleset 9 '[]' '["refs/heads/release/*"]')"
+fixture repos/LinuxHello/linux-hello/rulesets "$( (ruleset 7 '[]'; ruleset 9 '[]') | list)"
+RULESET_ID=9 run
+if [[ $status != 0 && "$(ruleset_writes)" == 0 ]]; then ok "$t"; else nok "$t" "status $status, writes $(cat "$writes")"; fi
+
+t=default_branch_other_than_main_fails_closed
+new_case "$t"
+fixture repos/LinuxHello/linux-hello '{"default_branch":"trunk"}'
+fixture repos/LinuxHello/linux-hello/rulesets/7 "$(ruleset 7 '[]')"
+fixture repos/LinuxHello/linux-hello/rulesets "$(ruleset 7 '[]' | list)"
+run
+if [[ $status != 0 && ! -s "$writes" ]]; then ok "$t"; else nok "$t" "status $status, writes $(cat "$writes")"; fi
 
 echo "$pass passed, $fail failed"
 ((fail == 0))
