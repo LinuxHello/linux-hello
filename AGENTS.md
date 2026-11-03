@@ -79,7 +79,7 @@ Every commit needs the maintainer's sign-off, including commits that apply a Cop
 
 - **"Commit suggestion"** on a review comment creates a commit authored by the maintainer through the web interface; the organisation requires sign-off on web commits, so it passes the `dco` check.
 - **Commits pushed by the lead** through the Claude GitHub App carry no sign-off either; the maintainer certifies them before merge with `dco-signoff.sh <pr>`, as for the Copilot coding agent below.
-- **Changes made by the Copilot coding agent** (for example "Fix with Copilot" or `@copilot`) are authored by a bot and carry no sign-off. The maintainer reviews them and certifies them before merging with `dco-signoff.sh <pr>`, which adds his sign-off and re-signs the branch with his GPG key. The script lives in the maintainer's private workstation repository (`scripts/dco-signoff.sh`), not in this one, and runs on his machine.
+- **Changes made by the Copilot coding agent** (for example "Fix with Copilot" or `@copilot`) are authored by a bot and carry no sign-off. The maintainer reviews them and certifies them before merging with `dco-signoff.sh <pr>`, which adds his sign-off and re-signs the branch with his commit-signing key. The script lives in the maintainer's private workstation repository (`scripts/dco-signoff.sh`), not in this one, and runs on his machine.
 
 ## Source of truth
 

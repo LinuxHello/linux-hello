@@ -28,7 +28,7 @@ What exists:
 What is missing for unattended work:
 
 1. **No loop.** Nothing picks the next `status:ready` issue on a schedule.
-2. **Sign-off.** The tooling commits with `-s` and a GPG signature under the maintainer's name. A sign-off certifies the DCO for code that nobody has reviewed yet, and a signing key that needs a touch or a PIN stalls an unattended run.
+2. **Sign-off.** The tooling commits with `-s` and a commit signature under the maintainer's name. A sign-off certifies the DCO for code that nobody has reviewed yet, and a signing key that needs a touch or a PIN stalls an unattended run.
 3. **Harness not chosen by evidence.** The implementer runs through Aider because Claude Code would not accept a context window below its default. Setting Claude Code's maximum context explicitly has since made it accept a 64k window on a read-only task; long runs that need compaction are untested. Neither harness has completed a real brief.
 4. **Shared GPU.** The workstation's GPU serves other workloads, so a run can find it busy.
 
@@ -61,7 +61,7 @@ A systemd user timer on the maintainer's workstation runs a loop script around t
 
 ### Sign-off and signatures
 
-Unattended commits carry **no `Signed-off-by:`** and need no GPG signature, because nobody has reviewed them when they are made. The maintainer certifies them at merge, as for the lead's and Copilot's commits ([AGENTS.md, Copilot suggestions and the DCO](../../AGENTS.md#copilot-suggestions-and-the-dco)). The commit on `main` is GitHub's signed squash commit, so the ruleset's signature requirement on `main` still holds. Runs started by hand while the maintainer watches may still sign off.
+Unattended commits carry **no `Signed-off-by:`** and need no commit signature, because nobody has reviewed them when they are made. The maintainer certifies them at merge, as for the lead's and Copilot's commits ([AGENTS.md, Copilot suggestions and the DCO](../../AGENTS.md#copilot-suggestions-and-the-dco)). The commit on `main` is GitHub's signed squash commit, so the ruleset's signature requirement on `main` still holds. Runs started by hand while the maintainer watches may still sign off.
 
 ### Harness by evidence
 
