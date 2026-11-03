@@ -10,10 +10,12 @@
 #
 # Required checks are pinned to the GitHub Actions app, so that no other app or
 # commit status can satisfy them by posting a passing result with the same name.
+# Merges are squash only (GOVERNANCE.md), in the repository settings and in the
+# ruleset's pull_request rule.
 set -euo pipefail
 
 repo="LinuxHello/linux-hello"
-checks=(quality-gate fuzz)
+checks=(quality-gate fuzz unsafe-policy)
 github_actions_app_id=15368
 
 dry_run=false
@@ -57,10 +59,10 @@ apply() { # method path body description
   fi
 }
 
-# Squash commits carry the pull request title and its structured body.
+# Squash merges only; squash commits carry the pull request title and its structured body.
 apply PATCH "repos/$repo" \
-  '{"squash_merge_commit_title":"PR_TITLE","squash_merge_commit_message":"PR_BODY"}' \
-  "Squash commit message: pull request title and body."
+  '{"allow_squash_merge":true,"allow_merge_commit":false,"allow_rebase_merge":false,"squash_merge_commit_title":"PR_TITLE","squash_merge_commit_message":"PR_BODY"}' \
+  "Merges: squash only; squash commit message: pull request title and body."
 
 pin_classic() {
   local path="repos/$repo/branches/main/protection/required_status_checks" current wanted
@@ -137,11 +139,18 @@ pin_ruleset() {
                   parameters: {strict_required_status_checks_policy: false,
                                required_status_checks: ([] | pin("integration_id"))}}]
     end
+    # Squash only, where the ruleset governs pull requests at all.
+    | .rules |= map(if .type == "pull_request"
+                    then .parameters.allowed_merge_methods = ["squash"]
+                    else . end)
     | '"$updatable" <<<"$current")"
+  if ! jq -e 'any(.rules[]; .type == "pull_request")' <<<"$wanted" >/dev/null; then
+    echo "Ruleset $id has no pull_request rule; only the repository setting limits merges to squash." >&2
+  fi
   if [[ "$(jq -c "$updatable" <<<"$current")" == "$wanted" ]]; then
-    echo "Required checks already pinned to GitHub Actions in ruleset $id: ${checks[*]}"
+    echo "Required checks already pinned to GitHub Actions and merges squash only in ruleset $id: ${checks[*]}"
   else
-    apply PUT "$path" "$wanted" "Required checks pinned to GitHub Actions in ruleset $id: ${checks[*]}"
+    apply PUT "$path" "$wanted" "Required checks pinned to GitHub Actions and merges squash only in ruleset $id: ${checks[*]}"
   fi
 }
 
