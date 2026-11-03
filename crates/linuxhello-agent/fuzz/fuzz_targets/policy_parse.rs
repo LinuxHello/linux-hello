@@ -11,7 +11,7 @@ fuzz_target!(|data: &[u8]| {
     let Ok(input) = std::str::from_utf8(data) else {
         return;
     };
-    let Ok(policy) = linuxhello_agent::policy::schema::parse(input) else {
+    let Ok(policy) = linuxhello_agent::policy::schema::parse_layer(input) else {
         return;
     };
     // Every value a parsed policy derives must be computable without panicking.
