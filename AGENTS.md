@@ -28,7 +28,7 @@ Roles are fixed by [ADR-0004](docs/adr/0004-agent-roles.md). Know which one you 
 | Role | Agent | Does | Does not |
 | :-- | :-- | :-- | :-- |
 | **Implementer** | Local model via Claude Code | Implements one issue from its brief: tests first, then code; runs `make fix` and `make gates`; opens a pull request | Pick issues without a brief; change scope; touch files the brief does not list; edit `docs/adr/` or CI |
-| **Lead** | Claude | Writes briefs; keeps labels, milestones and `docs/` current; reviews and fixes pull requests; runs spikes | Merge |
+| **Lead** | Claude | Writes briefs; keeps labels, milestones and `docs/` current; reviews and fixes pull requests, pushing to their branches; opens pull requests; runs spikes | Merge; push to `main`; tag or release; change repository settings; sign off a commit |
 | **Assistant** | GitHub Copilot | Pull request summaries; commit messages for hand-made commits; review comments with suggested changes | Push commits unless the maintainer asks it to |
 | **Maintainer** | @atterdag | Decides and merges | — |
 
@@ -78,6 +78,7 @@ Small faults the lead fixes by pushing to the pull request branch; larger ones g
 Every commit needs the maintainer's sign-off, including commits that apply a Copilot suggestion.
 
 - **"Commit suggestion"** on a review comment creates a commit authored by the maintainer through the web interface; the organisation requires sign-off on web commits, so it passes the `dco` check.
+- **Commits pushed by the lead** through the Claude GitHub App carry no sign-off either; the maintainer certifies them the same way before merge.
 - **Changes made by the Copilot coding agent** (for example "Fix with Copilot" or `@copilot`) are authored by a bot and carry no sign-off. The maintainer reviews them and certifies them before merging with the bootstrap script `dco-signoff.sh <pr>`, which adds his sign-off and re-signs the branch.
 
 ## Source of truth
@@ -103,7 +104,7 @@ Never propose or write anything that breaks these. If a task seems to need it, s
 6. **Upstream first.** Changes to upstream projects go upstream as contributions, not into forks or vendored patches.
 7. **One-way doors need an ADR:** licence, names, D-Bus names (`io.github.LinuxHello.*`), crate and package names, the reset model ([ADR-0003](docs/adr/0003-destructive-reset.md)), repository topology.
 8. **Public repository.** Never write secrets, tokens, personal data, or details of anyone's machines (hostnames, home paths, hardware, local endpoints, model names) into code, docs, issues, commit messages or PR descriptions.
-9. **No secrets in the loop.** Never ask for, read, print or store a token or key. GitHub operations run through `gh` on the maintainer's machine; produce scripts, not requests for credentials.
+9. **No secrets in the loop.** Never ask for, read, print or store a token or key. The lead works in GitHub through the Claude GitHub App, whose credential the session injects unseen ([ADR-0004](docs/adr/0004-agent-roles.md#amendment-2026-11-03-the-lead-works-in-github-directly)); every other GitHub operation runs through `gh` on the maintainer's machine. Produce scripts, not requests for credentials.
 
 ## How to work
 

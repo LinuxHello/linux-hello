@@ -14,7 +14,7 @@ date: 2026-11-01
 
 ## Status
 
-Accepted, 2026-11-01. Amended 2026-11-01: Copilot may commit accepted suggestions.
+Accepted, 2026-11-01. Amended 2026-11-01: Copilot may commit accepted suggestions. Amended 2026-11-03: the lead reads and writes the organisation's repositories through the Claude GitHub App.
 
 ## Context
 
@@ -33,8 +33,21 @@ The workflow, the brief format and the status labels are in [AGENTS.md](../../AG
 
 Spikes stay with the lead: they need upstream research the local model cannot do offline.
 
+### Amendment 2026-11-03: the lead works in GitHub directly
+
+The lead reads and writes the LinuxHello organisation's repositories through the Claude GitHub App installed on the organisation, not through scripts run on the maintainer's machine.
+
+- **May:** read code, issues, pull requests, reviews, CI logs and attestations; create branches; push commits to its own branches and to pull request branches it reviews; open pull requests; comment on and label issues and pull requests.
+- **May not:** push to `main`, merge, approve its own pull requests, change branch protection, rulesets, secrets or repository settings, create tags or releases, or weaken a CI gate.
+- **DCO:** the lead's commits carry no `Signed-off-by:`, because an agent cannot certify the DCO. The maintainer certifies them before merge with `dco-signoff.sh <pr>`, as for Copilot coding-agent commits.
+- **Credentials:** the GitHub App's installation token is injected by the session's git proxy. The lead never sees, prints or stores it, so invariant 9 still holds: it never asks for or handles a token.
+
 ## Consequences
 
 **Easier:** most implementation runs locally at no cost and without sending code anywhere; briefs make each task small and checkable; review has one owner; the backlog and docs stay current because one agent is responsible for them.
+
+**Easier (amendment 2026-11-03):** the lead reads CI logs and review comments directly and pushes fixes without a patch-and-script round trip through the maintainer.
+
+**Harder (amendment 2026-11-03):** the lead's commits need the maintainer's DCO certification before merge; a cloud agent holding write access to the organisation is a new trust boundary, limited by branch protection on `main` and by the App's permissions, which the maintainer keeps to contents, pull requests, issues, checks and actions.
 
 **Harder:** Copilot commits made by its coding agent carry no DCO sign-off, so the maintainer certifies them before merge (AGENTS.md, Copilot suggestions and the DCO); the lead must write briefs small enough for the implementer's context window, which adds a step before every issue; review load on the lead grows with the implementer's error rate; security-sensitive code written by a weaker model needs closer review; three agents mean three sets of instructions to keep in line with `AGENTS.md`.
