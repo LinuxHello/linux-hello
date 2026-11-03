@@ -72,10 +72,10 @@ ruleset() { # id rules-json [include] [exclude] [enforcement]
     bypass_actors: [], rules: $rules}'
 }
 list() { jq -sc 'map({id, name, target, source_type, enforcement})' ; }
-pinned='[{"context":"quality-gate","integration_id":15368},{"context":"fuzz","integration_id":15368}]'
+pinned='[{"context":"quality-gate","integration_id":15368},{"context":"fuzz","integration_id":15368},{"context":"unsafe-policy","integration_id":15368}]'
 
 # ---------------------------------------------------------------------------
-t=ruleset_without_status_check_rule_gains_both_checks_pinned_to_github_actions
+t=ruleset_without_status_check_rule_gains_the_checks_pinned_to_github_actions
 new_case "$t"
 fixture repos/LinuxHello/linux-hello/rulesets/7 "$(ruleset 7 '[{"type":"deletion"}]')"
 fixture repos/LinuxHello/linux-hello/rulesets "$(ruleset 7 '[]' | list)"
@@ -90,7 +90,7 @@ fixture repos/LinuxHello/linux-hello/rulesets/7 "$(ruleset 7 '[{"type":"required
   "required_status_checks":[{"context":"fmt"},{"context":"quality-gate"},{"context":"dco","integration_id":15368}]}}]')"
 fixture repos/LinuxHello/linux-hello/rulesets "$(ruleset 7 '[]' | list)"
 run
-want='[{"context":"fmt"},{"context":"quality-gate","integration_id":15368},{"context":"dco","integration_id":15368},{"context":"fuzz","integration_id":15368}]'
+want='[{"context":"fmt"},{"context":"quality-gate","integration_id":15368},{"context":"dco","integration_id":15368},{"context":"fuzz","integration_id":15368},{"context":"unsafe-policy","integration_id":15368}]'
 strict="$(grep '^PUT' "$writes" | cut -d' ' -f3- | jq '.rules[0].parameters.strict_required_status_checks_policy' 2>/dev/null || true)"
 if [[ $status == 0 && "$(put_checks 7)" == "$(jq -c . <<<"$want")" && "$strict" == true ]]; then ok "$t"
 else nok "$t" "sent $(put_checks 7), strict $strict"; fi
@@ -108,7 +108,8 @@ else nok "$t" "sent $(put_checks 7)"; fi
 t=already_pinned_ruleset_is_not_written
 new_case "$t"
 fixture repos/LinuxHello/linux-hello/rulesets/7 "$(ruleset 7 "$(jq -c --argjson c "$pinned" -n \
-  '[{type:"required_status_checks",parameters:{strict_required_status_checks_policy:false,required_status_checks:$c}}]')")"
+  '[{type:"required_status_checks",parameters:{strict_required_status_checks_policy:false,required_status_checks:$c}},
+    {type:"pull_request",parameters:{required_approving_review_count:0,allowed_merge_methods:["squash"]}}]')")"
 fixture repos/LinuxHello/linux-hello/rulesets "$(ruleset 7 '[]' | list)"
 run
 if [[ $status == 0 && "$(ruleset_writes)" == 0 ]] && grep -q "already pinned" <<<"$out"; then ok "$t"
@@ -150,7 +151,7 @@ fixture repos/LinuxHello/linux-hello/branches/main/protection/required_status_ch
   '{"strict":true,"contexts":["fmt","quality-gate"],"checks":[{"context":"fmt","app_id":null},{"context":"quality-gate","app_id":null}]}'
 run
 sent="$(grep '^PATCH repos/LinuxHello/linux-hello/branches' "$writes" | cut -d' ' -f3- | jq -c .checks)"
-want='[{"context":"fmt","app_id":null},{"context":"quality-gate","app_id":15368},{"context":"fuzz","app_id":15368}]'
+want='[{"context":"fmt","app_id":null},{"context":"quality-gate","app_id":15368},{"context":"fuzz","app_id":15368},{"context":"unsafe-policy","app_id":15368}]'
 if [[ $status == 0 && "$sent" == "$(jq -c . <<<"$want")" ]]; then ok "$t"; else nok "$t" "sent $sent"; fi
 
 t=dry_run_writes_nothing
@@ -161,13 +162,33 @@ run --dry-run
 if [[ $status == 0 && ! -s "$writes" ]] && grep -q "Would PUT" <<<"$out"; then ok "$t"
 else nok "$t" "status $status, writes $(cat "$writes")"; fi
 
-t=squash_messages_use_pull_request_title_and_body
+t=repository_allows_squash_merges_only_with_title_and_body
 new_case "$t"
 fixture repos/LinuxHello/linux-hello/rulesets/7 "$(ruleset 7 '[]')"
 fixture repos/LinuxHello/linux-hello/rulesets "$(ruleset 7 '[]' | list)"
 run
-if grep -q '^PATCH repos/LinuxHello/linux-hello {"squash_merge_commit_title":"PR_TITLE","squash_merge_commit_message":"PR_BODY"}$' "$writes"
+if grep -q '^PATCH repos/LinuxHello/linux-hello {"allow_squash_merge":true,"allow_merge_commit":false,"allow_rebase_merge":false,"squash_merge_commit_title":"PR_TITLE","squash_merge_commit_message":"PR_BODY"}$' "$writes"
 then ok "$t"; else nok "$t" "writes $(cat "$writes")"; fi
+
+t=ruleset_allows_squash_merges_only_and_keeps_its_review_settings
+new_case "$t"
+fixture repos/LinuxHello/linux-hello/rulesets/7 "$(ruleset 7 '[{"type":"pull_request","parameters":{
+  "required_approving_review_count":0,"required_review_thread_resolution":true,
+  "allowed_merge_methods":["merge","squash","rebase"]}}]')"
+fixture repos/LinuxHello/linux-hello/rulesets "$(ruleset 7 '[]' | list)"
+run
+pr_rule="$(grep '^PUT' "$writes" | cut -d' ' -f3- | jq -c '.rules[] | select(.type == "pull_request") | .parameters' 2>/dev/null || true)"
+if [[ $status == 0 && "$pr_rule" == '{"required_approving_review_count":0,"required_review_thread_resolution":true,"allowed_merge_methods":["squash"]}' ]]
+then ok "$t"; else nok "$t" "sent $pr_rule"; fi
+
+t=ruleset_without_pull_request_rule_is_not_given_one
+new_case "$t"
+fixture repos/LinuxHello/linux-hello/rulesets/7 "$(ruleset 7 '[]')"
+fixture repos/LinuxHello/linux-hello/rulesets "$(ruleset 7 '[]' | list)"
+run
+added="$(grep '^PUT' "$writes" | cut -d' ' -f3- | jq '[.rules[] | select(.type == "pull_request")] | length' 2>/dev/null || true)"
+if [[ $status == 0 && "$added" == 0 ]] && grep -q "no pull_request rule" <<<"$out"; then ok "$t"
+else nok "$t" "status $status, pull_request rules sent: $added"; fi
 
 t=ruleset_excluding_main_by_pattern_is_not_selected
 new_case "$t"

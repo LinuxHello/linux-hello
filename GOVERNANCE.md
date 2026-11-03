@@ -43,8 +43,8 @@ Changes to upstream components (credentialsd, libwebauthn, Howdy, fprintd, KeePa
 
 ## Merging
 
-- All changes reach `main` through a pull request; squash merge only.
-- Required checks: fmt, clippy, test, cargo-deny, cargo-audit, unsafe-policy, fuzz, DCO, and the aggregate `quality-gate`. `quality-gate` and `fuzz` are pinned to the GitHub Actions app, so a status with the same name from another app or a commit status does not satisfy them ([`scripts/admin/apply-merge-settings.sh`](scripts/admin/apply-merge-settings.sh)).
+- All changes reach `main` through a pull request; squash merge only, set in both the repository settings and the ruleset ([`scripts/admin/apply-merge-settings.sh`](scripts/admin/apply-merge-settings.sh)).
+- Required checks: fmt, clippy, test, cargo-deny, cargo-audit, unsafe-policy, fuzz, DCO, and the aggregate `quality-gate`. `quality-gate`, `fuzz` and `unsafe-policy` are pinned to the GitHub Actions app, so a status with the same name from another app or a commit status does not satisfy them ([`scripts/admin/apply-merge-settings.sh`](scripts/admin/apply-merge-settings.sh)).
 - `quality-gate` passes only if every gate passed, and then signs a Sigstore attestation that the commit passed them. No pull request merges and no release is published without a valid quality-gate attestation ([ADR-0006](docs/adr/0006-attested-quality-gates-and-releases.md)). Pull requests from forks are attested after the maintainer pushes the reviewed branch to this repository.
 - Squash commits take the pull request title and its structured body ([pull request template](.github/pull_request_template.md)).
 - Code scanning: CodeQL (default setup) blocks a merge on errors and on high or critical security alerts. Dependency review and SonarQube Cloud run on every pull request; Sonar's quality gate becomes required once its check name is stable.
