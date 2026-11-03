@@ -1,27 +1,29 @@
 ## Intent
 
-<!-- One or two sentences of behaviour. -->
+<!-- The goal and the behaviour it achieves, in one or two sentences. Not a list of functions, parameters or files. This body becomes the squash commit message. -->
 
 Closes #
 
-## Affected containers
+## Process mapping
 
-<!-- crates/<name>, plasma/, security/, policy/, docs/ -->
+<!-- How the change fits the defined architecture and process. Link every source. -->
 
-## Tests
+- **Containers:** <!-- crates/<name>, plasma/, security/, policy/, docs/ -->
+- **Architecture and decisions:** <!-- the ADRs, target-architecture sections, workspace.dsl elements, policy-semantics rules, spike or brief this implements or relies on -->
+- **Security properties:** <!-- properties in docs/security/ added, changed or relied on, or "none". Say whether it touches unsafe, a dependency, D-Bus names, policy parsing or AppArmor. -->
+- **Docs changed with the code:** <!-- the notes, ADRs or workspace.dsl updated, or why none needed it -->
+- **Rollback:** <!-- how to undo it, and anything a revert does not undo -->
 
-<!-- Every test added or changed, by name. A behaviour change needs a test named after its property. -->
+## Acceptance criteria met
 
-## Security
+<!-- One line per criterion from the brief or issue, each with its proof: the test that states it, a command and its result, or a link. -->
 
-<!-- Does this touch a security property, unsafe, a dependency, D-Bus names, policy parsing or AppArmor? -->
+- [ ] <!-- criterion --> — proof: <!-- test name, or command and result -->
 
-## How to verify
+**Tests added or changed:** <!-- every one, by name; a behaviour change needs a test named after its property -->
 
-## Rollback
+**How to verify:** <!-- commands, with the toolchain they were run on -->
 
-## Checklist
-
-- [ ] Gates pass locally: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`, `cargo deny check`, `cargo audit`
-- [ ] Docs, architecture note, `workspace.dsl` or an ADR updated if behaviour changed
+- [ ] `make gates` passes locally: fmt, clippy, test, cargo-deny, cargo-audit, unsafe-policy, fuzz
+- [ ] The `quality-gate` check passed, so its attestation for the tested merge commit is signed and verified ([ADR-0006](../docs/adr/0006-attested-quality-gates-and-releases.md))
 - [ ] Every commit is signed off (`git commit -s`); tools named with `Assisted-by:`

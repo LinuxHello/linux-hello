@@ -7,8 +7,9 @@ Every commit must be signed off (`git commit -s`), certifying the [DCO](https://
 ## Workflow
 
 1. Open or pick an issue; it carries a `container:` label and a milestone.
-2. Branch from `main`, keep the change to one container where possible.
-3. Open a pull request. All required checks must pass; it is squash merged.
+2. Branch from `main`, keep the change to one container where possible. Run `make hooks` once so commits with unformatted code are refused.
+3. Run `make fix`, then `make gates`, which runs every CI gate locally, fuzzing included.
+4. Open a pull request using the template: intent, process mapping, acceptance criteria met. All required checks must pass, `quality-gate` included; it is squash merged.
 
 ## Rules
 

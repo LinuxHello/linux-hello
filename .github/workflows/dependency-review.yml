@@ -17,3 +17,7 @@ jobs:
           fail-on-severity: low
           # Same licence policy as deny.toml.
           allow-licenses: LGPL-3.0-or-later, LGPL-3.0-only, LGPL-2.1-or-later, Apache-2.0, MIT, BSD-2-Clause, BSD-3-Clause, ISC, Unicode-3.0, Zlib
+          # libfuzzer-sys is (MIT OR Apache-2.0) AND NCSA: NCSA covers the bundled LLVM
+          # libFuzzer, a permissive licence. It is linked only into the fuzz binaries in
+          # crates/*/fuzz, which are never released (ADR-0006). Exempt that package alone.
+          allow-dependencies-licenses: pkg:cargo/libfuzzer-sys

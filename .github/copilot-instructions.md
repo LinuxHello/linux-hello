@@ -8,12 +8,11 @@ Prefer review comments with suggestion blocks, which the maintainer can commit w
 
 ## Pull request summaries
 
-Fill the sections of [the pull request template](pull_request_template.md) from the diff:
+Fill the three sections of [the pull request template](pull_request_template.md) from the diff and the linked issue's brief. The body becomes the squash commit message, so delete the template's comments.
 
-- **Intent**: one or two sentences of behaviour, not a file list. Name the issue it closes (`Closes #N`).
-- **Affected containers**: from the paths changed (`crates/<name>`, `plasma/`, `security/`, `policy/`, `docs/`).
-- **Tests**: list every test added or changed by name; flag a behaviour change with no test.
-- **Security**: say whether the change touches a security property, `unsafe`, a dependency, D-Bus names, policy parsing or AppArmor profiles.
+- **Intent**: the goal and the behaviour achieved, in one or two sentences; not a list of functions, parameters or files. Name the issue it closes (`Closes #N`).
+- **Process mapping**: the containers from the paths changed (`crates/<name>`, `plasma/`, `security/`, `policy/`, `docs/`); the ADRs, architecture notes and security properties the change implements or relies on, linked; whether it touches `unsafe`, a dependency, D-Bus names, policy parsing or AppArmor profiles; the docs changed; rollback.
+- **Acceptance criteria met**: each criterion from the brief as a checklist item with its proof (the test that states it, or a command and its result); every test added or changed by name, flagging a behaviour change with no test; the gates, including the `quality-gate` attestation.
 - Plain, factual language; no superlatives.
 
 ## Commit messages
@@ -25,7 +24,7 @@ See [copilot-commit-message.md](copilot-commit-message.md).
 Review against AGENTS.md. Comment on, in this order:
 
 1. Broken invariants (PIN as root, keys never leave, fail closed, no `unsafe`, licence boundaries, public-repo hygiene).
-2. Behaviour without a test whose name states it.
+2. Behaviour without a test whose name states it; a parser without a fuzz target; a `quality-gate` check that did not pass.
 3. Error handling that weakens authentication or fails open.
 4. Anything else.
 

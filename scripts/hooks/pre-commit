@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Refuse a commit whose Rust code is not formatted. Install with `make hooks`.
+# The full gates run with `make gates` and in CI; this hook only keeps commits tidy.
+set -euo pipefail
+if git diff --cached --name-only --diff-filter=ACMR | grep -q '\.rs$'; then
+  cargo fmt --all --check || {
+    echo "Run 'make fix' (or cargo fmt --all) and stage the result." >&2
+    exit 1
+  }
+fi

@@ -72,15 +72,22 @@ pub enum DurationUnit {
     Days,
 }
 
-impl Duration {
-    pub fn total_seconds(&self) -> u64 {
-        let multiplier = match self.unit {
+impl DurationUnit {
+    fn seconds(self) -> u64 {
+        match self {
             DurationUnit::Seconds => 1,
             DurationUnit::Minutes => 60,
             DurationUnit::Hours => 3600,
             DurationUnit::Days => 86_400,
-        };
-        self.value * multiplier
+        }
+    }
+}
+
+impl Duration {
+    /// The duration in seconds. `parse` refuses any duration whose seconds do
+    /// not fit in a `u64`, so for a parsed policy this never saturates.
+    pub fn total_seconds(&self) -> u64 {
+        self.value.saturating_mul(self.unit.seconds())
     }
 }
 
@@ -123,6 +130,9 @@ fn parse_duration(s: &str) -> Result<Duration, String> {
     };
     if split + 1 != bytes.len() {
         return Err(format!("duration '{s}' has trailing characters after unit"));
+    }
+    if value.checked_mul(unit.seconds()).is_none() {
+        return Err(format!("duration '{s}' is too large"));
     }
     Ok(Duration { value, unit })
 }
@@ -287,6 +297,21 @@ methods = ["pin", "pin"]
         assert!(
             err.contains("duplicate method"),
             "expected duplicate error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn overflowing_duration_makes_file_unparseable() {
+        // u64::MAX / 86_400 + 1 = 213_503_982_334_602 days does not fit in u64 seconds.
+        let toml_str = r#"
+[context.unlock]
+methods = ["pin"]
+reverify_after = "213503982334602d"
+"#;
+        let err = parse(toml_str).unwrap_err();
+        assert!(
+            err.contains("too large"),
+            "expected overflow error, got: {err}"
         );
     }
 

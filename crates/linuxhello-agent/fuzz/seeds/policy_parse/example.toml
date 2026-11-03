@@ -1,0 +1,24 @@
+# Example admin-layer policy (/etc/linuxhello/policy.d/*.toml).
+# Draft schema; key names are proposals.
+[pin]
+min_length = 6
+digits = "required"
+special = "allowed"
+lockout_attempts = 5
+
+[methods]
+biometrics_allowed = true
+face_requires_ir = true
+
+[context.sudo]
+methods = ["pin"]
+
+[context.unlock]
+methods = ["face", "fingerprint", "pin"]
+reverify_after = "8h"
+
+[rp_class.banking]
+match = ["*.bank.example"]
+provider = "tpm"
+factors = 2
+require_second_credential = true

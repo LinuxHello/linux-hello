@@ -7,6 +7,7 @@ on:
 
 # Actions are pinned to commit SHAs; Dependabot updates the SHA and the version comment.
 # Runners are pinned to ubuntu-24.04 so a moving ubuntu-latest cannot change the gates.
+# Job ids equal their check names; scripts/ci/quality-gates.txt lists the gate jobs (ADR-0006).
 permissions:
   contents: read
 
@@ -43,14 +44,14 @@ jobs:
           toolchain: stable
       - run: cargo test --workspace
 
-  deny:
+  cargo-deny:
     name: cargo-deny
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
 
-  audit:
+  cargo-audit:
     name: cargo-audit
     runs-on: ubuntu-24.04
     steps:
@@ -60,6 +61,23 @@ jobs:
           toolchain: stable
       - run: cargo install cargo-audit --version 0.22.2 --locked
       - run: cargo audit
+
+  fuzz:
+    name: fuzz
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Each fuzz directory pins its own nightly in rust-toolchain.toml; the script installs it.
+      - run: cargo install cargo-fuzz --version 0.13.2 --locked
+      - name: Every fuzz target runs 60 seconds without a crash
+        run: scripts/ci/fuzz.sh 60
+      - name: Keep the crashing input
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fuzz-artifacts
+          path: "**/fuzz/artifacts/"
+          if-no-files-found: ignore
 
   unsafe-policy:
     name: unsafe-policy
@@ -90,3 +108,77 @@ jobs:
             fi
           done
           exit "$missing"
+
+  # The aggregate required check. It succeeds only if every gate in
+  # scripts/ci/quality-gates.txt succeeded (and dco, on pull requests), and then
+  # signs an attestation for the commit with Sigstore (ADR-0006).
+  quality-gate:
+    name: quality-gate
+    if: always() # a skipped required check counts as passed; this job must run and decide
+    needs: [fmt, clippy, test, cargo-deny, cargo-audit, unsafe-policy, fuzz, dco]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write # Sigstore signing certificate
+      attestations: write
+      artifact-metadata: write
+    env:
+      # The commit every gate job checked out: on a pull request, GitHub's merge
+      # commit of head into base; on main, the pushed commit. The head is recorded
+      # in the predicate, but only the commit actually tested is attested.
+      SUBJECT_SHA: ${{ github.sha }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Every gate passed
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+          EVENT: ${{ github.event_name }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+        run: |
+          set -euo pipefail
+          gates="$(grep -Ev '^\s*(#|$)' scripts/ci/quality-gates.txt)"
+          listed="$(printf '%s\ndco\n' "$gates" | sort)"
+          needed="$(jq -r 'keys[]' <<<"$NEEDS" | sort)"
+          if [ "$listed" != "$needed" ]; then
+            echo "::error::needs: of quality-gate and scripts/ci/quality-gates.txt (plus dco) differ"
+            exit 1
+          fi
+          failed=0
+          for gate in $gates; do
+            result="$(jq -r --arg g "$gate" '.[$g].result' <<<"$NEEDS")"
+            [ "$result" = success ] || { echo "::error::$gate: $result"; failed=1; }
+          done
+          if [ "$EVENT" = pull_request ]; then
+            result="$(jq -r '.dco.result' <<<"$NEEDS")"
+            [ "$result" = success ] || { echo "::error::dco: $result"; failed=1; }
+          fi
+          if [ "$HEAD_REPO" != "$GITHUB_REPOSITORY" ]; then
+            echo "::error::Pull requests from forks cannot be attested (no OIDC token). The maintainer pushes the branch to this repository to attest it (ADR-0006)."
+            failed=1
+          fi
+          exit "$failed"
+      - name: Build the subject and predicate
+        env:
+          EVENT: ${{ github.event_name }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/qg"
+          scripts/ci/quality-gate-subject.sh "$SUBJECT_SHA" > "$RUNNER_TEMP/qg/quality-gate-$SUBJECT_SHA.json"
+          jq -n --arg sha "$SUBJECT_SHA" --arg head "$HEAD_SHA" --arg ref "$GITHUB_REF" --arg event "$EVENT" \
+            --arg run "$RUN_URL" --arg toolchain "$(grep '^channel' rust-toolchain.toml | cut -d'"' -f2)" \
+            --rawfile gates scripts/ci/quality-gates.txt \
+            '{commit: $sha, head: $head, ref: $ref, event: $event, run: $run, toolchain: $toolchain,
+              passed: ($gates | split("\n") | map(select(test("^\\s*(#|$)") | not)))}' \
+            > "$RUNNER_TEMP/qg/predicate.json"
+          cat "$RUNNER_TEMP/qg/predicate.json"
+      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: ${{ runner.temp }}/qg/quality-gate-${{ env.SUBJECT_SHA }}.json
+          predicate-type: https://github.com/LinuxHello/linux-hello/blob/main/docs/adr/0006-attested-quality-gates-and-releases.md#quality-gate-v1
+          predicate-path: ${{ runner.temp }}/qg/predicate.json
+      - name: The attestation verifies
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/ci/verify-quality-gate.sh "$SUBJECT_SHA" "$GITHUB_REF"
