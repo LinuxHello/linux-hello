@@ -123,11 +123,13 @@ jobs:
       attestations: write
       artifact-metadata: write
     env:
-      SUBJECT_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      # The commit every gate job checked out: on a pull request, GitHub's merge
+      # commit of head into base; on main, the pushed commit. The head is recorded
+      # in the predicate, but only the commit actually tested is attested.
+      SUBJECT_SHA: ${{ github.sha }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ env.SUBJECT_SHA }}
       - name: Every gate passed
         env:
           NEEDS: ${{ toJSON(needs) }}
@@ -164,10 +166,10 @@ jobs:
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/qg"
           scripts/ci/quality-gate-subject.sh "$SUBJECT_SHA" > "$RUNNER_TEMP/qg/quality-gate-$SUBJECT_SHA.json"
-          jq -n --arg sha "$SUBJECT_SHA" --arg ref "$GITHUB_REF" --arg event "$EVENT" \
+          jq -n --arg sha "$SUBJECT_SHA" --arg head "$HEAD_SHA" --arg ref "$GITHUB_REF" --arg event "$EVENT" \
             --arg run "$RUN_URL" --arg toolchain "$(grep '^channel' rust-toolchain.toml | cut -d'"' -f2)" \
             --rawfile gates scripts/ci/quality-gates.txt \
-            '{commit: $sha, ref: $ref, event: $event, run: $run, toolchain: $toolchain,
+            '{commit: $sha, head: $head, ref: $ref, event: $event, run: $run, toolchain: $toolchain,
               passed: ($gates | split("\n") | map(select(test("^\\s*(#|$)") | not)))}' \
             > "$RUNNER_TEMP/qg/predicate.json"
           cat "$RUNNER_TEMP/qg/predicate.json"

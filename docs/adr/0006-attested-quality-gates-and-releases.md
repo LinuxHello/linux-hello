@@ -39,18 +39,18 @@ A **passed quality gate** for a commit means every CI job listed in [`scripts/ci
 
 - **Subject:** a canonical JSON file `{"commit","gates","repository","type":"quality-gate/v1"}`, printed by [`scripts/ci/quality-gate-subject.sh`](../../scripts/ci/quality-gate-subject.sh). It is deterministic, so anyone can rebuild it from the commit. A Git commit cannot be the subject directly, because `actions/attest` takes only sha256 digests.
 - **Predicate type:** `https://github.com/LinuxHello/linux-hello/blob/main/docs/adr/0006-attested-quality-gates-and-releases.md#quality-gate-v1`
-- **Predicate:** commit, ref, event, run URL, Rust toolchain, gates passed.
-- **Signed by:** `.github/workflows/ci.yml` on a GitHub-hosted runner. A commit on `main` is bound by `source-ref refs/heads/main` and `source-digest <commit>`. A pull request head is bound by `source-ref refs/pull/<n>/merge`.
-- **Verify:** `scripts/ci/verify-quality-gate.sh <commit> [ref]` or `make verify-gate SHA=<commit>`.
+- **Predicate:** commit, pull request head, ref, event, run URL, Rust toolchain, gates passed.
+- **Signed by:** `.github/workflows/ci.yml` on a GitHub-hosted runner. The attested commit is always the one the gate jobs checked out. On `main` that is the pushed commit (`source-ref refs/heads/main`). On a pull request it is GitHub's merge commit of the head into the base (`source-ref refs/pull/<n>/merge`), with the head recorded in the predicate. Either way, `source-digest <commit>` binds the certificate to it.
+- **Verify:** `scripts/ci/verify-quality-gate.sh <commit> [ref]` or `make verify-gate SHA=<commit>`. The script downloads the bundle and verifies it locally, because the attestations API refuses a custom predicate type as a lookup filter (HTTP 422).
 
 ### Merge and release requirements
 
-- **Merge:** `quality-gate` is a required status check. Because it succeeds only after the attestation for the pull request's head commit is signed and verified, a pull request cannot merge without one. Reviewers (lead, Copilot, maintainer) confirm the check passed. Anyone can re-verify with the script.
+- **Merge:** `quality-gate` is a required status check. Because it succeeds only after the attestation for the commit the gates tested is signed and verified, a pull request cannot merge without one. Reviewers (lead, Copilot, maintainer) confirm the check passed. Anyone can re-verify with the script.
 - **Squash commits:** a squash merge creates a new commit, so the push to `main` runs CI again and attests the commit that actually ships. Squash commit messages take the pull request title and body (repository setting, [`scripts/admin/apply-merge-settings.sh`](../../scripts/admin/apply-merge-settings.sh)).
 - **Release:** a crate tag (`agent-v0.1.0`) triggers [`release.yml`](../../.github/workflows/release.yml). Nothing is published unless:
   1. the tagged commit is on `main` and its quality-gate attestation verifies;
   2. binaries (bin and cdylib targets), a source archive, `SHA256SUMS` and a CycloneDX 1.5 SBOM (`cargo-cyclonedx` 0.5.9, every dependency at its `Cargo.lock` version) are built from it;
-  3. SLSA build provenance is signed for every file, and an SBOM attestation for the binaries and the source archive;
+  3. SLSA build provenance is signed for every file, `SHA256SUMS` included, and an SBOM attestation for the binaries and the source archive;
   4. a separate publish job, which alone can write releases, re-checks every checksum and attestation before it creates the GitHub release.
 
 ### What this ADR does not adopt from the original proposal

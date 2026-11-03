@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
 # Verify that CI attested a passed quality gate for a commit (ADR-0006).
 #
-#   scripts/ci/verify-quality-gate.sh <commit-sha>                 a commit on main
-#   scripts/ci/verify-quality-gate.sh <commit-sha> refs/pull/N/merge   a pull request head
+#   scripts/ci/verify-quality-gate.sh <commit-sha>                     a commit on main
+#   scripts/ci/verify-quality-gate.sh <merge-sha> refs/pull/N/merge    a pull request run
 #
-# Rebuilds the subject from the commit, then checks with `gh attestation verify`
-# that a Sigstore-signed attestation for it exists, was signed by this
-# repository's CI workflow on a GitHub-hosted runner, carries the quality-gate
-# predicate type and comes from the given ref. Exits non-zero otherwise.
+# Rebuilds the subject from the commit, downloads the attestations for it, and
+# checks the bundle locally with `gh attestation verify`: signed with Sigstore by
+# this repository's CI workflow on a GitHub-hosted runner, quality-gate predicate
+# type, from the given ref and that exact commit. Exits non-zero otherwise.
+# The bundle is verified locally because the attestations API refuses a custom
+# predicate type as a lookup filter (HTTP 422).
 # Needs gh (any login; attestations of a public repository are public) and jq.
 set -euo pipefail
 
@@ -26,14 +28,17 @@ git -C "$root" cat-file -e "$sha^{commit}" 2>/dev/null || git -C "$root" fetch -
 
 args=(
   --repo "$repo"
+  --source-digest "$sha"
   --signer-workflow "$repo/.github/workflows/ci.yml"
   --predicate-type "$predicate"
   --source-ref "$ref"
   --deny-self-hosted-runners
 )
-# On main the signing run's commit is the commit itself. A pull request run
-# signs from the merge ref, whose commit differs from the head named in the subject.
-[[ "$ref" = "refs/heads/main" ]] && args+=(--source-digest "$sha")
+subject="$work/quality-gate-$sha.json"
+digest="$(sha256sum "$subject" | cut -d' ' -f1)"
+(cd "$work" && gh attestation download "$subject" --repo "$repo" >/dev/null)
+bundle="$work/sha256:$digest.jsonl"
+[[ -s "$bundle" ]] || { echo "No attestation found for $sha" >&2; exit 1; }
 
-gh attestation verify "$work/quality-gate-$sha.json" "${args[@]}"
+gh attestation verify "$subject" --bundle "$bundle" "${args[@]}"
 echo "Quality gate attested for $sha ($ref)."

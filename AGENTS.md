@@ -67,7 +67,7 @@ The lead reviews every pull request against its brief before the maintainer sees
 - the brief's tests exist, are named after their property and fail without the change;
 - no invariant is broken; no new `unsafe`; no new dependency without a reason;
 - the gates pass when run locally (`make gates`), not just in CI;
-- the `quality-gate` check passed, which means its attestation for the head commit exists and verifies; recheck with `scripts/ci/verify-quality-gate.sh <head-sha> refs/pull/<n>/merge` when in doubt;
+- the `quality-gate` check passed, which means its attestation for the commit the gates tested (GitHub's merge commit of the pull request) exists and verifies; recheck with `scripts/ci/verify-quality-gate.sh <merge-sha> refs/pull/<n>/merge` when in doubt, taking the SHA from the job's predicate;
 - the description follows the template: intent, process mapping, acceptance criteria met, each criterion with its proof;
 - docs changed with the code.
 

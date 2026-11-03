@@ -25,5 +25,5 @@ Closes #
 **How to verify:** <!-- commands, with the toolchain they were run on -->
 
 - [ ] `make gates` passes locally: fmt, clippy, test, cargo-deny, cargo-audit, unsafe-policy, fuzz
-- [ ] The `quality-gate` check passed, so its attestation for the head commit is signed and verified ([ADR-0006](../docs/adr/0006-attested-quality-gates-and-releases.md))
+- [ ] The `quality-gate` check passed, so its attestation for the tested merge commit is signed and verified ([ADR-0006](../docs/adr/0006-attested-quality-gates-and-releases.md))
 - [ ] Every commit is signed off (`git commit -s`); tools named with `Assisted-by:`

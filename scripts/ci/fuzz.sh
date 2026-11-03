@@ -35,7 +35,11 @@ for dir in "${fuzz_dirs[@]}"; do
   channel="$(sed -n 's/^channel *= *"\(.*\)"/\1/p' rust-toolchain.toml)"
   [[ -n "$channel" ]] || { echo "$dir/rust-toolchain.toml names no channel" >&2; exit 1; }
   rustup toolchain install "$channel" --profile minimal >/dev/null
-  for target in $(cargo fuzz list --fuzz-dir .); do
+  # A separate assignment, so a failing `cargo fuzz list` stops the script
+  # (set -e does not see failures inside a for-loop word list).
+  targets="$(cargo fuzz list --fuzz-dir .)"
+  [[ -n "$targets" ]] || { echo "$dir has no fuzz targets" >&2; exit 1; }
+  for target in $targets; do
     echo "::group::fuzz $dir/$target (${seconds}s)"
     mkdir -p "corpus/$target"
     seeds=()

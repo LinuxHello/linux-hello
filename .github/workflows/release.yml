@@ -50,12 +50,17 @@ jobs:
       - run: cargo install cargo-cyclonedx --version 0.5.9 --locked
       - name: Build binaries, source archive and SBOM
         run: scripts/ci/release-build.sh "$GITHUB_REF_NAME"
-      - name: List the files the SBOM describes
-        run: grep -v '\.cdx\.json$' dist/SHA256SUMS > "$RUNNER_TEMP/sbom-subjects.txt"
-      - name: Build provenance for every file
+      - name: List the attestation subjects
+        run: |
+          set -euo pipefail
+          # Provenance: every file listed in SHA256SUMS, and SHA256SUMS itself.
+          { cat dist/SHA256SUMS; (cd dist && sha256sum SHA256SUMS); } > "$RUNNER_TEMP/provenance-subjects.txt"
+          # SBOM: the binaries and the source archive.
+          grep -v '\.cdx\.json$' dist/SHA256SUMS > "$RUNNER_TEMP/sbom-subjects.txt"
+      - name: Build provenance for every file, SHA256SUMS included
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
-          subject-checksums: dist/SHA256SUMS
+          subject-checksums: ${{ runner.temp }}/provenance-subjects.txt
       - name: SBOM attestation for the binaries and source archive
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
@@ -81,7 +86,7 @@ jobs:
       - name: Checksums match
         working-directory: dist
         run: sha256sum --check --strict SHA256SUMS
-      - name: Every file has provenance; binaries and source have an SBOM attestation
+      - name: Every file, SHA256SUMS included, has provenance; binaries and source have an SBOM attestation
         working-directory: dist
         env:
           GH_TOKEN: ${{ github.token }}
@@ -90,6 +95,7 @@ jobs:
           set -euo pipefail
           common=(--repo "$REPO" --signer-workflow "$REPO/.github/workflows/release.yml"
                   --source-ref "$GITHUB_REF" --source-digest "$GITHUB_SHA" --deny-self-hosted-runners)
+          gh attestation verify SHA256SUMS "${common[@]}"
           while read -r _ file; do
             gh attestation verify "$file" "${common[@]}"
             case "$file" in
