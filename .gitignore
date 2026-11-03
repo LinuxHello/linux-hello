@@ -16,3 +16,6 @@ docs/.trash/
 clippy-report.json
 lcov.info
 .scannerwork/
+
+# Release builds (scripts/ci/release-build.sh)
+/dist/

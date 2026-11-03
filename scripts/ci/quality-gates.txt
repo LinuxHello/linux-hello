@@ -1,0 +1,10 @@
+# The CI jobs that make up a passed quality gate (ADR-0006). One job name per line.
+# The quality-gate job attests a commit only when every one of these succeeded.
+# Changing this list changes what the attestation for later commits claims.
+fmt
+clippy
+test
+cargo-deny
+cargo-audit
+unsafe-policy
+fuzz

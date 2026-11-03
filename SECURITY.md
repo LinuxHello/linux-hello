@@ -35,6 +35,24 @@ The project has a single maintainer. These are targets, not guarantees. If one s
 - If the root cause is in an upstream component, we report it to that project, and the embargo follows their process as well as ours.
 - There is no bug bounty.
 
+## Verifying a release
+
+Every release file is built by this repository's release workflow from a tagged commit on `main` that passed the quality gate. Each file carries Sigstore-signed attestations ([ADR-0006](docs/adr/0006-attested-quality-gates-and-releases.md)). Verify a file before you use it (GitHub CLI 2.49 or later):
+
+```sh
+# Provenance: built by release.yml from this tag on a GitHub-hosted runner
+gh attestation verify <file> --repo LinuxHello/linux-hello \
+  --signer-workflow LinuxHello/linux-hello/.github/workflows/release.yml \
+  --source-ref refs/tags/<tag> --deny-self-hosted-runners
+
+# SBOM: the attested dependency list for a binary or the source archive
+gh attestation verify <file> --repo LinuxHello/linux-hello \
+  --signer-workflow LinuxHello/linux-hello/.github/workflows/release.yml \
+  --predicate-type https://cyclonedx.org/bom
+```
+
+`<tag>.cdx.json` in the release is the CycloneDX SBOM, and `SHA256SUMS` lists every file's digest. A file that fails verification did not come from this project: do not use it, and report it as a vulnerability.
+
 ## Supported versions
 
 | Version | Supported |

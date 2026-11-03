@@ -1,0 +1,27 @@
+# Fuzz targets for the Agent. A separate workspace on a pinned nightly toolchain
+# (rust-toolchain.toml here), because cargo-fuzz needs nightly sanitizer flags.
+# Run with `make fuzz` from the repository root.
+[package]
+name = "linuxhello-agent-fuzz"
+version = "0.0.0"
+edition = "2021"
+license = "LGPL-3.0-or-later"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[workspace]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.linuxhello-agent]
+path = ".."
+
+[[bin]]
+name = "policy_parse"
+path = "fuzz_targets/policy_parse.rs"
+test = false
+doc = false
+bench = false

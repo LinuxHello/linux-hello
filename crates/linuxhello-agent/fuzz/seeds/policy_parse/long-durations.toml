@@ -1,0 +1,8 @@
+# Seed: long numeric durations in every unit, near but below the u64-seconds limit.
+[context.unlock]
+methods = ["pin"]
+reverify_after = "18446744073709551s"
+
+[context.sudo]
+methods = ["pin"]
+reverify_after = "213503982334d"

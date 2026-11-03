@@ -27,7 +27,7 @@ Roles are fixed by [ADR-0004](docs/adr/0004-agent-roles.md). Know which one you 
 
 | Role | Agent | Does | Does not |
 | :-- | :-- | :-- | :-- |
-| **Implementer** | Local model via Claude Code | Implements one issue from its brief: tests first, then code; runs the gates; opens a pull request | Pick issues without a brief; change scope; touch files the brief does not list; edit `docs/adr/` or CI |
+| **Implementer** | Local model via Claude Code | Implements one issue from its brief: tests first, then code; runs `make fix` and `make gates`; opens a pull request | Pick issues without a brief; change scope; touch files the brief does not list; edit `docs/adr/` or CI |
 | **Lead** | Claude | Writes briefs; keeps labels, milestones and `docs/` current; reviews and fixes pull requests; runs spikes | Merge |
 | **Assistant** | GitHub Copilot | Pull request summaries; commit messages for hand-made commits; review comments with suggested changes | Push commits unless the maintainer asks it to |
 | **Maintainer** | @atterdag | Decides and merges | — |
@@ -66,7 +66,9 @@ The lead reviews every pull request against its brief before the maintainer sees
 
 - the brief's tests exist, are named after their property and fail without the change;
 - no invariant is broken; no new `unsafe`; no new dependency without a reason;
-- the gates pass when run locally, not just in CI;
+- the gates pass when run locally (`make gates`), not just in CI;
+- the `quality-gate` check passed, which means its attestation for the head commit exists and verifies; recheck with `scripts/ci/verify-quality-gate.sh <head-sha> refs/pull/<n>/merge` when in doubt;
+- the description follows the template: intent, process mapping, acceptance criteria met, each criterion with its proof;
 - docs changed with the code.
 
 Small faults the lead fixes by pushing to the pull request branch; larger ones go back to the implementer with a review comment. Copilot's review and the code scanners are a second opinion, not a substitute.
@@ -115,7 +117,7 @@ Never propose or write anything that breaks these. If a task seems to need it, s
 
 ## Gates
 
-CI runs these on every pull request; all are required. Run them before you call a change done:
+CI runs these on every pull request; all are required. After writing code, run `make fix` (rustfmt, then clippy's machine-applicable fixes) and fix what remains by hand. Then run `make gates`, which runs exactly the CI gates, before you squash, push or call a change done:
 
 ```sh
 cargo fmt --all --check
@@ -123,17 +125,25 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 cargo deny check
 cargo audit
+bash scripts/ci/unsafe-policy.sh
+scripts/ci/fuzz.sh 60          # every cargo-fuzz target, 60 s each, pinned nightly
 ```
+
+The `quality-gate` check passes only when all of these passed. It then signs a Sigstore attestation for the commit ([ADR-0006](docs/adr/0006-attested-quality-gates-and-releases.md)). The gate list is [`scripts/ci/quality-gates.txt`](scripts/ci/quality-gates.txt), and `make verify-gate SHA=<commit>` checks the attestation for a commit on `main`.
 
 CI also runs CodeQL (security), dependency review (new vulnerable or disallowed dependencies) and SonarQube Cloud (code quality and coverage). Treat their findings like a failing test: fix the cause, or explain in the pull request why it is a false positive.
 
-Fuzzing is required for every parser once one exists. Never weaken, skip or bypass a gate, a lint level or a test to get green; fix the cause or stop and report it.
+**Fuzzing.** Every parser of untrusted or admin-supplied input has a cargo-fuzz target in its crate's `fuzz/` directory, seeded with inputs near the limits it checks, and the `fuzz` gate runs it. A crash the fuzzer finds also gets a unit test named after the property it breaks. Never weaken, skip or bypass a gate, a lint level or a test to get green; fix the cause or stop and report it.
 
 **Report results honestly.** Mark every change *tested* or *untested*, with the toolchain version and the exact command. "Compiles" is not "tested". A test you did not run did not pass.
 
 ## Commits and pull requests
 
 - `main` is protected: branch, open a pull request, squash merge. Never push to `main`.
+- The pull request description has exactly the three sections of the [template](.github/pull_request_template.md), and it becomes the squash commit message:
+  1. **Intent**: the goal and the behaviour achieved, not a list of functions or parameters changed.
+  2. **Process mapping**: the containers, ADRs, architecture notes, security properties and brief the change implements or relies on, linked.
+  3. **Acceptance criteria met**: every criterion from the brief as a checklist item with its proof (the test that states it, or the command and its result), then the tests, how to verify and the gates.
 - Every commit carries `Signed-off-by:` (`git commit -s`) from the human who submits it, certifying the [DCO](https://developercertificate.org/). An agent runs `git commit -s` only in a session that human started and with that human's git identity; it never adds a sign-off for anyone else.
 - Commits on `main` are signed.
 - Name the tool that produced a substantial part of a change with a trailer, one per tool:

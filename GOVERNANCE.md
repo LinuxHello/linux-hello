@@ -44,7 +44,13 @@ Changes to upstream components (credentialsd, libwebauthn, Howdy, fprintd, KeePa
 ## Merging
 
 - All changes reach `main` through a pull request; squash merge only.
-- Required checks: format, clippy, tests, cargo-deny, cargo-audit, DCO.
+- Required checks: fmt, clippy, test, cargo-deny, cargo-audit, unsafe-policy, fuzz, DCO, and the aggregate `quality-gate`.
+- `quality-gate` passes only if every gate passed, and then signs a Sigstore attestation that the commit passed them. No pull request merges and no release is published without a valid quality-gate attestation ([ADR-0006](docs/adr/0006-attested-quality-gates-and-releases.md)). Pull requests from forks are attested after the maintainer pushes the reviewed branch to this repository.
+- Squash commits take the pull request title and its structured body ([pull request template](.github/pull_request_template.md)).
 - Code scanning: CodeQL (default setup) blocks a merge on errors and on high or critical security alerts. Dependency review and SonarQube Cloud run on every pull request; Sonar's quality gate becomes required once its check name is stable.
 - Roles of the coding agents and the review flow: [ADR-0004](docs/adr/0004-agent-roles.md).
 - Commits on `main` are signed.
+
+## Releases
+
+A release is a crate tag (`agent-v0.1.0`) on a commit on `main`. The release workflow publishes it only after it has verified that commit's quality-gate attestation, built the binaries, a source archive and a CycloneDX SBOM, signed build provenance and an SBOM attestation, and verified both ([ADR-0006](docs/adr/0006-attested-quality-gates-and-releases.md)). How users verify a release: [SECURITY.md](SECURITY.md#verifying-a-release). Until an external audit, every release is marked pre-release.
