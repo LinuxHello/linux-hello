@@ -12,7 +12,7 @@ pub struct Layer {
     pub methods: Option<MethodsPolicy>,
     #[serde(default)]
     pub context: HashMap<String, ContextPolicy>,
-    #[serde(default)]
+        #[serde(default)]
     pub rp_class: HashMap<String, RpClassPolicy>,
 }
 
