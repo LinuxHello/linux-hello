@@ -25,7 +25,8 @@ Review against AGENTS.md. Comment on, in this order:
 
 1. Broken invariants (PIN as root, keys never leave, fail closed, no `unsafe`, licence boundaries, public-repo hygiene).
 2. Behaviour without a test whose name states it; a parser without a fuzz target; a `quality-gate` check that did not pass.
-3. Error handling that weakens authentication or fails open.
-4. Anything else.
+3. A doc comment that contradicts the code or the architecture notes, or a C4 tag that names the wrong element (the gate checks that they exist, not that they are true).
+4. Error handling that weakens authentication or fails open.
+5. Anything else.
 
 Do not suggest disabling a lint, a test or a CI check.

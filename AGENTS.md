@@ -10,16 +10,16 @@ Linux Hello is a session credential broker for the Linux desktop. The user unloc
 
 The maintainer (@atterdag) owns the architecture, the threat model and every merge, and reviews **behaviour, tests and test results**, not Rust. Write code that can be trusted without being read: the tests and their names are the review surface.
 
-| Path | Container |
-| :-- | :-- |
-| `crates/linuxhello-dbus` | Shared D-Bus names and types; the only coupling between containers |
-| `crates/linuxhello-agent` | Agent: unlock and auth state, routing policy, PIN, enrolment, reset |
-| `crates/pam-linuxhello` | PAM module: parallel face, fingerprint and PIN |
-| `crates/linuxhello-tpm-provider` | credentialsd provider for device-bound passkeys |
-| `crates/linuxhello-kpxc-bridge` | credentialsd provider for portable passkeys from KeePassXC |
-| `crates/linuxhello-ctl` | CLI |
-| `plasma/`, `security/`, `policy/` | Plasma integration; AppArmor, Tetragon, alerts; policy schema |
-| `docs/` | Obsidian vault: architecture, ADRs, spikes, threat model, security properties |
+| Path | Container | C4 element in `workspace.dsl` |
+| :-- | :-- | :-- |
+| `crates/linuxhello-dbus` | Shared D-Bus names and types; the only coupling between containers | component `dbusApi` |
+| `crates/linuxhello-agent` | Agent: unlock and auth state, routing policy, PIN, enrolment, reset | container `agent` |
+| `crates/pam-linuxhello` | PAM module: parallel face, fingerprint and PIN | container `pamModule` |
+| `crates/linuxhello-tpm-provider` | credentialsd provider for device-bound passkeys | container `tpmProvider` |
+| `crates/linuxhello-kpxc-bridge` | credentialsd provider for portable passkeys from KeePassXC | container `kpxcBridge` |
+| `crates/linuxhello-ctl` | CLI | container `cli` |
+| `plasma/`, `security/`, `policy/` | Plasma integration; AppArmor, Tetragon, alerts; policy schema | `plasma`, `secProfiles`, `policyStore` |
+| `docs/` | Obsidian vault: architecture, ADRs, spikes, threat model, security properties | — |
 
 ## Roles and workflow
 
@@ -46,6 +46,8 @@ flowchart LR
 ```
 
 Spikes skip the implementer: the lead takes them from `status:needs-brief` to `status:in-review` directly.
+
+Every open issue also carries exactly one `priority:` label (`now`, `next`, `later`), and dependencies are GitHub *blocked by* links, not prose. The next issue in a lane is the one with the highest priority and no open blocker, lowest number first; `make next` shows it. The lead keeps `make backlog-check` clean. Details: [The backlog](docs/project/backlog.md).
 
 ### The brief
 
@@ -111,6 +113,7 @@ Never propose or write anything that breaks these. If a task seems to need it, s
 - **Spikes before code.** Milestone 0 answers the unverified assumptions in `docs/spikes/`. Do not write implementation that depends on an open spike; name the spike that blocks it.
 - **Security properties first.** Every security behaviour is a plain-language property in `docs/security/` with a test whose name states it, e.g. `caller_from_other_origin_is_refused`. Write the property and the failing test before the code.
 - **Small PRs, one container where possible.** Each PR states intent, affected containers, tests added, how to verify, and rollback.
+- **Document every item, and name its C4 element.** See [Code documentation](#code-documentation).
 - **Docs change with code.** A behaviour change updates the architecture note, the C4 workspace or an ADR in the same PR. Flag drift when you see it.
 - **Check versions before trusting an API.** credentialsd is pre-release; tss-esapi, zbus, cxx-qt and the PAM crates change between versions. Read `Cargo.lock`, then the docs for that version.
 - **Automate.** Prefer Makefile targets and scripts that check their own prerequisites over sequences of manual commands. Scripts are idempotent and fail closed.
@@ -128,6 +131,8 @@ cargo deny check
 cargo audit
 bash scripts/ci/unsafe-policy.sh
 scripts/ci/fuzz.sh 60          # every cargo-fuzz target, 60 s each, pinned nightly
+RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --document-private-items
+bash scripts/ci/test-c4-docs.sh && bash scripts/ci/c4-docs.sh   # C4 tags (ADR-0008)
 ```
 
 The `quality-gate` check passes only when all of these passed. It then signs a Sigstore attestation for the commit ([ADR-0006](docs/adr/0006-attested-quality-gates-and-releases.md)). The gate list is [`scripts/ci/quality-gates.txt`](scripts/ci/quality-gates.txt), and `make verify-gate SHA=<commit>` checks the attestation for a commit on `main`.
@@ -137,6 +142,28 @@ CI also runs CodeQL (security), dependency review (new vulnerable or disallowed 
 **Fuzzing.** Every parser of untrusted or admin-supplied input has a cargo-fuzz target in its crate's `fuzz/` directory, seeded with inputs near the limits it checks, and the `fuzz` gate runs it. A crash the fuzzer finds also gets a unit test named after the property it breaks. Never weaken, skip or bypass a gate, a lint level or a test to get green; fix the cause or stop and report it.
 
 **Report results honestly.** Mark every change *tested* or *untested*, with the toolchain version and the exact command. "Compiles" is not "tested". A test you did not run did not pass.
+
+## Code documentation
+
+Every item is documented, and the code names the C4 element it implements ([ADR-0008](docs/adr/0008-code-documentation-mapped-to-c4.md)). Clippy and the `docs` gate enforce it.
+
+| C4 level | Rust | Rule |
+| :-- | :-- | :-- |
+| 1 System context | — | `docs/architecture/workspace.dsl` and the target architecture; never in code |
+| 2 Container | crate | The crate root (`lib.rs`, `main.rs`) opens with `//!` docs: what the container does, then ``//! C4 container: `<id>` `` |
+| 3 Component | module declared in the crate root | Its own file, opening with `//!` docs: responsibility, collaborators, then ``//! C4 component: `<id>` ``, a component of the crate's container |
+| 4 Code | nested modules, structs, enums, traits, fields, variants, functions, methods, constants | `///` on every one, private ones included |
+
+`<id>` is the identifier in `workspace.dsl`. A new top-level module needs its component in `workspace.dsl` first; add it in the same pull request. Diagrams stay in `workspace.dsl`; do not draw C4 diagrams in doc comments.
+
+What a doc comment says:
+
+- **Types and fields:** what the value means and its valid range or states, in the terms of the architecture notes (for policy, the words of `policy-semantics.md`).
+- **Functions:** what it does and what it refuses. Add `# Errors` when it returns `Result`, `# Panics` when it can panic, `# Safety` on an `unsafe fn`, and a `// SAFETY:` comment on every `unsafe` block.
+- **Security-relevant code:** the property it upholds, by the name of its test in `docs/security/`.
+- Not the obvious (`/// Returns the value.`), not the history of the change, no superlatives.
+
+Test code is exempt: a test's name is its documentation.
 
 ## Commits and pull requests
 

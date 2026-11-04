@@ -8,3 +8,4 @@ cargo-deny
 cargo-audit
 unsafe-policy
 fuzz
+docs
