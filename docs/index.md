@@ -21,6 +21,7 @@ This folder is an Obsidian vault and renders on GitHub. Links are standard relat
 | Spikes (Milestone 0) | [Spikes](spikes/) |
 | Security | [Threat model and properties](security/) |
 | Governance | [GOVERNANCE.md](../GOVERNANCE.md), [SECURITY.md](../SECURITY.md), [CONTRIBUTING.md](../CONTRIBUTING.md) |
+| Backlog | [How the backlog is ordered and what is next](project/backlog.md) |
 | Working with Claude | [Project instructions](project/claude-project-instructions.md) |
 
 ## Conventions

@@ -47,6 +47,8 @@ flowchart LR
 
 Spikes skip the implementer: the lead takes them from `status:needs-brief` to `status:in-review` directly.
 
+Every open issue also carries exactly one `priority:` label (`now`, `next`, `later`), and dependencies are GitHub *blocked by* links, not prose. The next issue in a lane is the one with the highest priority and no open blocker, lowest number first; `make next` shows it. The lead keeps `make backlog-check` clean. Details: [The backlog](docs/project/backlog.md).
+
 ### The brief
 
 The lead posts the brief as an issue comment headed `## Implementation brief`. It must fit a small context window, so it is self-contained:
