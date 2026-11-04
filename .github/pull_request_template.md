@@ -24,6 +24,7 @@ Closes #
 
 **How to verify:** <!-- commands, with the toolchain they were run on -->
 
-- [ ] `make gates` passes locally: fmt, clippy, test, cargo-deny, cargo-audit, unsafe-policy, fuzz
+- [ ] `make gates` passes locally: fmt, clippy, test, cargo-deny, cargo-audit, unsafe-policy, fuzz, docs
+- [ ] Every new item has a doc comment; every new crate root or top-level module names its C4 element, and `workspace.dsl` has it ([ADR-0008](../docs/adr/0008-code-documentation-mapped-to-c4.md))
 - [ ] The `quality-gate` check passed, so its attestation for the tested merge commit is signed and verified ([ADR-0006](../docs/adr/0006-attested-quality-gates-and-releases.md))
 - [ ] Every commit is signed off (`git commit -s`); tools named with `Assisted-by:`

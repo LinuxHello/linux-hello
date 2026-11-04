@@ -1,4 +1,6 @@
 //! linuxhello-kpxc-bridge: skeleton. Implementation starts after Milestone 0.
+//!
+//! C4 container: `kpxcBridge` ([workspace.dsl](https://github.com/LinuxHello/linux-hello/blob/main/docs/architecture/workspace.dsl))
 
 #![forbid(unsafe_code)]
 

@@ -19,5 +19,6 @@ date: 2026-11-01
 - [ADR-0005: How providers attach while credentialsd has no provider API](0005-provider-path.md)
 - [ADR-0006: Attested quality gates and releases](0006-attested-quality-gates-and-releases.md) (proposed)
 - [ADR-0007: Unattended agent loops](0007-unattended-agent-loops.md) (proposed)
+- [ADR-0008: Code documentation mapped to the C4 model](0008-code-documentation-mapped-to-c4.md) (proposed)
 
 New ADRs start from [the template](../templates/adr.md).

@@ -3,6 +3,11 @@
 //! The well-known names below are a one-way door: clients, AppArmor profiles and
 //! portals hard-code them. `io.github.LinuxHello` follows the reverse-DNS
 //! convention for projects hosted at github.com/LinuxHello.
+//!
+//! This crate is not a container of its own: it is the contract of the Agent's
+//! D-Bus API, linked into every container that calls it.
+//!
+//! C4 component: `dbusApi` ([workspace.dsl](https://github.com/LinuxHello/linux-hello/blob/main/docs/architecture/workspace.dsl))
 
 #![forbid(unsafe_code)]
 
