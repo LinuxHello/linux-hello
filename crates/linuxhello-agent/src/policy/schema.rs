@@ -20,6 +20,10 @@ pub struct Layer {
     /// The `[context.<name>]` tables, keyed by context name (`login`, `unlock`, `sudo`, `session`).
     #[serde(default)]
     pub context: HashMap<String, ContextPolicy>,
+    /// The `[rp_class.<name>]` tables, keyed by class name: 1–64 characters of
+    /// `a`–`z`, `0`–`9`, `_` and `-`.
+    #[serde(default)]
+    pub rp_class: HashMap<String, RpClassPolicy>,
 }
 
 /// The `[pin]` table: length, character classes, history, expiry and lockout of the PIN.
@@ -86,6 +90,57 @@ pub struct ContextPolicy {
     /// How long an authentication stays valid before the user must verify again, 1 s to 30 d.
     #[serde(default)]
     pub reverify_after: Option<Duration>,
+}
+
+/// One `[rp_class.<name>]` table: the relying parties a class covers and how
+/// their passkeys are kept and confirmed. Only `match` is required; an absent
+/// key leaves the value to other layers or the default.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RpClassPolicy {
+    /// TOML key `match`: the relying-party patterns of the class, at least one.
+    /// Each is stored normalised, in lower case without a trailing dot, and is
+    /// either an exact domain (`bank.example`) or `*.` and a domain
+    /// (`*.bank.example`).
+    #[serde(rename = "match")]
+    pub match_patterns: Vec<String>,
+    /// Where the class's passkeys are kept.
+    #[serde(default)]
+    pub provider: Option<RpProvider>,
+    /// What the user must do before a passkey of the class signs.
+    #[serde(default)]
+    pub prompt: Option<RpPrompt>,
+    /// How many different methods must succeed, 1–2.
+    #[serde(default)]
+    pub factors: Option<u32>,
+    /// Whether the relying party must also see a second credential.
+    #[serde(default)]
+    pub require_second_credential: Option<bool>,
+}
+
+/// The `provider` of a relying-party class: which provider holds its passkeys.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RpProvider {
+    /// `"tpm"`: device-bound, in the TPM.
+    Tpm,
+    /// `"keepassxc"`: portable, in KeePassXC.
+    Keepassxc,
+    /// `"any"`: either provider.
+    Any,
+}
+
+/// The `prompt` of a relying-party class: what the user must do before a
+/// passkey signs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RpPrompt {
+    /// `"none"`: the unlocked session is enough.
+    None,
+    /// `"presence"`: the user confirms presence.
+    Presence,
+    /// `"reverify"`: the user authenticates again.
+    Reverify,
 }
 
 /// A duration expressed as a positive integer followed by a unit suffix (s, m, h, d).
@@ -194,19 +249,62 @@ fn is_valid_pin_class_value(value: &str) -> bool {
     matches!(value, "required" | "allowed" | "disallowed")
 }
 
+/// Whether `name` is a valid relying-party class name: 1–64 characters, each
+/// one of `a`–`z`, `0`–`9`, `_` and `-`.
+fn is_valid_rp_class_name(name: &str) -> bool {
+    (1..=64).contains(&name.len())
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'-')
+}
+
+/// Whether `domain` is one or more non-empty labels separated by single dots,
+/// each label using only `a`–`z`, `0`–`9` and `-`. Refuses `*`, `_`, spaces,
+/// upper case and every non-ASCII character.
+fn is_valid_domain(domain: &str) -> bool {
+    domain.split('.').all(|label| {
+        !label.is_empty()
+            && label
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+    })
+}
+
+/// Normalise a relying-party pattern: lower-case its ASCII letters, then strip
+/// one trailing dot. The result must be an exact domain or `*.` followed by a
+/// domain (see [`is_valid_domain`]); anything else is refused, never repaired.
+/// Upholds `rp_pattern_outside_the_schema_makes_file_unparseable` and
+/// `rp_patterns_are_stored_lower_case_without_trailing_dot`.
+///
+/// # Errors
+///
+/// Returns a message when the normalised pattern is neither form: `*` alone,
+/// `*` outside the first label, `*.` with no domain, an empty label, or a
+/// character outside `a`–`z`, `0`–`9`, `-` and `.`.
+fn normalize_rp_pattern(pattern: &str) -> Result<String, String> {
+    let lower = pattern.to_ascii_lowercase();
+    let normalised = lower.strip_suffix('.').unwrap_or(&lower);
+    let domain = normalised.strip_prefix("*.").unwrap_or(normalised);
+    if is_valid_domain(domain) {
+        Ok(normalised.to_string())
+    } else {
+        Err("not an exact domain or '*.' followed by a domain".into())
+    }
+}
+
 /// Parse and validate a TOML policy layer.
 ///
 /// Returns an error if the file contains unknown keys, out-of-range values,
 /// invalid patterns, duplicate methods, or any other schema violation.
 pub fn parse_layer(input: &str) -> Result<Layer, String> {
-    let layer: Layer = toml::from_str(input).map_err(|e| format!("TOML parse error: {e}"))?;
-    validate(&layer)?;
+    let mut layer: Layer = toml::from_str(input).map_err(|e| format!("TOML parse error: {e}"))?;
+    validate(&mut layer)?;
     Ok(layer)
 }
 
 /// Check the value ranges and lists the TOML types cannot express; the first
 /// violation found is the error.
-fn validate(layer: &Layer) -> Result<(), String> {
+fn validate(layer: &mut Layer) -> Result<(), String> {
     if let Some(pin) = &layer.pin {
         if let Some(ml) = pin.min_length {
             if !(4..=64).contains(&ml) {
@@ -254,7 +352,7 @@ fn validate(layer: &Layer) -> Result<(), String> {
         }
     }
 
-    for (name, ctx) in &layer.context {
+    for (name, ctx) in &mut layer.context {
         if !is_valid_context_name(name) {
             return Err(format!(
                 "context name '{name}' must be one of login|unlock|sudo|session"
@@ -288,6 +386,25 @@ fn validate(layer: &Layer) -> Result<(), String> {
                     "context.{name}.reverify_after must be between 1s and 30d, got {total}s"
                 ));
             }
+        }
+    }
+
+    for (name, rp_class) in &mut layer.rp_class {
+        if !is_valid_rp_class_name(name) {
+            return Err(format!("rp_class name '{name}' is invalid"));
+        }
+        if let Some(f) = rp_class.factors {
+            if !(1..=2).contains(&f) {
+                return Err(format!("rp_class.{name}.factors must be 1–2, got {f}"));
+            }
+        }
+        if rp_class.match_patterns.is_empty() {
+            return Err(format!("rp_class.{name}.match must not be empty"));
+        }
+        for pattern in &mut rp_class.match_patterns {
+            *pattern = normalize_rp_pattern(pattern).map_err(|e| {
+                format!("rp_class.{name}.match contains invalid pattern '{pattern}': {e}")
+            })?;
         }
     }
 
@@ -598,5 +715,126 @@ methods = ["pin"]
             let ctx = layer.context.get("unlock").unwrap();
             assert!(ctx.reverify_after.is_some());
         }
+    }
+
+    /// One `[rp_class.example]` table with `match = ["bank.example"]` and `extra`.
+    fn rp_class(extra: &str) -> String {
+        format!("[rp_class.example]\nmatch = [\"bank.example\"]\n{extra}\n")
+    }
+
+    #[test]
+    fn rp_class_keys_of_the_schema_parse() {
+        let layer = parse_layer("[rp_class.bank]\nmatch = [\"bank.example\"]\n").unwrap();
+        let bank = &layer.rp_class["bank"];
+        assert_eq!(bank.match_patterns, vec!["bank.example".to_string()]);
+        assert_eq!(bank.provider, None);
+        assert_eq!(bank.prompt, None);
+        assert_eq!(bank.factors, None);
+        assert_eq!(bank.require_second_credential, None);
+
+        for (value, expected) in [
+            ("tpm", RpProvider::Tpm),
+            ("keepassxc", RpProvider::Keepassxc),
+            ("any", RpProvider::Any),
+        ] {
+            let layer = parse_layer(&rp_class(&format!("provider = \"{value}\""))).unwrap();
+            assert_eq!(layer.rp_class["example"].provider, Some(expected));
+        }
+        for (value, expected) in [
+            ("none", RpPrompt::None),
+            ("presence", RpPrompt::Presence),
+            ("reverify", RpPrompt::Reverify),
+        ] {
+            let layer = parse_layer(&rp_class(&format!("prompt = \"{value}\""))).unwrap();
+            assert_eq!(layer.rp_class["example"].prompt, Some(expected));
+        }
+        for factors in [1, 2] {
+            let layer = parse_layer(&rp_class(&format!("factors = {factors}"))).unwrap();
+            assert_eq!(layer.rp_class["example"].factors, Some(factors));
+        }
+        let layer = parse_layer(&rp_class("require_second_credential = true")).unwrap();
+        assert_eq!(
+            layer.rp_class["example"].require_second_credential,
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn rp_class_value_outside_the_schema_makes_file_unparseable() {
+        for extra in [
+            "provider = \"kpxc\"",
+            "prompt = \"always\"",
+            "factors = 0",
+            "factors = 3",
+            "require_second_credential = \"yes\"",
+            "unknown = 1",
+        ] {
+            assert!(
+                parse_layer(&rp_class(extra)).is_err(),
+                "{extra} must be refused"
+            );
+        }
+        for table in [
+            "[rp_class.example]\nprovider = \"tpm\"\n",
+            "[rp_class.example]\nmatch = []\n",
+            "[rp_class.example]\nmatch_patterns = [\"bank.example\"]\n",
+        ] {
+            assert!(parse_layer(table).is_err(), "{table} must be refused");
+        }
+    }
+
+    #[test]
+    fn invalid_rp_class_name_makes_file_unparseable() {
+        let too_long = "a".repeat(65);
+        for name in ["Bank!", "bank class", too_long.as_str(), ""] {
+            let toml = format!("[rp_class.\"{name}\"]\nmatch = [\"bank.example\"]\n");
+            let err = parse_layer(&toml).unwrap_err();
+            assert!(err.contains("rp_class name"), "{name:?}: {err}");
+        }
+        let longest = "a".repeat(64);
+        let toml = format!("[rp_class.{longest}]\nmatch = [\"bank.example\"]\n");
+        assert!(parse_layer(&toml).is_ok());
+    }
+
+    #[test]
+    fn rp_pattern_outside_the_schema_makes_file_unparseable() {
+        for pattern in [
+            "*",
+            "bank.*.example",
+            "*.",
+            "a..b",
+            ".bank.example",
+            "exa mple.com",
+            "bank_x.example",
+            "*.*.example",
+            "",
+            ".",
+            "bank.example..",
+            "bänk.example",
+        ] {
+            let toml = format!("[rp_class.example]\nmatch = [\"bank.example\", \"{pattern}\"]\n");
+            let err = parse_layer(&toml).unwrap_err();
+            assert!(err.contains("invalid pattern"), "{pattern:?}: {err}");
+        }
+    }
+
+    #[test]
+    fn rp_patterns_are_stored_lower_case_without_trailing_dot() {
+        let layer =
+            parse_layer("[rp_class.example]\nmatch = [\"*.Bank.Example.\", \"BANK.example\"]\n")
+                .unwrap();
+        assert_eq!(
+            layer.rp_class["example"].match_patterns,
+            vec!["*.bank.example".to_string(), "bank.example".to_string()]
+        );
+    }
+
+    #[test]
+    fn example_policy_parses() {
+        let layer = parse_layer(include_str!("../../../../policy/policy.example.toml")).unwrap();
+        assert_eq!(
+            layer.rp_class["banking"].match_patterns,
+            vec!["*.bank.example".to_string()]
+        );
     }
 }
