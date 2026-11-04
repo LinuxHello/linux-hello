@@ -1,3 +1,8 @@
+//! The policy file schema: the types one TOML policy layer parses into, and the
+//! validation that rejects anything outside the schema in
+//! `docs/architecture/policy-semantics.md`. Parsing is strict: an unknown key, a
+//! value out of range or a malformed duration makes the whole file unparseable.
+
 use std::collections::HashMap;
 
 use serde::Deserialize;
@@ -6,58 +11,81 @@ use serde::Deserialize;
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Layer {
+    /// The `[pin]` table: PIN rules. Absent: the layer sets no PIN rule.
     #[serde(default)]
     pub pin: Option<PinPolicy>,
+    /// The `[methods]` table: which kinds of method are allowed at all.
     #[serde(default)]
     pub methods: Option<MethodsPolicy>,
+    /// The `[context.<name>]` tables, keyed by context name (`login`, `unlock`, `sudo`, `session`).
     #[serde(default)]
     pub context: HashMap<String, ContextPolicy>,
         #[serde(default)]
     pub rp_class: HashMap<String, RpClassPolicy>,
 }
 
+/// The `[pin]` table: length, character classes, history, expiry and lockout of the PIN.
+/// Every key is optional; an absent key leaves the value to other layers or the default.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PinPolicy {
     #[serde(default)]
+    /// Shortest allowed PIN, 4–64 characters.
     pub min_length: Option<u32>,
     #[serde(default)]
+    /// Longest allowed PIN, 4–127 characters.
     pub max_length: Option<u32>,
     #[serde(default)]
+    /// Digits: `required`, `allowed` or `disallowed`.
     pub digits: Option<String>,
     #[serde(default)]
+    /// Lower-case letters: `required`, `allowed` or `disallowed`.
     pub lowercase: Option<String>,
     #[serde(default)]
+    /// Upper-case letters: `required`, `allowed` or `disallowed`.
     pub uppercase: Option<String>,
     #[serde(default)]
+    /// Special characters: `required`, `allowed` or `disallowed`.
     pub special: Option<String>,
     #[serde(default)]
+    /// How many previous PINs may not be reused, 0–50 (0: no history).
     pub history: Option<u32>,
     #[serde(default)]
+    /// Days until the PIN must be changed, 1–730. Absent: the PIN never expires.
     pub expiry_days: Option<u32>,
     #[serde(default)]
+    /// Wrong PIN entries before lockout, 1–32.
     pub lockout_attempts: Option<u32>,
     #[serde(default)]
+    /// Minutes a lockout lasts, 1–1440.
     pub lockout_minutes: Option<u32>,
 }
 
+/// The `[methods]` table: switches that apply to every context.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MethodsPolicy {
     #[serde(default)]
+    /// Whether face and fingerprint may be used at all; false means PIN only.
     pub biometrics_allowed: Option<bool>,
     #[serde(default)]
+    /// Whether face recognition needs an infrared camera.
     pub face_requires_ir: Option<bool>,
     #[serde(default)]
+    /// Whether a hardware TPM is required, refusing a software TPM.
     pub require_hardware_tpm: Option<bool>,
 }
 
+/// One `[context.<name>]` table: how the user authenticates in that context.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ContextPolicy {
+    /// Allowed methods: a non-empty list of `pin`, `fingerprint` and `face`, without duplicates.
     pub methods: Vec<String>,
+    /// How many different methods must succeed, 1–2.
     #[serde(default)]
     pub factors: Option<u32>,
+    /// How long an authentication stays valid before the user must verify again, 1 s to 30 d.
     #[serde(default)]
     pub reverify_after: Option<Duration>,
 }
@@ -93,19 +121,27 @@ pub enum RpPrompt {
 /// A duration expressed as a positive integer followed by a unit suffix (s, m, h, d).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Duration {
+    /// The number before the suffix; greater than zero.
     pub value: u64,
+    /// The unit the suffix names.
     pub unit: DurationUnit,
 }
 
+/// The unit of a [`Duration`], named by its suffix.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DurationUnit {
+    /// Suffix `s`.
     Seconds,
+    /// Suffix `m`.
     Minutes,
+    /// Suffix `h`.
     Hours,
+    /// Suffix `d`.
     Days,
 }
 
 impl DurationUnit {
+    /// The length of one unit in seconds.
     fn seconds(self) -> u64 {
         match self {
             DurationUnit::Seconds => 1,
@@ -134,6 +170,9 @@ impl<'de> Deserialize<'de> for Duration {
     }
 }
 
+/// Parse a duration string such as `8h`: digits, then exactly one unit suffix.
+/// Refuses an empty string, zero, an unknown or missing suffix, trailing characters,
+/// and any duration whose seconds do not fit in a `u64`.
 fn parse_duration(s: &str) -> Result<Duration, String> {
     if s.is_empty() {
         return Err("duration must not be empty".into());
@@ -170,14 +209,17 @@ fn parse_duration(s: &str) -> Result<Duration, String> {
     Ok(Duration { value, unit })
 }
 
+/// Whether `name` is a context the schema knows.
 fn is_valid_context_name(name: &str) -> bool {
     matches!(name, "login" | "unlock" | "sudo" | "session")
 }
 
+/// Whether `name` is an authentication method the schema knows.
 fn is_valid_method(name: &str) -> bool {
     matches!(name, "pin" | "face" | "fingerprint")
 }
 
+/// Whether `value` is a setting a PIN character class may take.
 fn is_valid_pin_class_value(value: &str) -> bool {
     matches!(value, "required" | "allowed" | "disallowed")
 }
@@ -235,7 +277,9 @@ pub fn parse_layer(input: &str) -> Result<Layer, String> {
     Ok(layer)
 }
 
-fn validate(layer: &mut Layer) -> Result<(), String> {
+/// Check the value ranges and lists the TOML types cannot express; the first
+/// violation found is the error.
+fn validate(layer: &Layer) -> Result<(), String> {
     if let Some(pin) = &layer.pin {
         if let Some(ml) = pin.min_length {
             if !(4..=64).contains(&ml) {

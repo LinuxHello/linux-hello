@@ -30,7 +30,7 @@ GitHub artifact attestations (`actions/attest`, v4.2.2 checked) sign in-toto sta
 
 ### Quality gate
 
-A **passed quality gate** for a commit means every CI job listed in [`scripts/ci/quality-gates.txt`](../../scripts/ci/quality-gates.txt) succeeded on it: `fmt`, `clippy`, `test`, `cargo-deny`, `cargo-audit`, `unsafe-policy`, `fuzz`. On a pull request, `dco` must also succeed.
+A **passed quality gate** for a commit means every CI job listed in [`scripts/ci/quality-gates.txt`](../../scripts/ci/quality-gates.txt) succeeded on it: `fmt`, `clippy`, `test`, `cargo-deny`, `cargo-audit`, `unsafe-policy`, `fuzz`, `docs` (added by [ADR-0008](0008-code-documentation-mapped-to-c4.md)). On a pull request, `dco` must also succeed.
 
 - **`fuzz`** runs every cargo-fuzz target for 60 seconds ([`scripts/ci/fuzz.sh`](../../scripts/ci/fuzz.sh)) on a pinned nightly. A crash fails the job and the crashing input is kept as a workflow artifact. Each target is seeded with inputs near the limits it checks. The smoke run is a regression net, not exhaustive fuzzing, so every crash it finds also gets a named unit test.
 - **`quality-gate`** is the aggregate required check. It always runs, so a skipped gate cannot count as passed. It fails unless every gate succeeded and its `needs:` list matches `quality-gates.txt`. It then signs an attestation and verifies it.

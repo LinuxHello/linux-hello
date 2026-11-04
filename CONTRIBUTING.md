@@ -6,7 +6,7 @@ Every commit must be signed off (`git commit -s`), certifying the [DCO](https://
 
 ## Workflow
 
-1. Open or pick an issue; it carries a `container:` label and a milestone.
+1. Pick the next issue: run `make next`, or open the **Next up** view of the Roadmap board. [The backlog](docs/project/backlog.md) explains the lanes, labels and order. Code only an issue that is `status:ready` and has an `## Implementation brief`.
 2. Branch from `main`, keep the change to one container where possible. Run `make hooks` once so commits with unformatted code are refused.
 3. Run `make fix`, then `make gates`, which runs every CI gate locally, fuzzing included.
 4. Open a pull request using the template: intent, process mapping, acceptance criteria met. All required checks must pass, `quality-gate` included; it is squash merged.
@@ -14,6 +14,7 @@ Every commit must be signed off (`git commit -s`), certifying the [DCO](https://
 ## Rules
 
 - `unsafe` is forbidden in every crate except the TPM provider and the PAM module, where it is denied except in one small, audited module listed in `scripts/ci/unsafe-allowlist.txt` (checked by the `unsafe-policy` CI job).
+- Every item is documented, private ones included, and every crate root and top-level module names its C4 element from `docs/architecture/workspace.dsl` ([AGENTS.md](AGENTS.md#code-documentation), [ADR-0008](docs/adr/0008-code-documentation-mapped-to-c4.md)). `make docs` checks it.
 - A security property change needs a test whose name states the property, e.g. `caller_from_other_origin_is_refused`.
 - New dependencies must pass `cargo-deny` (licences and advisories).
 - Changes to an upstream project go upstream first.

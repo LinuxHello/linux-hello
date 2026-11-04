@@ -4,5 +4,7 @@
 //! therefore `unsafe`. They will live in one small, audited module that carries
 //! `#[allow(unsafe_code)]` and is listed in `scripts/ci/unsafe-allowlist.txt`;
 //! everywhere else in this crate `unsafe` is denied.
+//!
+//! C4 container: `pamModule` ([workspace.dsl](https://github.com/LinuxHello/linux-hello/blob/main/docs/architecture/workspace.dsl))
 
 #![deny(unsafe_code)]
