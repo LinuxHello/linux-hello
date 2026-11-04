@@ -16,6 +16,11 @@ publish = false
 # entry-point modules need a reviewed #[allow(unsafe_code)]. Every other crate root
 # sets #![forbid(unsafe_code)]; scripts/ci/unsafe-policy.sh enforces both rules.
 unsafe_code = "deny"
+# Every item is documented and names its C4 element (ADR-0008).
+missing_docs = "deny"
 
 [workspace.lints.clippy]
 all = { level = "deny", priority = -1 }
+# ADR-0008: private items too (test code is exempt), and every unsafe block says why it is sound.
+missing_docs_in_private_items = "deny"
+undocumented_unsafe_blocks = "deny"
