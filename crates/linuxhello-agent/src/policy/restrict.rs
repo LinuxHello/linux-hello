@@ -1,27 +1,38 @@
-//! The policy restriction engine: combines two policy layers into the more
-//! restrictive one. It is used by the `policyEngine` to resolve conflicts
-//! between different policy layers.
+//! Restrictiveness: combines two policy layers key by key into the more
+//! restrictive one, and reports a character class one layer requires and the
+//! other disallows. `merge` (a later issue) uses it to combine the admin layers
+//! and to let a user layer tighten the defaults. Rules:
+//! `docs/architecture/policy-semantics.md`, *Restrictiveness*.
 
 use crate::policy::schema::{
     ContextPolicy, Layer, MethodsPolicy, PinPolicy, RpClassPolicy, RpPrompt, RpProvider,
 };
 
-/// Errors when two policy layers have incompatible requirements.
+/// A set of policy rules no PIN or method can satisfy. Never resolved silently:
+/// the caller fails closed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Contradiction {
     /// A character class (digits, lowercase, uppercase, special) is required in one
     /// layer and disallowed in the other.
     ClassConflict(&'static str),
-    /// Used by a later issue.
+    /// The merged `max_length` is below the merged `min_length`. Reported after
+    /// merging, not by `most_restrictive`.
     MaxLengthBelowMinLength,
-    /// Used by a later issue.
+    /// All four character classes are `disallowed`. Reported after merging, not
+    /// by `most_restrictive`.
     AllClassesDisallowed,
 }
 
 /// Combines two policy layers key by key into the more restrictive one.
 ///
-/// If a key is set in only one layer, it is kept. If set in both, the more
-/// restrictive value is chosen according to the rules defined in the brief.
+/// A key, table, context or relying-party class set in only one layer is kept
+/// as is. A key set in both gets the more restrictive value, as
+/// `policy-semantics.md` defines it: larger lengths, history, lockout time and
+/// factors; smaller maximum length, expiry, lockout attempts and reverify time;
+/// a character class `required` or `disallowed` over `allowed`; biometrics off;
+/// IR, hardware TPM and a second credential required; methods intersected in
+/// `a`'s order; provider `tpm` over `keepassxc` over `any`; prompt `reverify`
+/// over `presence` over `none`; `match` patterns united, `a`'s first.
 ///
 /// # Errors
 ///
@@ -100,21 +111,19 @@ pub fn most_restrictive(a: &Layer, b: &Layer) -> Result<Layer, Contradiction> {
         (None, None) => {}
     }
 
-    // 3. Combine ContextPolicy
-    let mut all_contexts: std::collections::HashSet<&String> = a.context.keys().collect();
-    all_contexts.extend(b.context.keys());
-
-    for name in all_contexts {
-        match (a.context.get(name), b.context.get(name)) {
-            (Some(c1), Some(c2)) => {
-                let mut methods: Vec<String> = c1
+    // 3. Combine ContextPolicy: start from b's contexts, so a name only b has is kept
+    // as is; then each of a's names is kept as is or combined with b's.
+    combined.context = b.context.clone();
+    for (name, c1) in &a.context {
+        match b.context.get(name) {
+            Some(c2) => {
+                // Intersection, in a's order.
+                let methods: Vec<String> = c1
                     .methods
                     .iter()
                     .filter(|m| c2.methods.contains(m))
                     .cloned()
                     .collect();
-                // Maintain a's order
-                methods.retain(|m| c1.methods.contains(m));
 
                 let factors = match (c1.factors, c2.factors) {
                     (Some(f1), Some(f2)) => Some(f1.max(f2)),
@@ -144,20 +153,17 @@ pub fn most_restrictive(a: &Layer, b: &Layer) -> Result<Layer, Contradiction> {
                     },
                 );
             }
-            (Some(c), None) | (None, Some(c)) => {
-                combined.context.insert(name.clone(), c.clone());
+            None => {
+                combined.context.insert(name.clone(), c1.clone());
             }
-            (None, None) => unreachable!(),
         }
     }
 
-    // 4. Combine RpClassPolicy
-    let mut all_rp_classes: std::collections::HashSet<&String> = a.rp_class.keys().collect();
-    all_rp_classes.extend(b.rp_class.keys());
-
-    for name in all_rp_classes {
-        match (a.rp_class.get(name), b.rp_class.get(name)) {
-            (Some(r1), Some(r2)) => {
+    // 4. Combine RpClassPolicy, the same way as contexts.
+    combined.rp_class = b.rp_class.clone();
+    for (name, r1) in &a.rp_class {
+        match b.rp_class.get(name) {
+            Some(r2) => {
                 let mut match_patterns = r1.match_patterns.clone();
                 for p in &r2.match_patterns {
                     if !match_patterns.contains(p) {
@@ -217,17 +223,23 @@ pub fn most_restrictive(a: &Layer, b: &Layer) -> Result<Layer, Contradiction> {
                     },
                 );
             }
-            (Some(r), None) | (None, Some(r)) => {
-                combined.rp_class.insert(name.clone(), r.clone());
+            None => {
+                combined.rp_class.insert(name.clone(), r1.clone());
             }
-            (None, None) => unreachable!(),
         }
     }
 
     Ok(combined)
 }
 
-/// Helper to combine character class requirements.
+/// Combines one character class (`name`) of two layers: equal values stay,
+/// `required` or `disallowed` beats `allowed`, and a value set in one layer only
+/// is kept.
+///
+/// # Errors
+///
+/// `Contradiction::ClassConflict(name)` when one layer requires the class and the
+/// other disallows it (`required_against_disallowed_is_a_conflict`).
 fn combine_classes<'a>(
     name: &'static str,
     a: &'a Option<String>,
@@ -265,16 +277,9 @@ mod tests {
             let b = parse_layer(b_toml).unwrap();
             let res = most_restrictive(&a, &b).unwrap();
             let expected = parse_layer(expected_toml).unwrap();
-            assert_eq!(res, expected);
-
-            let _res_rev = most_restrictive(&b, &a).unwrap();
-            // For match_patterns, the order matters in the union.
-            // The brief says: "a's patterns, then b's not already present".
-            // So most_restrictive(a, b) has a's patterns first.
-            // most_restrictive(b, a) has b's patterns first.
-            // We check equality of the Layer, but match_patterns order might differ.
-            // However, the brief says "a's patterns, then b's not already present".
-            // So we must be careful.
+            assert_eq!(res, expected, "{a_toml} with {b_toml}");
+            let res_rev = most_restrictive(&b, &a).unwrap();
+            assert_eq!(res_rev, expected, "{b_toml} with {a_toml}");
         };
 
         // Larger
@@ -396,10 +401,19 @@ mod tests {
             "[rp_class.example]\nmatch = [\"a.com\"]\nprompt = \"presence\"",
             "[rp_class.example]\nmatch = [\"a.com\"]\nprompt = \"reverify\"",
         );
-        check(
-            "[rp_class.example]\nmatch = [\"a.example\"]",
-            "[rp_class.example]\nmatch = [\"b.example\"]",
-            "[rp_class.example]\nmatch = [\"a.example\", \"b.example\"]",
+
+        // Match: the union keeps the first argument's patterns first.
+        let a = parse_layer("[rp_class.example]\nmatch = [\"a.example\"]").unwrap();
+        let b = parse_layer("[rp_class.example]\nmatch = [\"b.example\", \"a.example\"]").unwrap();
+        let ab = most_restrictive(&a, &b).unwrap();
+        assert_eq!(
+            ab.rp_class["example"].match_patterns,
+            vec!["a.example", "b.example"]
+        );
+        let ba = most_restrictive(&b, &a).unwrap();
+        assert_eq!(
+            ba.rp_class["example"].match_patterns,
+            vec!["b.example", "a.example"]
         );
     }
 
@@ -409,12 +423,16 @@ mod tests {
         let b_toml = "[pin]\nmin_length = 8\n[context.login]\nmethods = [\"pin\"]\n[rp_class.example]\nmatch = [\"a.com\"]";
         let a = parse_layer(a_toml).unwrap();
         let b = parse_layer(b_toml).unwrap();
-        let res = most_restrictive(&a, &b).unwrap();
 
-        assert_eq!(res.pin.as_ref().unwrap().expiry_days, Some(90));
-        assert_eq!(res.pin.as_ref().unwrap().min_length, Some(8));
-        assert!(res.context.contains_key("login"));
-        assert!(res.rp_class.contains_key("example"));
+        for res in [
+            most_restrictive(&a, &b).unwrap(),
+            most_restrictive(&b, &a).unwrap(),
+        ] {
+            assert_eq!(res.pin.as_ref().unwrap().expiry_days, Some(90));
+            assert_eq!(res.pin.as_ref().unwrap().min_length, Some(8));
+            assert_eq!(res.context, b.context);
+            assert_eq!(res.rp_class, b.rp_class);
+        }
     }
 
     #[test]
@@ -423,7 +441,8 @@ mod tests {
         let b_toml = "[pin]\nuppercase = \"disallowed\"";
         let a = parse_layer(a_toml).unwrap();
         let b = parse_layer(b_toml).unwrap();
-        let res = most_restrictive(&a, &b);
-        assert_eq!(res, Err(Contradiction::ClassConflict("uppercase")));
+        let conflict = Err(Contradiction::ClassConflict("uppercase"));
+        assert_eq!(most_restrictive(&a, &b), conflict);
+        assert_eq!(most_restrictive(&b, &a), conflict);
     }
 }
