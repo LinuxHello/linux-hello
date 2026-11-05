@@ -14,7 +14,7 @@ date: 2026-11-05
 
 ## Status
 
-Proposed, 2026-11-05. [ADR-0011](0011-architecture-repository.md) (proposed) would move the Arc42 sections, `workspace.dsl`, the ADRs and the spikes to `LinuxHello/architecture`; the structure decided here stays.
+Proposed, 2026-11-05. [ADR-0011](0011-architecture-repository.md) (accepted) moves the Arc42 sections, `workspace.dsl`, the ADRs and the spikes to `LinuxHello/architecture`; the structure decided here stays.
 
 ## Context
 

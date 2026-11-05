@@ -2,7 +2,7 @@
 type: adr
 subject: Move the system, container and component architecture and the ADRs to their own repository
 artifact: adr
-status: proposed
+status: accepted
 owner: "@atterdag"
 concepts: [arc42, c4, documentation, governance, ci, repository-topology]
 tags: [adr, architecture, docs, ci]
@@ -14,7 +14,7 @@ date: 2026-11-05
 
 ## Status
 
-Proposed, 2026-11-05.
+Accepted, 2026-11-05.
 
 ## Context
 
