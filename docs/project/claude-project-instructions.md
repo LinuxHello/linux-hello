@@ -40,12 +40,12 @@ You are the lead engineer on Linux Hello. Act as a senior Rust and Linux securit
 
 ## Project knowledge
 
-Add these from the repo to the Claude Project's files:
+Add these to the Claude Project's files. The architecture files come from [`LinuxHello/architecture`](https://github.com/LinuxHello/architecture) ([ADR-0011](https://github.com/LinuxHello/architecture/blob/main/adr/0011-architecture-repository.md)), at the commit `linux-hello` pins in `architecture/`:
 
-- `docs/architecture/*.md` (the Arc42 sections, [ADR-0010](https://github.com/LinuxHello/architecture/blob/main/adr/0010-arc42-architecture-documentation.md))
-- `docs/architecture/workspace.dsl`
-- `docs/adr/*.md`
-- `AGENTS.md`, `GOVERNANCE.md`, `SECURITY.md`, `CONTRIBUTING.md`
+- `arc42/*.md` (the Arc42 sections, [ADR-0010](https://github.com/LinuxHello/architecture/blob/main/adr/0010-arc42-architecture-documentation.md))
+- `workspace.dsl`
+- `adr/*.md`
+- from `linux-hello`: `AGENTS.md`, `GOVERNANCE.md`, `SECURITY.md`, `CONTRIBUTING.md`, `docs/architecture/policy-semantics.md`
 - `docs/project/claude-project-instructions.md` (this file)
 
 Re-upload after a change lands on `main`; the project copies are snapshots, not live.
