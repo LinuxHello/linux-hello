@@ -4,5 +4,8 @@
 //!
 //! C4 component: `policyEngine` ([workspace.dsl](https://github.com/LinuxHello/linux-hello/blob/main/docs/architecture/workspace.dsl))
 
+pub mod restrict;
 pub mod schema;
+
+pub use restrict::{most_restrictive, Contradiction};
 pub use schema::{parse_layer, Layer};

@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use serde::Deserialize;
 
 /// A fully parsed and validated admin-layer policy layer.
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Layer {
     /// The `[pin]` table: PIN rules. Absent: the layer sets no PIN rule.
@@ -28,7 +28,7 @@ pub struct Layer {
 
 /// The `[pin]` table: length, character classes, history, expiry and lockout of the PIN.
 /// Every key is optional; an absent key leaves the value to other layers or the default.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PinPolicy {
     #[serde(default)]
@@ -64,7 +64,7 @@ pub struct PinPolicy {
 }
 
 /// The `[methods]` table: switches that apply to every context.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MethodsPolicy {
     #[serde(default)]
@@ -79,7 +79,7 @@ pub struct MethodsPolicy {
 }
 
 /// One `[context.<name>]` table: how the user authenticates in that context.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ContextPolicy {
     /// Allowed methods: a non-empty list of `pin`, `fingerprint` and `face`, without duplicates.
@@ -95,7 +95,7 @@ pub struct ContextPolicy {
 /// One `[rp_class.<name>]` table: the relying parties a class covers and how
 /// their passkeys are kept and confirmed. Only `match` is required; an absent
 /// key leaves the value to other layers or the default.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RpClassPolicy {
     /// TOML key `match`: the relying-party patterns of the class, at least one.
