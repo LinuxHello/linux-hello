@@ -9,6 +9,9 @@ on:
   pull_request:
   push:
     branches: [main]
+  # Redeploy without a new commit, e.g. after GitHub cancelled a deployment: a
+  # re-run reuses the commit as deployment id, and a cancelled id stays cancelled.
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -49,7 +52,7 @@ jobs:
 
   deploy:
     name: docs-site-deploy
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     needs: build
     runs-on: ubuntu-24.04
     permissions:
