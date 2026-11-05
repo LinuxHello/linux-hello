@@ -59,7 +59,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: stable
-      - run: cargo install cargo-audit --version 0.22.2 --locked
+      # Upstream release binary, checksum pinned in the script; compiling it took ~2.5 min.
+      - run: scripts/ci/install-tool.sh cargo-audit
       - run: cargo audit
 
   fuzz:
@@ -68,7 +69,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # Each fuzz directory pins its own nightly in rust-toolchain.toml; the script installs it.
-      - run: cargo install cargo-fuzz --version 0.13.2 --locked
+      - run: scripts/ci/install-tool.sh cargo-fuzz
       - name: Every fuzz target runs 60 seconds without a crash
         run: scripts/ci/fuzz.sh 60
       - name: Keep the crashing input
