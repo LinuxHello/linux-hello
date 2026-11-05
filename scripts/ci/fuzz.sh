@@ -39,12 +39,17 @@ for dir in "${fuzz_dirs[@]}"; do
   # (set -e does not see failures inside a for-loop word list).
   targets="$(cargo fuzz list --fuzz-dir .)"
   [[ -n "$targets" ]] || { echo "$dir has no fuzz targets" >&2; exit 1; }
+  # Build for the toolchain's host triple. cargo-fuzz otherwise defaults to the
+  # triple it was itself built for, and the musl release binary would then build
+  # for musl, where the address sanitizer is unavailable.
+  host="$(rustc -vV | sed -n 's/^host: //p')"
+  [[ -n "$host" ]] || { echo "$dir: rustc reports no host triple" >&2; exit 1; }
   for target in $targets; do
     echo "::group::fuzz $dir/$target (${seconds}s)"
     mkdir -p "corpus/$target"
     seeds=()
     [[ -d "seeds/$target" ]] && seeds=("seeds/$target")
-    cargo fuzz run --fuzz-dir . "$target" "corpus/$target" "${seeds[@]}" -- \
+    cargo fuzz run --fuzz-dir . --target "$host" "$target" "corpus/$target" "${seeds[@]}" -- \
       -max_total_time="$seconds"
     echo "::endgroup::"
   done
