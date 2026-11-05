@@ -73,7 +73,7 @@ Merging, DCO certification, accepting ADRs, releases, repository and organisatio
 
 ### Rejected
 
-- **A self-hosted GitHub Actions runner on the workstation.** On a public repository, pull-request events can run code on the runner, which here is the maintainer's machine.
+- **A self-hosted GitHub Actions runner on the workstation.** On a public repository, pull-request events can run code on the runner, which here is the maintainer's machine. [ADR-0009](0009-self-hosted-runner.md) admits one for CI jobs only, in an ephemeral VM and with no pull-request triggers. The implementer loop still does not run through it.
 - **Scheduled tasks on the workstation that run a cloud model.** The implementer's point is local, private and free inference on the workstation's GPU.
 - **Running the loop as the maintainer's own user.** That would expose his signing keys, his GitHub login and his home directory to a model-driven process.
 - **Signing off unattended commits under the maintainer's name.** That would certify code before anyone reviewed it.
