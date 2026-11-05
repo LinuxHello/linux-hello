@@ -9,12 +9,15 @@ pub mod defaults;
 /// The invariants that hold after layering: the PIN is always allowed, biometrics
 /// off means PIN only, and a PIN rule no PIN can meet is an error (`apply_invariants`).
 pub mod invariants;
+/// The policy loading logic.
+pub mod load;
 /// Admin-over-user layering into the effective policy (`merge`, `Effective`).
 pub mod merge;
 pub mod restrict;
 pub mod schema;
 
 pub use defaults::default_layer;
+pub use load::{load, PinOnly, Policy};
 pub use merge::{merge, Effective};
 pub use restrict::{most_restrictive, Contradiction};
 pub use schema::{parse_layer, Layer};
