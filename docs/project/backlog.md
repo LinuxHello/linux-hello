@@ -6,7 +6,7 @@ status: active
 owner: "@atterdag"
 concepts: [governance, ai-assisted-development]
 tags: [backlog, contributing]
-sources: ["../../AGENTS.md", "../adr/0004-agent-roles.md", "../adr/0007-unattended-agent-loops.md"]
+sources: ["../../AGENTS.md", "https://github.com/LinuxHello/architecture/blob/main/adr/0004-agent-roles.md", "https://github.com/LinuxHello/architecture/blob/main/adr/0007-unattended-agent-loops.md"]
 date: 2026-11-04
 ---
 
@@ -38,7 +38,7 @@ The `status:` label says who acts next on an issue.
 | spike | `status:needs-brief` + `type:spike` | Lead, or a contributor with the hardware | Runs the time-boxed spike and writes the note in `docs/spikes/` |
 | review | `status:in-review` | Lead, then maintainer | Reviews against the brief; the maintainer merges |
 | doing | `status:in-progress` | Whoever claimed it | — |
-| stuck | `status:blocked` | Lead | Diagnoses a failed unattended run ([ADR-0007](../adr/0007-unattended-agent-loops.md)) |
+| stuck | `status:blocked` | Lead | Diagnoses a failed unattended run ([ADR-0007](https://github.com/LinuxHello/architecture/blob/main/adr/0007-unattended-agent-loops.md)) |
 
 ```mermaid
 flowchart LR

@@ -12,3 +12,8 @@ updates:
     directory: /
     schedule:
       interval: weekly
+  # The C4 model and ADRs, pinned as the architecture submodule (ADR-0011).
+  - package-ecosystem: gitsubmodule
+    directory: /
+    schedule:
+      interval: weekly

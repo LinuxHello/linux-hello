@@ -2,7 +2,8 @@
 # Property: the Rust code names the C4 element it implements (ADR-0008).
 #  1. Every crate root (src/lib.rs, src/main.rs) has one "//! C4 container: `<id>`" or
 #     "//! C4 component: `<id>`" line, and <id> is that kind of element in
-#     docs/architecture/workspace.dsl.
+#     architecture/workspace.dsl, the C4 model in the LinuxHello/architecture submodule
+#     (ADR-0011).
 #  2. In a crate whose root names a container, every module the root declares, except
 #     #[cfg(test)] modules, is in its own file whose //! docs have one
 #     "//! C4 component: `<id>`" line, and <id> is a component of that container.
@@ -10,7 +11,10 @@
 # Checks the repository that holds this script. Needs bash, awk, grep and sed.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
-[[ -f docs/architecture/workspace.dsl ]] || { echo "::error::docs/architecture/workspace.dsl not found"; exit 1; }
+[[ -f architecture/workspace.dsl ]] || {
+  echo "::error::architecture/workspace.dsl not found: the C4 model is the LinuxHello/architecture submodule; run git submodule update --init"
+  exit 1
+}
 fail=0
 err() { echo "::error::$*"; fail=1; }
 count() { grep -c . <<<"$1" || true; }
@@ -41,7 +45,7 @@ elements="$(awk '
       if (ch == "{") { depth++; if (first && kind != "") { sk[depth] = kind; sid[depth] = id } else { sk[depth] = ""; sid[depth] = "" }; first = 0 }
       else if (ch == "}" && depth > 0) depth--
     }
-  }' docs/architecture/workspace.dsl)"
+  }' architecture/workspace.dsl)"
 
 element() { awk -v id="$1" '$1 == id { print $2, $3; exit }' <<<"$elements"; }
 
@@ -88,7 +92,7 @@ for dir in crates/*/; do
     read -r kind ident <<<"$found"
     read -r ekind _ <<<"$(element "$ident")" || true
     if [[ "${ekind:-}" != "$kind" ]]; then
-      err "$root: C4 $kind \`$ident\` is not a $kind in docs/architecture/workspace.dsl"
+      err "$root: C4 $kind \`$ident\` is not a $kind in architecture/workspace.dsl"
       continue
     fi
     named+=("$kind $ident")
@@ -110,7 +114,7 @@ for dir in crates/*/; do
       fi
       cid="${mtags#component }"
       if [[ "$(element "$cid")" != "component $ident" ]]; then
-        err "$mod_file: C4 component \`$cid\` is not a component of container \`$ident\` in docs/architecture/workspace.dsl"
+        err "$mod_file: C4 component \`$cid\` is not a component of container \`$ident\` in architecture/workspace.dsl"
       fi
     done < <(modules "$root")
   done
