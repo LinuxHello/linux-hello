@@ -6,13 +6,13 @@ status: draft
 owner: "@atterdag"
 concepts: [policy, fail-closed, routing-policy]
 tags: [architecture, policy]
-sources: ["target-architecture.md", "../../policy/policy.example.toml"]
+sources: ["08-crosscutting-concepts.md", "../../policy/policy.example.toml"]
 date: 2026-11-01
 ---
 
 # Policy semantics
 
-This note makes the [Policy section of the target architecture](target-architecture.md#policy) precise enough to implement and test. The Routing Policy Engine lives in the Agent (`crates/linuxhello-agent`, module `policy`). Every rule below has a security property and a named test in [docs/security/](../security/README.md).
+This note makes the [Policy concept in Arc42 section 8](08-crosscutting-concepts.md#policy) precise enough to implement and test. The Routing Policy Engine lives in the Agent (`crates/linuxhello-agent`, module `policy`). Every rule below has a security property and a named test in [docs/security/](../security/README.md).
 
 ## Schema
 

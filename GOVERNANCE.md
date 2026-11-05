@@ -12,7 +12,7 @@ Code is largely written with AI assistance. The maintainer reviews **behaviour**
 ## Decisions
 
 - Architecture decisions are recorded as ADRs in `docs/adr/` (Title, Status, Context, Decision, Consequences).
-- The target architecture and the C4 workspace in `docs/architecture/` are the source of truth for structure. The code names the C4 element it implements, checked against the workspace in CI ([ADR-0008](docs/adr/0008-code-documentation-mapped-to-c4.md)).
+- The architecture documentation (Arc42) and the C4 workspace in `docs/architecture/` are the source of truth for structure. The code names the C4 element it implements, checked against the workspace in CI ([ADR-0008](docs/adr/0008-code-documentation-mapped-to-c4.md)).
 
 ### One-way doors
 

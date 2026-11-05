@@ -6,13 +6,13 @@ status: accepted
 owner: "@atterdag"
 concepts: [trust-chain, tpm, reset, recovery]
 tags: [adr, one-way-door, security]
-sources: ["../architecture/target-architecture.md"]
+sources: ["../architecture/08-crosscutting-concepts.md"]
 date: 2026-10-27
 ---
 
 # ADR-0003: Destructive reset, no recovery key
 
-Formerly decision LH-1 in the [target architecture](../architecture/target-architecture.md#trust-chain).
+Formerly decision LH-1 in the target architecture, now the [trust chain](../architecture/08-crosscutting-concepts.md#trust-chain) in Arc42 section 8.
 
 ## Status
 

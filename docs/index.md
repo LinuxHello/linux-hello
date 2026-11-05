@@ -16,7 +16,7 @@ This folder is an Obsidian vault and renders on GitHub. Links are standard relat
 
 | Area | Start here |
 | :-- | :-- |
-| Architecture | [Target architecture](architecture/target-architecture.md), [Policy semantics](architecture/policy-semantics.md), [C4 workspace](architecture/workspace.dsl) |
+| Architecture | [Arc42 sections](architecture/README.md), [Policy semantics](architecture/policy-semantics.md), [C4 workspace](architecture/workspace.dsl) |
 | Decisions | [ADR index](adr/) |
 | Spikes (Milestone 0) | [Spikes](spikes/) |
 | Security | [Threat model and properties](security/) |

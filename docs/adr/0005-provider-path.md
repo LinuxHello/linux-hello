@@ -6,7 +6,7 @@ status: accepted
 owner: "@atterdag"
 concepts: [credentialsd, provider-api, upstream, tpm, keepassxc]
 tags: [adr, upstream]
-sources: ["../spikes/0005-credentialsd-provider-api.md", "../architecture/target-architecture.md", "https://github.com/linux-credentials/credentialsd/issues/26"]
+sources: ["../spikes/0005-credentialsd-provider-api.md", "../architecture/02-constraints.md", "https://github.com/linux-credentials/credentialsd/issues/26"]
 date: 2026-11-01
 ---
 

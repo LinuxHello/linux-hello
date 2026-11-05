@@ -9,7 +9,7 @@ Closes #
 <!-- How the change fits the defined architecture and process. Link every source. -->
 
 - **Containers:** <!-- crates/<name>, plasma/, security/, policy/, docs/ -->
-- **Architecture and decisions:** <!-- the ADRs, target-architecture sections, workspace.dsl elements, policy-semantics rules, spike or brief this implements or relies on -->
+- **Architecture and decisions:** <!-- the ADRs, Arc42 sections in docs/architecture/, workspace.dsl elements, policy-semantics rules, spike or brief this implements or relies on -->
 - **Security properties:** <!-- properties in docs/security/ added, changed or relied on, or "none". Say whether it touches unsafe, a dependency, D-Bus names, policy parsing or AppArmor. -->
 - **Docs changed with the code:** <!-- the notes, ADRs or workspace.dsl updated, or why none needed it -->
 - **Rollback:** <!-- how to undo it, and anything a revert does not undo -->

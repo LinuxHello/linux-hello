@@ -29,7 +29,7 @@ PIN-rooted, biometric-unlocked passkeys and secrets for the Linux desktop: a Win
 | `security/` | AppArmor profiles, Tetragon policies, alert rules |
 | `policy/` | Policy schema and examples |
 | `docs/` | Obsidian vault (open `docs/` as a vault); renders on GitHub. Start at [docs/index.md](docs/index.md) |
-| `docs/architecture/` | Target architecture and C4 workspace (`workspace.dsl`) |
+| `docs/architecture/` | Architecture documentation in the Arc42 sections, and the C4 workspace (`workspace.dsl`) |
 | `docs/adr/` | Architecture decision records |
 | `docs/spikes/`, `docs/security/` | Milestone 0 spikes; threat model and security properties |
 
