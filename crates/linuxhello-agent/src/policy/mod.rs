@@ -4,9 +4,12 @@
 //!
 //! C4 component: `policyEngine` ([workspace.dsl](https://github.com/LinuxHello/architecture/blob/main/workspace.dsl))
 
+/// The built-in default policy layer (`default_layer`).
 pub mod defaults;
-/// Core policy engine submodules.
+/// The invariants that hold after layering: the PIN is always allowed, biometrics
+/// off means PIN only, and a PIN rule no PIN can meet is an error (`apply_invariants`).
 pub mod invariants;
+/// Admin-over-user layering into the effective policy (`merge`, `Effective`).
 pub mod merge;
 pub mod restrict;
 pub mod schema;

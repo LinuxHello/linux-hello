@@ -1,42 +1,42 @@
-//! Policy invariants.
-//!
-//! This module enforces core security invariants on the effective policy,
-//! ensuring that the PIN is always a valid fallback and that contradictions
-//! are reported. It is called by `merge` as the final step.
-//!
-//! C4 component: `policyEngine`
+//! Policy invariants: the rules that hold for every effective policy, whatever
+//! the layers say. `merge` applies them as its last step, so every caller of
+//! `merge` gets a policy in which the PIN is always allowed, biometrics off means
+//! PIN only, and a PIN rule no PIN can meet is reported instead of returned.
 
 use crate::policy::merge::Effective;
 use crate::policy::restrict::Contradiction;
 
-/// Applies core security invariants to an effective policy.
+/// Applies the invariants to an effective policy, in this order:
 ///
-/// 1. If `pin.max_length` < `pin.min_length`: `Err(Contradiction::MaxLengthBelowMinLength)`.
-/// 2. If `digits`, `lowercase`, `uppercase` and `special` are all `"disallowed"`: `Err(Contradiction::AllClassesDisallowed)`.
-/// 3. If `methods.biometrics_allowed` is false: remove `"fingerprint"` and `"face"` from every context's `methods`.
-/// 4. Add `"pin"` to every context's `methods` where it is missing, as the first element.
+/// 1. `pin.max_length` below `pin.min_length` is `MaxLengthBelowMinLength`.
+/// 2. `digits`, `lowercase`, `uppercase` and `special` all `"disallowed"` is
+///    `AllClassesDisallowed`.
+/// 3. `methods.biometrics_allowed = false` removes `"fingerprint"` and `"face"`
+///    from every context (`biometrics_disabled_leaves_only_pin`).
+/// 4. Every context allows `"pin"`; where it is missing it is added as the first
+///    method (`pin_is_always_allowed`, invariant 1).
+/// 5. `factors` stay as merged, even when `pin` is the only method left: the
+///    context is then unsatisfiable rather than weakened
+///    (`two_factors_with_only_pin_keep_two_factors`, invariant 3).
+///
+/// `managed` is not changed. Without a `[pin]` table rules 1 and 2 have nothing
+/// to check (`missing_pin_table_is_not_a_contradiction`).
+///
+/// # Errors
+///
+/// `Contradiction::MaxLengthBelowMinLength` or `Contradiction::AllClassesDisallowed`
+/// when the merged PIN rule cannot be met (`contradictory_merge_is_reported`).
 pub fn apply_invariants(mut effective: Effective) -> Result<Effective, Contradiction> {
-    let pin = effective
-        .layer
-        .pin
-        .as_ref()
-        .ok_or(Contradiction::AllClassesDisallowed)?;
-
-    // 1. Max length vs Min length
-    if let (Some(max), Some(min)) = (pin.max_length, pin.min_length) {
-        if max < min {
-            return Err(Contradiction::MaxLengthBelowMinLength);
+    if let Some(pin) = &effective.layer.pin {
+        if let (Some(max), Some(min)) = (pin.max_length, pin.min_length) {
+            if max < min {
+                return Err(Contradiction::MaxLengthBelowMinLength);
+            }
         }
-    }
-
-    // 2. All classes disallowed
-    let digits_disallowed = pin.digits.as_deref() == Some("disallowed");
-    let lowercase_disallowed = pin.lowercase.as_deref() == Some("disallowed");
-    let uppercase_disallowed = pin.uppercase.as_deref() == Some("disallowed");
-    let special_disallowed = pin.special.as_deref() == Some("disallowed");
-
-    if digits_disallowed && lowercase_disallowed && uppercase_disallowed && special_disallowed {
-        return Err(Contradiction::AllClassesDisallowed);
+        let classes = [&pin.digits, &pin.lowercase, &pin.uppercase, &pin.special];
+        if classes.iter().all(|c| c.as_deref() == Some("disallowed")) {
+            return Err(Contradiction::AllClassesDisallowed);
+        }
     }
 
     // 3 & 4. Biometrics and PIN fallback
@@ -48,13 +48,11 @@ pub fn apply_invariants(mut effective: Effective) -> Result<Effective, Contradic
 
     for context in effective.layer.context.values_mut() {
         if !biometrics_allowed {
-            // Remove fingerprint and face
             context
                 .methods
                 .retain(|m| m != "fingerprint" && m != "face");
         }
 
-        // Ensure PIN is present as the first element
         if !context.methods.contains(&"pin".to_string()) {
             context.methods.insert(0, "pin".to_string());
         }
@@ -67,7 +65,7 @@ pub fn apply_invariants(mut effective: Effective) -> Result<Effective, Contradic
 mod tests {
     use super::*;
     use crate::policy::merge::merge;
-    use crate::policy::schema::parse_layer;
+    use crate::policy::schema::{parse_layer, Layer};
 
     #[test]
     fn pin_is_always_allowed() {
@@ -76,8 +74,7 @@ mod tests {
 methods = ["face"]
 "#;
         let admin = parse_layer(admin_toml).unwrap();
-        let res = merge(&[admin], None).unwrap();
-        let effective = apply_invariants(res).unwrap();
+        let effective = merge(&[admin], None).unwrap();
         let sudo = &effective.layer.context["sudo"];
         assert!(sudo.methods.contains(&"pin".to_string()));
         assert!(sudo.methods.contains(&"face".to_string()));
@@ -94,8 +91,7 @@ biometrics_allowed = false
 methods = ["pin", "fingerprint", "face"]
 "#;
         let admin = parse_layer(admin_toml).unwrap();
-        let res = merge(&[admin], None).unwrap();
-        let effective = apply_invariants(res).unwrap();
+        let effective = merge(&[admin], None).unwrap();
         let sudo = &effective.layer.context["sudo"];
         assert_eq!(sudo.methods, vec!["pin".to_string()]);
     }
@@ -104,9 +100,9 @@ methods = ["pin", "fingerprint", "face"]
     fn contradictory_merge_is_reported() {
         // Max length < Min length
         {
-            let admin1 = parse_layer("[pin]\nmax_length = 8").unwrap();
-            let admin2 = parse_layer("[pin]\nmin_length = 10").unwrap();
-            let res = merge(&[admin1, admin2], None);
+            let admin = parse_layer("[pin]\nmax_length = 8").unwrap();
+            let user = parse_layer("[pin]\nmin_length = 10").unwrap();
+            let res = merge(&[admin], Some(&user));
             assert!(matches!(res, Err(Contradiction::MaxLengthBelowMinLength)));
         }
 
@@ -139,6 +135,15 @@ special = "disallowed"
     }
 
     #[test]
+    fn missing_pin_table_is_not_a_contradiction() {
+        let effective = Effective {
+            layer: Layer::default(),
+            managed: Default::default(),
+        };
+        assert_eq!(apply_invariants(effective.clone()), Ok(effective));
+    }
+
+    #[test]
     fn two_factors_with_only_pin_keep_two_factors() {
         let admin_toml = r#"
 [methods]
@@ -149,8 +154,7 @@ methods = ["pin", "fingerprint"]
 factors = 2
 "#;
         let admin = parse_layer(admin_toml).unwrap();
-        let res = merge(&[admin], None).unwrap();
-        let effective = apply_invariants(res).unwrap();
+        let effective = merge(&[admin], None).unwrap();
         let sudo = &effective.layer.context["sudo"];
         assert_eq!(sudo.methods, vec!["pin".to_string()]);
         assert_eq!(sudo.factors, Some(2));
