@@ -16,9 +16,9 @@ pass=0 fail=0
 fixture() {
   local d="$work/$1"
   rm -rf "$d"
-  mkdir -p "$d/docs/architecture" "$d/crates/agent/src/policy" "$d/crates/ctl/src" "$d/scripts/ci"
+  mkdir -p "$d/architecture" "$d/crates/agent/src/policy" "$d/crates/ctl/src" "$d/scripts/ci"
   cp "$check" "$d/scripts/ci/c4-docs.sh"
-  cat >"$d/docs/architecture/workspace.dsl" <<'EOF'
+  cat >"$d/architecture/workspace.dsl" <<'EOF'
 /* comment */
 workspace "W" {
     model {
@@ -103,6 +103,10 @@ expect 0 crate_naming_a_component_needs_no_module_tags "$r"
 r="$(fixture nested_brace)"
 printf '%s\n' 'pub fn f() {' '    mod not_top_level {}' '}' >>"$r/crates/agent/src/lib.rs"
 expect 0 modules_inside_functions_are_not_component_modules "$r"
+
+r="$(fixture no_model)"
+rm "$r/architecture/workspace.dsl"
+expect 1 missing_c4_model_submodule_is_refused "$r" "the C4 model is the LinuxHello/architecture submodule"
 
 echo "$pass passed, $fail failed"
 [[ "$fail" == 0 ]]

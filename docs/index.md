@@ -16,9 +16,9 @@ This folder is an Obsidian vault and renders on GitHub. Links are standard relat
 
 | Area | Start here |
 | :-- | :-- |
-| Architecture | [Arc42 sections](architecture/README.md), [Policy semantics](architecture/policy-semantics.md), [C4 workspace](architecture/workspace.dsl) |
-| Decisions | [ADR index](adr/) |
-| Spikes (Milestone 0) | [Spikes](spikes/) |
+| Architecture | [Arc42 sections](https://github.com/LinuxHello/architecture/blob/main/arc42/README.md), [Policy semantics](architecture/policy-semantics.md), [C4 workspace](https://github.com/LinuxHello/architecture/blob/main/workspace.dsl) |
+| Decisions | [ADR index](https://github.com/LinuxHello/architecture/blob/main/adr/README.md), in the architecture repository; also at `architecture/adr/` in the submodule |
+| Spikes (Milestone 0) | [Spikes](https://github.com/LinuxHello/architecture/blob/main/spikes/README.md) |
 | Security | [Threat model and properties](security/) |
 | Governance | [GOVERNANCE.md](../GOVERNANCE.md), [SECURITY.md](../SECURITY.md), [CONTRIBUTING.md](../CONTRIBUTING.md) |
 | Backlog | [How the backlog is ordered and what is next](project/backlog.md) |
