@@ -42,7 +42,7 @@ Options considered for the link between code and C4:
 
    | C4 level | Rust | Where it is documented |
    | :-- | :-- | :-- |
-   | 1 System context | — | `workspace.dsl`, [target architecture](../architecture/target-architecture.md) |
+   | 1 System context | — | `workspace.dsl`, [Arc42 section 3](../architecture/03-context-and-scope.md) |
    | 2 Container | crate | crate root `//!`: ``//! C4 container: `<id>` `` |
    | 3 Component | top-level module (declared in the crate root) | module `//!`: ``//! C4 component: `<id>` `` |
    | 4 Code | nested modules, types, functions | `///` on every item; no diagram |

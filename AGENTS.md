@@ -89,7 +89,7 @@ Resolve conflicts in this order, and say which source you used:
 
 1. `main`: code, tests, CI results
 2. Accepted ADRs in [docs/adr/](docs/adr/)
-3. [docs/architecture/target-architecture.md](docs/architecture/target-architecture.md) and `docs/architecture/workspace.dsl`
+3. The architecture documentation in [docs/architecture/](docs/architecture/README.md), structured by Arc42 ([ADR-0010](docs/adr/0010-arc42-architecture-documentation.md)), and `docs/architecture/workspace.dsl`
 4. Upstream documentation and source (credentialsd, libwebauthn, Howdy, fprintd, KeePassXC, tss-esapi, zbus, KDE) at the version in `Cargo.lock`
 
 Upstream behaviour you have not checked in source or docs is an assumption. Say so.
@@ -149,7 +149,7 @@ Every item is documented, and the code names the C4 element it implements ([ADR-
 
 | C4 level | Rust | Rule |
 | :-- | :-- | :-- |
-| 1 System context | — | `docs/architecture/workspace.dsl` and the target architecture; never in code |
+| 1 System context | — | `docs/architecture/workspace.dsl` and [Arc42 section 3](docs/architecture/03-context-and-scope.md); never in code |
 | 2 Container | crate | The crate root (`lib.rs`, `main.rs`) opens with `//!` docs: what the container does, then ``//! C4 container: `<id>` `` |
 | 3 Component | module declared in the crate root | Its own file, opening with `//!` docs: responsibility, collaborators, then ``//! C4 component: `<id>` ``, a component of the crate's container |
 | 4 Code | nested modules, structs, enums, traits, fields, variants, functions, methods, constants | `///` on every one, private ones included |

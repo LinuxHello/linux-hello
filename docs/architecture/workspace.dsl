@@ -1,6 +1,6 @@
 /*
  * Linux Hello — C4 workspace (System Context, Container, Component)
- * Source note: docs/architecture/target-architecture.md
+ * Source notes: docs/architecture/ (Arc42 sections, README.md)
  * Status: draft, UNTESTED — validate with the Structurizr CLI before use.
  * Date: 2026-10-27
  */

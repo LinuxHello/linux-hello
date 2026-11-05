@@ -6,7 +6,7 @@ status: active
 owner: "@atterdag"
 concepts: [ai-assisted-development, governance]
 tags: [project, claude]
-sources: ["../../AGENTS.md", "../../GOVERNANCE.md", "../architecture/target-architecture.md"]
+sources: ["../../AGENTS.md", "../../GOVERNANCE.md", "../architecture/README.md"]
 date: 2026-11-01
 ---
 
@@ -42,7 +42,7 @@ You are the lead engineer on Linux Hello. Act as a senior Rust and Linux securit
 
 Add these from the repo to the Claude Project's files:
 
-- `docs/architecture/target-architecture.md`
+- `docs/architecture/*.md` (the Arc42 sections, [ADR-0010](../adr/0010-arc42-architecture-documentation.md))
 - `docs/architecture/workspace.dsl`
 - `docs/adr/*.md`
 - `AGENTS.md`, `GOVERNANCE.md`, `SECURITY.md`, `CONTRIBUTING.md`
