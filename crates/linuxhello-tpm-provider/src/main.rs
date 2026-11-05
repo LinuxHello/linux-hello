@@ -4,7 +4,7 @@
 //! that carries `#[allow(unsafe_code)]` and is listed in `scripts/ci/unsafe-allowlist.txt`;
 //! everywhere else in this crate `unsafe` is denied.
 //!
-//! C4 container: `tpmProvider` ([workspace.dsl](https://github.com/LinuxHello/linux-hello/blob/main/docs/architecture/workspace.dsl))
+//! C4 container: `tpmProvider` ([workspace.dsl](https://github.com/LinuxHello/architecture/blob/main/workspace.dsl))
 
 #![deny(unsafe_code)]
 

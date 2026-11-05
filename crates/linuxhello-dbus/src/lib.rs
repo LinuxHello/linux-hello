@@ -7,7 +7,7 @@
 //! This crate is not a container of its own: it is the contract of the Agent's
 //! D-Bus API, linked into every container that calls it.
 //!
-//! C4 component: `dbusApi` ([workspace.dsl](https://github.com/LinuxHello/linux-hello/blob/main/docs/architecture/workspace.dsl))
+//! C4 component: `dbusApi` ([workspace.dsl](https://github.com/LinuxHello/architecture/blob/main/workspace.dsl))
 
 #![forbid(unsafe_code)]
 
