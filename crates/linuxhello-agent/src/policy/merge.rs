@@ -4,6 +4,7 @@
 //! (admin, user, and default) into a single effective policy.
 
 use crate::policy::defaults::default_layer;
+use crate::policy::invariants::apply_invariants;
 use crate::policy::restrict::{most_restrictive, Contradiction};
 use crate::policy::schema::{ContextPolicy, Layer, MethodsPolicy, PinPolicy, RpClassPolicy};
 use std::collections::BTreeSet;
@@ -40,7 +41,7 @@ pub fn merge(admin: &[Layer], user: Option<&Layer>) -> Result<Effective, Contrad
 
     apply_admin_overrides(&mut effective_layer, &admin_combined, &mut managed);
 
-    Ok(Effective {
+    apply_invariants(Effective {
         layer: effective_layer,
         managed,
     })

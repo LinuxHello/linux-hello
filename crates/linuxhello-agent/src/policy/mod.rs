@@ -6,6 +6,8 @@
 
 /// The built-in default policy layer (`default_layer`).
 pub mod defaults;
+/// Enforcement of security invariants.
+pub mod invariants;
 /// Admin-over-user layering into the effective policy (`merge`, `Effective`).
 pub mod merge;
 pub mod restrict;
