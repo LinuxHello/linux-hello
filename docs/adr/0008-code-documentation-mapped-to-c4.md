@@ -14,7 +14,7 @@ date: 2026-11-04
 
 ## Status
 
-Proposed, 2026-11-04. [ADR-0011](0011-architecture-repository.md) (proposed) would move `workspace.dsl` to `LinuxHello/architecture`, pinned here as a submodule; the rules of this ADR stay.
+Proposed, 2026-11-04. [ADR-0011](0011-architecture-repository.md) (accepted) moves `workspace.dsl` to `LinuxHello/architecture`, pinned here as a submodule; the rules of this ADR stay.
 
 ## Context
 
