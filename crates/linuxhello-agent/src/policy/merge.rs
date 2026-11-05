@@ -5,7 +5,7 @@
 
 use crate::policy::defaults::default_layer;
 use crate::policy::restrict::{most_restrictive, Contradiction};
-use crate::policy::schema::Layer;
+use crate::policy::schema::{ContextPolicy, Layer, MethodsPolicy, PinPolicy, RpClassPolicy};
 use std::collections::BTreeSet;
 
 /// The effective policy resulting from merging admin and user layers.
@@ -38,7 +38,7 @@ pub fn merge(admin: &[Layer], user: Option<&Layer>) -> Result<Effective, Contrad
     let mut effective_layer = base.clone();
     let mut managed = BTreeSet::new();
 
-    apply_admin_overrides(&mut effective_layer, &admin_combined, &mut managed)?;
+    apply_admin_overrides(&mut effective_layer, &admin_combined, &mut managed);
 
     Ok(Effective {
         layer: effective_layer,
@@ -46,164 +46,225 @@ pub fn merge(admin: &[Layer], user: Option<&Layer>) -> Result<Effective, Contrad
     })
 }
 
-/// Applies overrides from the admin layer to the target layer, recording managed paths.
-fn apply_admin_overrides(
-    target: &mut Layer,
-    admin: &Layer,
-    managed: &mut BTreeSet<String>,
-) -> Result<(), Contradiction> {
-    // PIN overrides
-    if let Some(admin_pin) = &admin.pin {
-        // If admin_pin is just Default (all None), it sets nothing.
-        // However, the logic for "what an admin sets" might be slightly more nuanced.
-        // The brief says: "An admin [pin] that sets only min_length leaves every other PIN key at base's value."
-        // This means we only apply fields that are Some.
-
-        if let Some(target_pin) = &mut target.pin {
-            if let Some(v) = admin_pin.min_length {
-                target_pin.min_length = Some(v);
-                managed.insert("pin.min_length".to_string());
-            }
-            if let Some(v) = admin_pin.max_length {
-                target_pin.max_length = Some(v);
-                managed.insert("pin.max_length".to_string());
-            }
-            if let Some(v) = &admin_pin.digits {
-                target_pin.digits = Some(v.clone());
-                managed.insert("pin.digits".to_string());
-            }
-            if let Some(v) = &admin_pin.lowercase {
-                target_pin.lowercase = Some(v.clone());
-                managed.insert("pin.lowercase".to_string());
-            }
-            if let Some(v) = &admin_pin.uppercase {
-                target_pin.uppercase = Some(v.clone());
-                managed.insert("pin.uppercase".to_string());
-            }
-            if let Some(v) = &admin_pin.special {
-                target_pin.special = Some(v.clone());
-                managed.insert("pin.special".to_string());
-            }
-            if let Some(v) = admin_pin.history {
-                target_pin.history = Some(v);
-                managed.insert("pin.history".to_string());
-            }
-            if let Some(v) = admin_pin.expiry_days {
-                target_pin.expiry_days = Some(v);
-                managed.insert("pin.expiry_days".to_string());
-            }
-            if let Some(v) = admin_pin.lockout_attempts {
-                target_pin.lockout_attempts = Some(v);
-                managed.insert("pin.lockout_attempts".to_string());
-            }
-            if let Some(v) = admin_pin.lockout_minutes {
-                target_pin.lockout_minutes = Some(v);
-                managed.insert("pin.lockout_minutes".to_string());
-            }
-        } else {
-            // Admin sets a PIN policy where there wasn't one before.
-            // But default_layer() always has a PIN policy.
-            // If the base doesn't have one (it shouldn't, since default_layer has one),
-            // we'd need to create it.
-            target.pin = Some(admin_pin.clone());
-            managed.insert("pin".to_string()); // Simplification, but shouldn't happen.
-        }
+/// Applies every key the combined admin layer sets to `target`, replacing the
+/// base value, and records the key's path in `managed`
+/// (`admin_key_leaves_other_defaults_in_place`,
+/// `admin_only_rp_class_is_managed_per_key`).
+///
+/// Key by key: a key the admin leaves unset keeps the base value, so an admin
+/// `[pin]` that sets only `min_length` never resets the other PIN keys. A table
+/// the base does not have (an rp_class only the admin defines) starts empty and
+/// takes the admin's keys, each managed under its own path. An rp_class's `match`
+/// is the union of the admin's and the base's patterns, base patterns first.
+fn apply_admin_overrides(target: &mut Layer, admin: &Layer, managed: &mut BTreeSet<String>) {
+    if let Some(a) = &admin.pin {
+        let t = target.pin.get_or_insert_with(empty_pin);
+        set(&mut t.min_length, a.min_length, "pin.min_length", managed);
+        set(&mut t.max_length, a.max_length, "pin.max_length", managed);
+        set(&mut t.digits, a.digits.clone(), "pin.digits", managed);
+        set(
+            &mut t.lowercase,
+            a.lowercase.clone(),
+            "pin.lowercase",
+            managed,
+        );
+        set(
+            &mut t.uppercase,
+            a.uppercase.clone(),
+            "pin.uppercase",
+            managed,
+        );
+        set(&mut t.special, a.special.clone(), "pin.special", managed);
+        set(&mut t.history, a.history, "pin.history", managed);
+        set(
+            &mut t.expiry_days,
+            a.expiry_days,
+            "pin.expiry_days",
+            managed,
+        );
+        set(
+            &mut t.lockout_attempts,
+            a.lockout_attempts,
+            "pin.lockout_attempts",
+            managed,
+        );
+        set(
+            &mut t.lockout_minutes,
+            a.lockout_minutes,
+            "pin.lockout_minutes",
+            managed,
+        );
     }
 
-    // Methods overrides
-    if let Some(admin_methods) = &admin.methods {
-        if let Some(target_methods) = &mut target.methods {
-            if let Some(v) = admin_methods.biometrics_allowed {
-                target_methods.biometrics_allowed = Some(v);
-                managed.insert("methods.biometrics_allowed".to_string());
-            }
-            if let Some(v) = admin_methods.face_requires_ir {
-                target_methods.face_requires_ir = Some(v);
-                managed.insert("methods.face_requires_ir".to_string());
-            }
-            if let Some(v) = admin_methods.require_hardware_tpm {
-                target_methods.require_hardware_tpm = Some(v);
-                managed.insert("methods.require_hardware_tpm".to_string());
-            }
-        } else {
-            target.methods = Some(admin_methods.clone());
-            managed.insert("methods".to_string());
-        }
+    if let Some(a) = &admin.methods {
+        let t = target.methods.get_or_insert_with(empty_methods);
+        let biometrics = "methods.biometrics_allowed";
+        set(
+            &mut t.biometrics_allowed,
+            a.biometrics_allowed,
+            biometrics,
+            managed,
+        );
+        set(
+            &mut t.face_requires_ir,
+            a.face_requires_ir,
+            "methods.face_requires_ir",
+            managed,
+        );
+        let tpm = "methods.require_hardware_tpm";
+        set(
+            &mut t.require_hardware_tpm,
+            a.require_hardware_tpm,
+            tpm,
+            managed,
+        );
     }
 
-    // Context overrides
-    for (name, admin_ctx) in &admin.context {
-        if let Some(target_ctx) = target.context.get_mut(name) {
-            // For context, the admin's values replace base's.
-            // But wait, what about "methods"? The brief says:
-            // "For every key admin sets: the effective value is the admin's, replacing base's, and its path goes into managed."
-            // "Contexts login, unlock, sudo, session: methods ["pin", "fingerprint", "face"], factors 1, reverify_after none."
-            // This implies "methods" is a key.
-
-            if !admin_ctx.methods.is_empty() {
-                target_ctx.methods = admin_ctx.methods.clone();
-                managed.insert(format!("context.{}.methods", name));
-            }
-            if admin_ctx.factors.is_some() {
-                target_ctx.factors = admin_ctx.factors;
-                managed.insert(format!("context.{}.factors", name));
-            }
-            if admin_ctx.reverify_after.is_some() {
-                target_ctx.reverify_after = admin_ctx.reverify_after.clone();
-                managed.insert(format!("context.{}.reverify_after", name));
-            }
-        } else {
-            // Admin provides a context not in base.
-            target.context.insert(name.clone(), admin_ctx.clone());
-            managed.insert(format!("context.{}", name));
+    for (name, a) in &admin.context {
+        let t = target
+            .context
+            .entry(name.clone())
+            .or_insert_with(empty_context);
+        if !a.methods.is_empty() {
+            t.methods = a.methods.clone();
+            managed.insert(format!("context.{name}.methods"));
         }
+        set(
+            &mut t.factors,
+            a.factors,
+            &format!("context.{name}.factors"),
+            managed,
+        );
+        let reverify = format!("context.{name}.reverify_after");
+        set(
+            &mut t.reverify_after,
+            a.reverify_after.clone(),
+            &reverify,
+            managed,
+        );
     }
 
-    // RpClass overrides
-    for (name, admin_rp) in &admin.rp_class {
-        if let Some(target_rp) = target.rp_class.get_mut(name) {
-            if !admin_rp.match_patterns.is_empty() {
-                // The brief says: "Exception, rp_class match: the union of the admin's patterns and base's, managed."
-                // This is a bit contradictory to "For every key admin sets: the effective value is the admin's...".
-                // But it specifically calls out the exception for `match`.
-                let mut union_patterns = target_rp.match_patterns.clone();
-                for p in &admin_rp.match_patterns {
-                    if !union_patterns.contains(p) {
-                        union_patterns.push(p.clone());
-                    }
+    for (name, a) in &admin.rp_class {
+        let t = target
+            .rp_class
+            .entry(name.clone())
+            .or_insert_with(empty_rp_class);
+        if !a.match_patterns.is_empty() {
+            for pattern in &a.match_patterns {
+                if !t.match_patterns.contains(pattern) {
+                    t.match_patterns.push(pattern.clone());
                 }
-                target_rp.match_patterns = union_patterns;
-                managed.insert(format!("rp_class.{}.match", name));
             }
-            if admin_rp.provider.is_some() {
-                target_rp.provider = admin_rp.provider;
-                managed.insert(format!("rp_class.{}.provider", name));
-            }
-            if admin_rp.prompt.is_some() {
-                target_rp.prompt = admin_rp.prompt;
-                managed.insert(format!("rp_class.{}.prompt", name));
-            }
-            if admin_rp.factors.is_some() {
-                target_rp.factors = admin_rp.factors;
-                managed.insert(format!("rp_class.{}.factors", name));
-            }
-            if admin_rp.require_second_credential.is_some() {
-                target_rp.require_second_credential = admin_rp.require_second_credential;
-                managed.insert(format!("rp_class.{}.require_second_credential", name));
-            }
-        } else {
-            target.rp_class.insert(name.clone(), admin_rp.clone());
-            managed.insert(format!("rp_class.{}", name));
+            managed.insert(format!("rp_class.{name}.match"));
         }
+        set(
+            &mut t.provider,
+            a.provider,
+            &format!("rp_class.{name}.provider"),
+            managed,
+        );
+        set(
+            &mut t.prompt,
+            a.prompt,
+            &format!("rp_class.{name}.prompt"),
+            managed,
+        );
+        set(
+            &mut t.factors,
+            a.factors,
+            &format!("rp_class.{name}.factors"),
+            managed,
+        );
+        let second = format!("rp_class.{name}.require_second_credential");
+        set(
+            &mut t.require_second_credential,
+            a.require_second_credential,
+            &second,
+            managed,
+        );
     }
+}
 
-    Ok(())
+/// Replaces `target` with the admin's `value` when the admin set it, and records
+/// `path` as managed. An unset admin value leaves `target` as it is.
+fn set<T>(target: &mut Option<T>, value: Option<T>, path: &str, managed: &mut BTreeSet<String>) {
+    if let Some(v) = value {
+        *target = Some(v);
+        managed.insert(path.to_string());
+    }
+}
+
+/// A `[pin]` table with no key set: the start for an admin `[pin]` when the base
+/// has none. The defaults always set one, so this is a safeguard.
+fn empty_pin() -> PinPolicy {
+    PinPolicy {
+        min_length: None,
+        max_length: None,
+        digits: None,
+        lowercase: None,
+        uppercase: None,
+        special: None,
+        history: None,
+        expiry_days: None,
+        lockout_attempts: None,
+        lockout_minutes: None,
+    }
+}
+
+/// A `[methods]` table with no key set; see [`empty_pin`].
+fn empty_methods() -> MethodsPolicy {
+    MethodsPolicy {
+        biometrics_allowed: None,
+        face_requires_ir: None,
+        require_hardware_tpm: None,
+    }
+}
+
+/// A context with no key set, for an admin context the base lacks.
+fn empty_context() -> ContextPolicy {
+    ContextPolicy {
+        methods: Vec::new(),
+        factors: None,
+        reverify_after: None,
+    }
+}
+
+/// An rp_class with no key set, for an rp_class only the admin defines.
+fn empty_rp_class() -> RpClassPolicy {
+    RpClassPolicy {
+        match_patterns: Vec::new(),
+        provider: None,
+        prompt: None,
+        factors: None,
+        require_second_credential: None,
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::policy::schema::parse_layer;
+
+    #[test]
+    fn admin_only_rp_class_is_managed_per_key() {
+        let admin = parse_layer(
+            "[rp_class.bank]\nmatch = [\"bank.example\"]\nprovider = \"tpm\"\nfactors = 2",
+        )
+        .unwrap();
+        let res = merge(&[admin], None).unwrap();
+        let bank = &res.layer.rp_class["bank"];
+        assert_eq!(bank.match_patterns, vec!["bank.example".to_string()]);
+        assert_eq!(bank.factors, Some(2));
+        let expected: BTreeSet<String> = [
+            "rp_class.bank.factors",
+            "rp_class.bank.match",
+            "rp_class.bank.provider",
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect();
+        assert_eq!(res.managed, expected);
+    }
 
     #[test]
     fn no_layers_give_the_defaults() {
