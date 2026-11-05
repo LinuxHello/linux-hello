@@ -40,7 +40,7 @@ pub fn merge(admin: &[Layer], user: Option<&Layer>) -> Result<Effective, Contrad
 
     apply_admin_overrides(&mut effective_layer, &admin_combined, &mut managed);
 
-    Ok(Effective {
+    crate::policy::invariants::apply_invariants(Effective {
         layer: effective_layer,
         managed,
     })
