@@ -9,7 +9,7 @@ Closes #
 <!-- How the change fits the defined architecture and process. Link every source. -->
 
 - **Containers:** <!-- crates/<name>, plasma/, security/, policy/, docs/ -->
-- **Architecture and decisions:** <!-- the ADRs, Arc42 sections in docs/architecture/, workspace.dsl elements, policy-semantics rules, spike or brief this implements or relies on -->
+- **Architecture and decisions:** <!-- the ADRs, Arc42 sections and workspace.dsl elements in LinuxHello/architecture (and its pull request, if this change needs one), policy-semantics rules, spike or brief this implements or relies on -->
 - **Security properties:** <!-- properties in docs/security/ added, changed or relied on, or "none". Say whether it touches unsafe, a dependency, D-Bus names, policy parsing or AppArmor. -->
 - **Docs changed with the code:** <!-- the notes, ADRs or workspace.dsl updated, or why none needed it -->
 - **Rollback:** <!-- how to undo it, and anything a revert does not undo -->
@@ -25,6 +25,6 @@ Closes #
 **How to verify:** <!-- commands, with the toolchain they were run on -->
 
 - [ ] `make gates` passes locally: fmt, clippy, test, cargo-deny, cargo-audit, unsafe-policy, fuzz, docs
-- [ ] Every new item has a doc comment; every new crate root or top-level module names its C4 element, and `workspace.dsl` has it ([ADR-0008](../docs/adr/0008-code-documentation-mapped-to-c4.md))
-- [ ] The `quality-gate` check passed, so its attestation for the tested merge commit is signed and verified ([ADR-0006](../docs/adr/0006-attested-quality-gates-and-releases.md))
+- [ ] Every new item has a doc comment; every new crate root or top-level module names its C4 element, and `workspace.dsl` has it ([ADR-0008](https://github.com/LinuxHello/architecture/blob/main/adr/0008-code-documentation-mapped-to-c4.md))
+- [ ] The `quality-gate` check passed, so its attestation for the tested merge commit is signed and verified ([ADR-0006](https://github.com/LinuxHello/architecture/blob/main/adr/0006-attested-quality-gates-and-releases.md))
 - [ ] Every commit is signed off (`git commit -s`); tools named with `Assisted-by:`

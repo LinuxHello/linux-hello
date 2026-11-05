@@ -19,16 +19,17 @@ The maintainer (@atterdag) owns the architecture, the threat model and every mer
 | `crates/linuxhello-kpxc-bridge` | credentialsd provider for portable passkeys from KeePassXC | container `kpxcBridge` |
 | `crates/linuxhello-ctl` | CLI | container `cli` |
 | `plasma/`, `security/`, `policy/` | Plasma integration; AppArmor, Tetragon, alerts; policy schema | `plasma`, `secProfiles`, `policyStore` |
-| `docs/` | Obsidian vault: architecture, ADRs, spikes, threat model, security properties | — |
+| `architecture/` | Submodule pinning [`LinuxHello/architecture`](https://github.com/LinuxHello/architecture): Arc42 sections, the C4 model `workspace.dsl`, ADRs, spikes ([ADR-0011](https://github.com/LinuxHello/architecture/blob/main/adr/0011-architecture-repository.md)) | — |
+| `docs/` | Obsidian vault for what stays with the code: threat model and security properties, policy semantics, backlog | — |
 
 ## Roles and workflow
 
-Roles are fixed by [ADR-0004](docs/adr/0004-agent-roles.md). Know which one you are playing.
+Roles are fixed by [ADR-0004](https://github.com/LinuxHello/architecture/blob/main/adr/0004-agent-roles.md). Know which one you are playing.
 
 | Role | Agent | Does | Does not |
 | :-- | :-- | :-- | :-- |
-| **Implementer** | Local model via Claude Code | Implements one issue from its brief: tests first, then code; runs `make fix` and `make gates`; opens a pull request | Pick issues without a brief; change scope; touch files the brief does not list; edit `docs/adr/` or CI |
-| **Lead** | Claude | Writes briefs; keeps labels, milestones and `docs/` current; reviews and fixes pull requests, pushing to their branches; opens pull requests; runs spikes | Merge; push to `main`; tag or release; change repository settings; sign off a commit |
+| **Implementer** | Local model via Claude Code | Implements one issue from its brief: tests first, then code; runs `make fix` and `make gates`; opens a pull request | Pick issues without a brief; change scope; touch files the brief does not list; edit ADRs or CI |
+| **Lead** | Claude | Writes briefs; keeps labels, milestones, `docs/` and `LinuxHello/architecture` current; reviews and fixes pull requests, pushing to their branches; opens pull requests; runs spikes | Merge; push to `main`; tag or release; change repository settings; sign off a commit |
 | **Assistant** | GitHub Copilot | Pull request summaries; commit messages for hand-made commits; review comments with suggested changes | Push commits unless the maintainer asks it to |
 | **Maintainer** | @atterdag | Decides and merges | — |
 
@@ -88,8 +89,10 @@ Every commit needs the maintainer's sign-off, including commits that apply a Cop
 Resolve conflicts in this order, and say which source you used:
 
 1. `main`: code, tests, CI results
-2. Accepted ADRs in [docs/adr/](docs/adr/)
-3. The architecture documentation in [docs/architecture/](docs/architecture/README.md), structured by Arc42 ([ADR-0010](docs/adr/0010-arc42-architecture-documentation.md)), and `docs/architecture/workspace.dsl`
+2. Accepted ADRs in [`LinuxHello/architecture`](https://github.com/LinuxHello/architecture/blob/main/adr/README.md)
+3. The architecture documentation in [`LinuxHello/architecture`](https://github.com/LinuxHello/architecture/blob/main/arc42/README.md), structured by Arc42 ([ADR-0010](https://github.com/LinuxHello/architecture/blob/main/adr/0010-arc42-architecture-documentation.md)), and its `workspace.dsl`
+
+Items 2 and 3 count at the commit this repository pins in `architecture/` ([ADR-0011](https://github.com/LinuxHello/architecture/blob/main/adr/0011-architecture-repository.md)). A newer commit of `LinuxHello/architecture` is a proposal until the pin moves.
 4. Upstream documentation and source (credentialsd, libwebauthn, Howdy, fprintd, KeePassXC, tss-esapi, zbus, KDE) at the version in `Cargo.lock`
 
 Upstream behaviour you have not checked in source or docs is an assumption. Say so.
@@ -102,19 +105,19 @@ Never propose or write anything that breaks these. If a task seems to need it, s
 2. **Keys sign, never leave.** Private key material never leaves the TPM or KeePassXC. The Secret Service stores tokens, never passkey private keys.
 3. **Fail closed.** Unparseable policy denies everything except the PIN. A daemon whose AppArmor profile is not loaded in enforce mode refuses to start. No fallback silently weakens authentication.
 4. **No `unsafe`**, except in one small, audited module each in the TPM provider and the PAM module. The workspace denies `unsafe_code`; every other crate root sets `#![forbid(unsafe_code)]`. A module may carry `#[allow(unsafe_code)]` only if it is listed in `scripts/ci/unsafe-allowlist.txt`, and adding it needs the maintainer's review. The `unsafe-policy` CI job enforces this.
-5. **Licence boundaries.** Link only to LGPL or permissive code. Reach GPL components (KeePassXC, fprintd) across a process boundary only. All code here is LGPL-3.0-or-later ([ADR-0002](docs/adr/0002-licence-lgpl-3-or-later.md)).
+5. **Licence boundaries.** Link only to LGPL or permissive code. Reach GPL components (KeePassXC, fprintd) across a process boundary only. All code here is LGPL-3.0-or-later ([ADR-0002](https://github.com/LinuxHello/architecture/blob/main/adr/0002-licence-lgpl-3-or-later.md)).
 6. **Upstream first.** Changes to upstream projects go upstream as contributions, not into forks or vendored patches.
-7. **One-way doors need an ADR:** licence, names, D-Bus names (`io.github.LinuxHello.*`), crate and package names, the reset model ([ADR-0003](docs/adr/0003-destructive-reset.md)), repository topology.
+7. **One-way doors need an ADR:** licence, names, D-Bus names (`io.github.LinuxHello.*`), crate and package names, the reset model ([ADR-0003](https://github.com/LinuxHello/architecture/blob/main/adr/0003-destructive-reset.md)), repository topology.
 8. **Public repository.** Never write secrets, tokens, personal data, or details of anyone's machines (hostnames, home paths, hardware, local endpoints, model names) into code, docs, issues, commit messages or PR descriptions.
-9. **No secrets in the loop.** Never ask for, read, print or store a token or key. The lead works in GitHub through the Claude GitHub App, whose credential the session injects unseen ([ADR-0004](docs/adr/0004-agent-roles.md#amendment-2026-11-03-the-lead-works-in-github-directly)); every other GitHub operation runs through `gh` on the maintainer's machine. Produce scripts, not requests for credentials.
+9. **No secrets in the loop.** Never ask for, read, print or store a token or key. The lead works in GitHub through the Claude GitHub App, whose credential the session injects unseen ([ADR-0004](https://github.com/LinuxHello/architecture/blob/main/adr/0004-agent-roles.md#amendment-2026-11-03-the-lead-works-in-github-directly)); every other GitHub operation runs through `gh` on the maintainer's machine. Produce scripts, not requests for credentials.
 
 ## How to work
 
-- **Spikes before code.** Milestone 0 answers the unverified assumptions in `docs/spikes/`. Do not write implementation that depends on an open spike; name the spike that blocks it.
+- **Spikes before code.** Milestone 0 answers the unverified assumptions in the [spikes](https://github.com/LinuxHello/architecture/blob/main/spikes/README.md). Do not write implementation that depends on an open spike; name the spike that blocks it.
 - **Security properties first.** Every security behaviour is a plain-language property in `docs/security/` with a test whose name states it, e.g. `caller_from_other_origin_is_refused`. Write the property and the failing test before the code.
 - **Small PRs, one container where possible.** Each PR states intent, affected containers, tests added, how to verify, and rollback.
 - **Document every item, and name its C4 element.** See [Code documentation](#code-documentation).
-- **Docs change with code.** A behaviour change updates the architecture note, the C4 workspace or an ADR in the same PR. Flag drift when you see it.
+- **Docs change with code.** A change inside a component updates its doc comments, and `docs/security/` or `policy-semantics.md` where they apply, in the same PR. A change to a container, component, interface or decision has a pull request in `LinuxHello/architecture` (the Arc42 notes, `workspace.dsl` or an ADR); it merges first, and the code PR bumps the `architecture` pin and links it. Flag drift when you see it.
 - **Check versions before trusting an API.** credentialsd is pre-release; tss-esapi, zbus, cxx-qt and the PAM crates change between versions. Read `Cargo.lock`, then the docs for that version.
 - **Automate.** Prefer Makefile targets and scripts that check their own prerequisites over sequences of manual commands. Scripts are idempotent and fail closed.
 - **Dependencies** must pass `cargo-deny` (licences, advisories, sources). Do not add one to work around a missing feature without saying why.
@@ -135,7 +138,7 @@ RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --document-private-it
 bash scripts/ci/test-c4-docs.sh && bash scripts/ci/c4-docs.sh   # C4 tags (ADR-0008)
 ```
 
-The `quality-gate` check passes only when all of these passed. It then signs a Sigstore attestation for the commit ([ADR-0006](docs/adr/0006-attested-quality-gates-and-releases.md)). The gate list is [`scripts/ci/quality-gates.txt`](scripts/ci/quality-gates.txt), and `make verify-gate SHA=<commit>` checks the attestation for a commit on `main`.
+The `quality-gate` check passes only when all of these passed. It then signs a Sigstore attestation for the commit ([ADR-0006](https://github.com/LinuxHello/architecture/blob/main/adr/0006-attested-quality-gates-and-releases.md)). The gate list is [`scripts/ci/quality-gates.txt`](scripts/ci/quality-gates.txt), and `make verify-gate SHA=<commit>` checks the attestation for a commit on `main`.
 
 CI also runs CodeQL (security), dependency review (new vulnerable or disallowed dependencies) and SonarQube Cloud (code quality and coverage). Treat their findings like a failing test: fix the cause, or explain in the pull request why it is a false positive.
 
@@ -145,16 +148,16 @@ CI also runs CodeQL (security), dependency review (new vulnerable or disallowed 
 
 ## Code documentation
 
-Every item is documented, and the code names the C4 element it implements ([ADR-0008](docs/adr/0008-code-documentation-mapped-to-c4.md)). Clippy and the `docs` gate enforce it.
+Every item is documented, and the code names the C4 element it implements ([ADR-0008](https://github.com/LinuxHello/architecture/blob/main/adr/0008-code-documentation-mapped-to-c4.md)). Clippy and the `docs` gate enforce it.
 
 | C4 level | Rust | Rule |
 | :-- | :-- | :-- |
-| 1 System context | — | `docs/architecture/workspace.dsl` and [Arc42 section 3](docs/architecture/03-context-and-scope.md); never in code |
+| 1 System context | — | `workspace.dsl` in `LinuxHello/architecture` and [Arc42 section 3](https://github.com/LinuxHello/architecture/blob/main/arc42/03-context-and-scope.md); never in code |
 | 2 Container | crate | The crate root (`lib.rs`, `main.rs`) opens with `//!` docs: what the container does, then ``//! C4 container: `<id>` `` |
 | 3 Component | module declared in the crate root | Its own file, opening with `//!` docs: responsibility, collaborators, then ``//! C4 component: `<id>` ``, a component of the crate's container |
 | 4 Code | nested modules, structs, enums, traits, fields, variants, functions, methods, constants | `///` on every one, private ones included |
 
-`<id>` is the identifier in `workspace.dsl`. A new top-level module needs its component in `workspace.dsl` first; add it in the same pull request. Diagrams stay in `workspace.dsl`; do not draw C4 diagrams in doc comments.
+`<id>` is the identifier in `workspace.dsl`. A new top-level module needs its component in `workspace.dsl` first: add it in a `LinuxHello/architecture` pull request, then bump the `architecture` pin in the code pull request. The `docs` gate reads the model at the pin. Diagrams stay in `workspace.dsl`; do not draw C4 diagrams in doc comments.
 
 What a doc comment says:
 
@@ -184,11 +187,13 @@ Test code is exempt: a test's name is its documentation.
 
   Name a local model by family and size at most; never by host or endpoint (invariant 8).
 
-## Documentation (`docs/`)
+## Documentation (`docs/` and `LinuxHello/architecture`)
 
-- Frontmatter on every note: `type`, `subject`, `artifact`, `status`, `owner`, `concepts`, `tags`, `sources`, `date`. Templates in [docs/templates/](docs/templates/).
+- Architecture at C4 levels 1 to 3, the ADRs and the spikes live in [`LinuxHello/architecture`](https://github.com/LinuxHello/architecture), with its own checks and no Rust gates. `docs/` here keeps what tests and code quote: security properties, policy semantics, the backlog.
+- Clone with `git clone --recurse-submodules`, or run `git submodule update --init`; the `docs` gate needs the model.
+- Frontmatter on every note: `type`, `subject`, `artifact`, `status`, `owner`, `concepts`, `tags`, `sources`, `date`. Templates in [docs/templates/](docs/templates/) and in `LinuxHello/architecture`.
 - Standard relative Markdown links, never `[[wikilinks]]`, so notes render on GitHub and in Obsidian.
-- Diagrams in Mermaid; C4 in Structurizr DSL (`docs/architecture/workspace.dsl`).
+- Diagrams in Mermaid; C4 in Structurizr DSL (`workspace.dsl` in `LinuxHello/architecture`).
 - ADRs: Title, Status, Context, Decision, Consequences (what becomes easier and what becomes harder).
 - No preamble, closing offers or unfalsifiable superlatives ("bulletproof", "fully secure").
 

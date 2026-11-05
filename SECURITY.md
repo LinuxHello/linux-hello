@@ -37,7 +37,7 @@ The project has a single maintainer. These are targets, not guarantees. If one s
 
 ## Verifying a release
 
-Every release file is built by this repository's release workflow from a tagged commit on `main` that passed the quality gate. Each file carries Sigstore-signed attestations ([ADR-0006](docs/adr/0006-attested-quality-gates-and-releases.md)). Verify a file before you use it (GitHub CLI 2.49 or later):
+Every release file is built by this repository's release workflow from a tagged commit on `main` that passed the quality gate. Each file carries Sigstore-signed attestations ([ADR-0006](https://github.com/LinuxHello/architecture/blob/main/adr/0006-attested-quality-gates-and-releases.md)). Verify a file before you use it (GitHub CLI 2.49 or later):
 
 ```sh
 # Provenance: built by release.yml from this tag on a GitHub-hosted runner
@@ -71,7 +71,7 @@ These properties are the yardstick for a report. Breaking any of them is a vulne
 3. **Keys sign, never leave.** Passkey private keys never leave the TPM or KeePassXC. The Secret Service stores tokens, never passkey private keys.
 4. **Callers are verified.** Every caller of the Agent's D-Bus API is checked by peer credentials. A request for one relying party is never answered with another relying party's credential.
 5. **Fail closed.** If the policy cannot be parsed, only the PIN is allowed. A daemon whose AppArmor profile is not loaded in enforce mode refuses to start. No fallback silently weakens authentication.
-6. **Reset is destructive.** The account password authorises a reset only. A reset wipes the root key and every TPM-bound passkey, and never unlocks them ([ADR-0003](docs/adr/0003-destructive-reset.md)).
+6. **Reset is destructive.** The account password authorises a reset only. A reset wipes the root key and every TPM-bound passkey, and never unlocks them ([ADR-0003](https://github.com/LinuxHello/architecture/blob/main/adr/0003-destructive-reset.md)).
 
 The full threat model and the list of security properties are planned for [`docs/security/`](docs/security/), with a test named after each property. Until then, use the security model above when describing a report's impact.
 

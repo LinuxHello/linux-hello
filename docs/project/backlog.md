@@ -35,7 +35,7 @@ The `status:` label says who acts next on an issue.
 | :-- | :-- | :-- | :-- |
 | implement | `status:ready` | Implementer (agent or contributor) | Codes it from the `## Implementation brief` comment, tests first |
 | brief | `status:needs-brief` | Lead | Writes the brief, then moves it to `status:ready` |
-| spike | `status:needs-brief` + `type:spike` | Lead, or a contributor with the hardware | Runs the time-boxed spike and writes the note in `docs/spikes/` |
+| spike | `status:needs-brief` + `type:spike` | Lead, or a contributor with the hardware | Runs the time-boxed spike and writes the note in `spikes/` of [`LinuxHello/architecture`](https://github.com/LinuxHello/architecture/blob/main/spikes/README.md) |
 | review | `status:in-review` | Lead, then maintainer | Reviews against the brief; the maintainer merges |
 | doing | `status:in-progress` | Whoever claimed it | — |
 | stuck | `status:blocked` | Lead | Diagnoses a failed unattended run ([ADR-0007](https://github.com/LinuxHello/architecture/blob/main/adr/0007-unattended-agent-loops.md)) |

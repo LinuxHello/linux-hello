@@ -11,8 +11,8 @@ Code is largely written with AI assistance. The maintainer reviews **behaviour**
 
 ## Decisions
 
-- Architecture decisions are recorded as ADRs in `docs/adr/` (Title, Status, Context, Decision, Consequences).
-- The architecture documentation (Arc42) and the C4 workspace in `docs/architecture/` are the source of truth for structure. The code names the C4 element it implements, checked against the workspace in CI ([ADR-0008](docs/adr/0008-code-documentation-mapped-to-c4.md)).
+- Architecture decisions are recorded as ADRs in [`LinuxHello/architecture`](https://github.com/LinuxHello/architecture/blob/main/adr/README.md) (Title, Status, Context, Decision, Consequences).
+- The architecture documentation (Arc42) and the C4 workspace in [`LinuxHello/architecture`](https://github.com/LinuxHello/architecture), at the commit this repository pins in `architecture/`, are the source of truth for structure ([ADR-0011](https://github.com/LinuxHello/architecture/blob/main/adr/0011-architecture-repository.md)). The code names the C4 element it implements, checked against the workspace in CI ([ADR-0008](https://github.com/LinuxHello/architecture/blob/main/adr/0008-code-documentation-mapped-to-c4.md)).
 
 ### One-way doors
 
@@ -24,7 +24,7 @@ These need an ADR before they change, because they are hard or impossible to rev
 | Project and organisation name | Linux Hello, github.com/LinuxHello |
 | D-Bus names | `io.github.LinuxHello.*` |
 | Crate and package names | Not published; `publish = false` until decided |
-| Reset model | Destructive, no recovery key ([ADR-0003](docs/adr/0003-destructive-reset.md)) |
+| Reset model | Destructive, no recovery key ([ADR-0003](https://github.com/LinuxHello/architecture/blob/main/adr/0003-destructive-reset.md)) |
 
 ## Repository topology
 
@@ -45,12 +45,12 @@ Changes to upstream components (credentialsd, libwebauthn, Howdy, fprintd, KeePa
 
 - All changes reach `main` through a pull request; squash merge only, set in both the repository settings and the ruleset ([`scripts/admin/apply-merge-settings.sh`](scripts/admin/apply-merge-settings.sh)).
 - Required checks: fmt, clippy, test, cargo-deny, cargo-audit, unsafe-policy, fuzz, docs, DCO, and the aggregate `quality-gate`. `quality-gate`, `fuzz` and `unsafe-policy` are pinned to the GitHub Actions app, so a status with the same name from another app or a commit status does not satisfy them ([`scripts/admin/apply-merge-settings.sh`](scripts/admin/apply-merge-settings.sh)).
-- `quality-gate` passes only if every gate passed, and then signs a Sigstore attestation that the commit passed them. No pull request merges and no release is published without a valid quality-gate attestation ([ADR-0006](docs/adr/0006-attested-quality-gates-and-releases.md)). Pull requests from forks are attested after the maintainer pushes the reviewed branch to this repository.
+- `quality-gate` passes only if every gate passed, and then signs a Sigstore attestation that the commit passed them. No pull request merges and no release is published without a valid quality-gate attestation ([ADR-0006](https://github.com/LinuxHello/architecture/blob/main/adr/0006-attested-quality-gates-and-releases.md)). Pull requests from forks are attested after the maintainer pushes the reviewed branch to this repository.
 - Squash commits take the pull request title and its structured body ([pull request template](.github/pull_request_template.md)).
 - Code scanning: CodeQL (default setup) blocks a merge on errors and on high or critical security alerts. Dependency review and SonarQube Cloud run on every pull request; Sonar's quality gate becomes required once its check name is stable.
-- Roles of the coding agents and the review flow: [ADR-0004](docs/adr/0004-agent-roles.md).
+- Roles of the coding agents and the review flow: [ADR-0004](https://github.com/LinuxHello/architecture/blob/main/adr/0004-agent-roles.md).
 - Commits on `main` are signed.
 
 ## Releases
 
-A release is a crate tag (`agent-v0.1.0`) on a commit on `main`. The release workflow publishes it only after it has verified that commit's quality-gate attestation, built the binaries, a source archive and a CycloneDX SBOM, signed build provenance and an SBOM attestation, and verified both ([ADR-0006](docs/adr/0006-attested-quality-gates-and-releases.md)). How users verify a release: [SECURITY.md](SECURITY.md#verifying-a-release). Until an external audit, every release is marked pre-release.
+A release is a crate tag (`agent-v0.1.0`) on a commit on `main`. The release workflow publishes it only after it has verified that commit's quality-gate attestation, built the binaries, a source archive and a CycloneDX SBOM, signed build provenance and an SBOM attestation, and verified both ([ADR-0006](https://github.com/LinuxHello/architecture/blob/main/adr/0006-attested-quality-gates-and-releases.md)). How users verify a release: [SECURITY.md](SECURITY.md#verifying-a-release). Until an external audit, every release is marked pre-release.
