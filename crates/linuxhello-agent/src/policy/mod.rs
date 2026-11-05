@@ -4,9 +4,9 @@
 //!
 //! C4 component: `policyEngine` ([workspace.dsl](https://github.com/LinuxHello/architecture/blob/main/workspace.dsl))
 
-/// The built-in default policy layer (`default_layer`).
 pub mod defaults;
-/// Admin-over-user layering into the effective policy (`merge`, `Effective`).
+/// Core policy engine submodules.
+pub mod invariants;
 pub mod merge;
 pub mod restrict;
 pub mod schema;
