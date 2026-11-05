@@ -1,6 +1,6 @@
 # Local entry points for the CI gates (AGENTS.md, Gates). Agents and humans run
 # `make fix` after writing code and `make gates` before opening a pull request.
-.PHONY: help fmt fix gates fmt-check clippy test deny audit unsafe-policy fuzz docs hooks verify-gate next backlog backlog-check
+.PHONY: help fmt fix gates fmt-check clippy test deny audit unsafe-policy fuzz docs docs-site hooks verify-gate next backlog backlog-check
 
 FUZZ_SECONDS ?= 60
 
@@ -12,6 +12,7 @@ help:
 	@echo "make fix          format and apply clippy's machine-applicable fixes"
 	@echo "make gates        run every CI gate locally (fuzz: FUZZ_SECONDS=$(FUZZ_SECONDS) per target)"
 	@echo "make docs         build every item's documentation and check the C4 tags (ADR-0008)"
+	@echo "make docs-site    rustdoc plus generated code diagrams in target/docs-site (needs cargo-modules, Graphviz)"
 	@echo "make hooks        install the pre-commit hook (cargo fmt --check)"
 	@echo "make verify-gate SHA=<commit>   verify CI's quality-gate attestation for a commit on main"
 
@@ -52,6 +53,9 @@ docs:
 	RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --document-private-items
 	bash scripts/ci/test-c4-docs.sh
 	bash scripts/ci/c4-docs.sh
+
+docs-site:
+	scripts/docs-site.sh
 
 hooks:
 	git config core.hooksPath scripts/hooks
