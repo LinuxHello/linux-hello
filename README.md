@@ -29,9 +29,8 @@ PIN-rooted, biometric-unlocked passkeys and secrets for the Linux desktop: a Win
 | `security/` | AppArmor profiles, Tetragon policies, alert rules |
 | `policy/` | Policy schema and examples |
 | `docs/` | Obsidian vault (open `docs/` as a vault); renders on GitHub. Start at [docs/index.md](docs/index.md) |
-| `docs/architecture/` | Architecture documentation in the Arc42 sections, and the C4 workspace (`workspace.dsl`) |
-| `docs/adr/` | Architecture decision records |
-| `docs/spikes/`, `docs/security/` | Milestone 0 spikes; threat model and security properties |
+| `architecture/` | Submodule: [`LinuxHello/architecture`](https://github.com/LinuxHello/architecture), the Arc42 sections, the C4 model (`workspace.dsl`), the architecture decision records and the Milestone 0 spikes |
+| `docs/security/`, `docs/architecture/policy-semantics.md` | Threat model and security properties; policy semantics |
 
 ## Build
 
@@ -51,6 +50,14 @@ cargo install --locked cargo-deny cargo-audit   # into ~/.cargo/bin
 ```
 
 ### Build and test
+
+Clone with the architecture submodule, which the `docs` gate checks the code against:
+
+```sh
+git clone --recurse-submodules https://github.com/LinuxHello/linux-hello.git
+```
+
+In an existing clone, run `git submodule update --init`.
 
 ```sh
 cargo build --workspace

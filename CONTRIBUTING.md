@@ -14,7 +14,7 @@ Every commit must be signed off (`git commit -s`), certifying the [DCO](https://
 ## Rules
 
 - `unsafe` is forbidden in every crate except the TPM provider and the PAM module, where it is denied except in one small, audited module listed in `scripts/ci/unsafe-allowlist.txt` (checked by the `unsafe-policy` CI job).
-- Every item is documented, private ones included, and every crate root and top-level module names its C4 element from `docs/architecture/workspace.dsl` ([AGENTS.md](AGENTS.md#code-documentation), [ADR-0008](docs/adr/0008-code-documentation-mapped-to-c4.md)). `make docs` checks it.
+- Every item is documented, private ones included, and every crate root and top-level module names its C4 element from `architecture/workspace.dsl`, the C4 model in the [`LinuxHello/architecture`](https://github.com/LinuxHello/architecture) submodule (clone with `--recurse-submodules`) ([AGENTS.md](AGENTS.md#code-documentation), [ADR-0008](https://github.com/LinuxHello/architecture/blob/main/adr/0008-code-documentation-mapped-to-c4.md)). `make docs` checks it.
 - A security property change needs a test whose name states the property, e.g. `caller_from_other_origin_is_refused`.
 - New dependencies must pass `cargo-deny` (licences and advisories).
 - Changes to an upstream project go upstream first.
@@ -23,7 +23,7 @@ Every commit must be signed off (`git commit -s`), certifying the [DCO](https://
 
 Code here is largely written with coding agents (Claude Code, GitHub Copilot, local models). The same rules apply whoever or whatever wrote a line:
 
-- Agents follow [AGENTS.md](AGENTS.md), the single source of agent rules; their roles are fixed in [ADR-0004](docs/adr/0004-agent-roles.md).
+- Agents follow [AGENTS.md](AGENTS.md), the single source of agent rules; their roles are fixed in [ADR-0004](https://github.com/LinuxHello/architecture/blob/main/adr/0004-agent-roles.md).
 - The human who submits a commit signs it off and is accountable for it under the DCO. An agent never signs off.
 - The same required checks apply; generated code gets no exemption.
 - Name the tool behind a substantial part of a change with an `Assisted-by:` trailer (see [AGENTS.md](AGENTS.md#commits-and-pull-requests)). Name a local model by family and size at most, never by host or endpoint.
