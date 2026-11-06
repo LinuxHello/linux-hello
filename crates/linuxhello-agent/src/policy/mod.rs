@@ -26,6 +26,8 @@ pub mod restrict;
 /// `docs/architecture/policy-semantics.md`. Parsing is strict: an unknown key, a
 /// value out of range or a malformed duration makes the whole file unparseable.
 pub mod schema;
+/// A view of the effective policy or the PIN-only state.
+pub mod view;
 
 pub use defaults::default_layer;
 pub use load::{load, PinOnly, Policy};
@@ -33,3 +35,4 @@ pub use merge::{merge, Effective};
 pub use query::{MethodRule, RpDecision};
 pub use restrict::{most_restrictive, Contradiction};
 pub use schema::{parse_layer, Layer};
+pub use view::{EffectiveView, PinRules, Setting};
