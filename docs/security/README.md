@@ -12,7 +12,11 @@ date: 2026-11-01
 
 # Security
 
-The threat model and the security properties will live here; each property is stated in plain language and has a test named after it. The disclosure policy and a summary of the security model are in [SECURITY.md](../../SECURITY.md).
+The threat model and the security properties live here; each property is stated in plain language and has a test named after it. The disclosure policy and a summary of the security model are in [SECURITY.md](../../SECURITY.md).
+
+- [Threat model](threat-model.md): assets, actors, trust boundaries, entry points and threats, and the questions the design has not settled.
+- [Planned properties](properties.md): 27 properties, each with the name of its test and the container that owns it. Every test is a placeholder (`#[ignore]`) until its blocker is resolved.
+- The tables below list the properties that already have a passing test.
 
 See [index](../index.md).
 
