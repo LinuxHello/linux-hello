@@ -66,14 +66,15 @@ Once releases exist, the latest minor release of each crate receives security fi
 
 These properties are the yardstick for a report. Breaking any of them is a vulnerability.
 
-1. **The PIN is the root.** Every TPM-bound passkey hangs off a per-user TPM 2.0 root key that the PIN authorises. TPM anti-hammering limits PIN guessing.
-2. **Biometrics are a shortcut, not the root.** Face or fingerprint only satisfies a TPM policy. A daemon flag or D-Bus call that unlocks keys without the TPM policy is a vulnerability.
-3. **Keys sign, never leave.** Passkey private keys never leave the TPM or KeePassXC. The Secret Service stores tokens, never passkey private keys.
-4. **Callers are verified.** Every caller of the Agent's D-Bus API is checked by peer credentials. A request for one relying party is never answered with another relying party's credential.
-5. **Fail closed.** If the policy cannot be parsed, only the PIN is allowed. A daemon whose AppArmor profile is not loaded in enforce mode refuses to start. No fallback silently weakens authentication.
-6. **Reset is destructive.** The account password authorises a reset only. A reset wipes the root key and every TPM-bound passkey, and never unlocks them ([ADR-0003](https://github.com/LinuxHello/architecture/blob/main/adr/0003-destructive-reset.md)).
+1. **The PIN is the root.** Every TPM-bound passkey hangs off a per-user TPM 2.0 root key that the PIN authorises. TPM anti-hammering limits PIN guessing. One user's failed attempts must not lock out another user (P-12, P-14, P-16).
+2. **Biometrics are a shortcut, not the root.** Face or fingerprint only satisfies a TPM policy. A daemon flag or D-Bus call that unlocks keys without the TPM policy is a vulnerability. An unlock ends after its configured duration and when the session locks (P-06, P-07, P-15).
+3. **Keys sign, never leave.** Passkey private keys never leave the TPM or KeePassXC. The Secret Service stores tokens, never passkey private keys. A signature needs a user-presence confirmation, and the PIN and key material never reach a log (P-08, P-09, P-10, P-11, P-13).
+4. **Callers are verified.** Every caller of the Agent's D-Bus API is checked by peer credentials. A request for one relying party is never answered with another relying party's credential. Method state is never broadcast to other users (P-01, P-02, P-03, P-04, P-05).
+5. **Fail closed.** If the policy cannot be parsed, only the PIN is allowed. A daemon whose AppArmor profile is not loaded in enforce mode refuses to start. The PAM module never reports success when the Agent is unreachable. No fallback silently weakens authentication (the routing-policy properties, P-20, P-21, P-24).
+6. **Reset is destructive.** The account password authorises a reset only. A reset wipes the root key and every TPM-bound passkey, and never unlocks them ([ADR-0003](https://github.com/LinuxHello/architecture/blob/main/adr/0003-destructive-reset.md)) (P-17, P-18, P-19).
+7. **Evidence and confinement.** Every unlock, signature, PIN change and reset is audited. Only the Agent and the TPM provider open the TPM device, no Linux Hello process opens an internet socket, and nothing may trace the daemons (P-25, P-26, P-27).
 
-The full threat model and the list of security properties are planned for [`docs/security/`](docs/security/), with a test named after each property. Until then, use the security model above when describing a report's impact.
+The ids in brackets are properties in [`docs/security/properties.md`](docs/security/properties.md), each with a test named after it; the reasoning is in the [threat model](docs/security/threat-model.md). Both are drafts: the tests are `#[ignore]`d placeholders until the code exists, and the threat model lists the questions the design has not settled. Use the security model above when describing a report's impact.
 
 ## Scope
 
