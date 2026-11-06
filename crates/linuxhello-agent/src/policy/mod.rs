@@ -26,7 +26,7 @@ pub mod restrict;
 /// `docs/architecture/policy-semantics.md`. Parsing is strict: an unknown key, a
 /// value out of range or a malformed duration makes the whole file unparseable.
 pub mod schema;
-/// A view of the effective policy or the PIN-only state.
+/// Reports on a loaded policy: its PIN rules and every effective value with its `managed` flag (`pin_rules`, `effective`).
 pub mod view;
 
 pub use defaults::default_layer;
