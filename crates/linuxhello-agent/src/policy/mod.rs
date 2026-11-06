@@ -13,11 +13,23 @@ pub mod invariants;
 pub mod load;
 /// Admin-over-user layering into the effective policy (`merge`, `Effective`).
 pub mod merge;
+/// Querying the effective policy for context methods and relying-party decisions.
+pub mod query;
+/// Restrictiveness: combines two policy layers key by key into the more
+/// restrictive one, and reports a character class one layer requires and the
+/// other disallows. `merge` (a later issue) uses it to combine the admin layers
+/// and to let a user layer tighten the defaults. Rules:
+/// `docs/architecture/policy-semantics.md`, *Restrictiveness*.
 pub mod restrict;
+/// The policy file schema: the types one TOML policy layer parses into, and the
+/// validation that rejects anything outside the schema in
+/// `docs/architecture/policy-semantics.md`. Parsing is strict: an unknown key, a
+/// value out of range or a malformed duration makes the whole file unparseable.
 pub mod schema;
 
 pub use defaults::default_layer;
 pub use load::{load, PinOnly, Policy};
 pub use merge::{merge, Effective};
+pub use query::{MethodRule, RpDecision};
 pub use restrict::{most_restrictive, Contradiction};
 pub use schema::{parse_layer, Layer};
