@@ -8,12 +8,46 @@ on:
 # Actions are pinned to commit SHAs; Dependabot updates the SHA and the version comment.
 # Runners are pinned to ubuntu-24.04 so a moving ubuntu-latest cannot change the gates.
 # Job ids equal their check names; scripts/ci/quality-gates.txt lists the gate jobs (ADR-0006).
+# A pull request that changes only documentation skips the gate jobs (ADR-0006, "Docs-only pull
+# requests"); a push to main always runs them. quality-gate decides what a skip means.
 permissions:
   contents: read
 
 jobs:
+  # Decides whether the gate jobs run. Fail-closed: anything but a docs-only pull request runs them.
+  changes:
+    name: changes
+    runs-on: ubuntu-24.04
+    outputs:
+      rust: ${{ steps.classify.outputs.rust }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2 # on a pull request HEAD is GitHub's merge commit and HEAD^1 is the base
+      - name: The path classifier passes its own tests
+        run: bash scripts/ci/test-classify-changes.sh
+      - name: Classify the changed paths
+        id: classify
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" != pull_request ]; then
+            echo "rust=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if paths="$(git diff --name-only --no-renames HEAD^1 HEAD)"; then
+            result="$(printf '%s\n' "$paths" | bash scripts/ci/classify-changes.sh)" || result="rust=true"
+          else
+            result="rust=true"
+          fi
+          echo "$result"
+          echo "$result" >> "$GITHUB_OUTPUT"
+
   fmt:
     name: fmt
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -25,6 +59,8 @@ jobs:
 
   clippy:
     name: clippy
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -36,6 +72,8 @@ jobs:
 
   test:
     name: test
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -46,6 +84,8 @@ jobs:
 
   cargo-deny:
     name: cargo-deny
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -53,6 +93,8 @@ jobs:
 
   cargo-audit:
     name: cargo-audit
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -65,6 +107,8 @@ jobs:
 
   fuzz:
     name: fuzz
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -97,6 +141,8 @@ jobs:
 
   unsafe-policy:
     name: unsafe-policy
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -105,6 +151,8 @@ jobs:
 
   docs:
     name: docs
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -151,7 +199,7 @@ jobs:
   quality-gate:
     name: quality-gate
     if: always() # a skipped required check counts as passed; this job must run and decide
-    needs: [fmt, clippy, test, cargo-deny, cargo-audit, unsafe-policy, fuzz, docs, dco]
+    needs: [changes, fmt, clippy, test, cargo-deny, cargo-audit, unsafe-policy, fuzz, docs, dco]
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -171,20 +219,31 @@ jobs:
           NEEDS: ${{ toJSON(needs) }}
           EVENT: ${{ github.event_name }}
           HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          RUST: ${{ needs.changes.outputs.rust }}
         run: |
           set -euo pipefail
           gates="$(grep -Ev '^\s*(#|$)' scripts/ci/quality-gates.txt)"
           listed="$(printf '%s\ndco\n' "$gates" | sort)"
-          needed="$(jq -r 'keys[]' <<<"$NEEDS" | sort)"
+          # changes is not a gate: it only decides whether the gates run.
+          needed="$(jq -r 'keys[]' <<<"$NEEDS" | grep -vx changes | sort)"
           if [ "$listed" != "$needed" ]; then
             echo "::error::needs: of quality-gate and scripts/ci/quality-gates.txt (plus dco) differ"
             exit 1
           fi
           failed=0
+          result="$(jq -r '.changes.result' <<<"$NEEDS")"
+          [ "$result" = success ] || { echo "::error::changes: $result"; failed=1; }
+          # A skipped gate counts only on a pull request that changes documentation only.
+          skipped='[]'
           for gate in $gates; do
             result="$(jq -r --arg g "$gate" '.[$g].result' <<<"$NEEDS")"
-            [ "$result" = success ] || { echo "::error::$gate: $result"; failed=1; }
+            if [ "$result" = skipped ] && [ "$EVENT" = pull_request ] && [ "$RUST" = false ]; then
+              skipped="$(jq -c --arg g "$gate" '. + [$g]' <<<"$skipped")"
+            elif [ "$result" != success ]; then
+              echo "::error::$gate: $result"; failed=1
+            fi
           done
+          echo "SKIPPED=$skipped" >> "$GITHUB_ENV"
           if [ "$EVENT" = pull_request ]; then
             result="$(jq -r '.dco.result' <<<"$NEEDS")"
             [ "$result" = success ] || { echo "::error::dco: $result"; failed=1; }
@@ -198,15 +257,17 @@ jobs:
         env:
           EVENT: ${{ github.event_name }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}
+          SKIPPED: ${{ env.SKIPPED }}
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/qg"
           scripts/ci/quality-gate-subject.sh "$SUBJECT_SHA" > "$RUNNER_TEMP/qg/quality-gate-$SUBJECT_SHA.json"
           jq -n --arg sha "$SUBJECT_SHA" --arg head "$HEAD_SHA" --arg ref "$GITHUB_REF" --arg event "$EVENT" \
             --arg run "$RUN_URL" --arg toolchain "$(grep '^channel' rust-toolchain.toml | cut -d'"' -f2)" \
-            --rawfile gates scripts/ci/quality-gates.txt \
-            '{commit: $sha, head: $head, ref: $ref, event: $event, run: $run, toolchain: $toolchain,
-              passed: ($gates | split("\n") | map(select(test("^\\s*(#|$)") | not)))}' \
+            --rawfile gates scripts/ci/quality-gates.txt --argjson skipped "$SKIPPED" \
+            '($gates | split("\n") | map(select(test("^\\s*(#|$)") | not))) as $all
+             | {commit: $sha, head: $head, ref: $ref, event: $event, run: $run, toolchain: $toolchain,
+              passed: ($all - $skipped), skipped: $skipped}' \
             > "$RUNNER_TEMP/qg/predicate.json"
           cat "$RUNNER_TEMP/qg/predicate.json"
       - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
