@@ -96,6 +96,8 @@ fn agent_unit_sandbox_is_strict() {
         ("ProtectHome", "yes"),
         ("PrivateTmp", "yes"),
         ("PrivateNetwork", "yes"),
+        ("IPAddressDeny", "any"),
+        ("RemoveIPC", "yes"),
         ("RestrictAddressFamilies", "AF_UNIX"),
         ("RestrictNamespaces", "yes"),
         ("RestrictSUIDSGID", "yes"),
@@ -181,6 +183,20 @@ fn agent_profile_grants_no_network_but_the_unix_socket() {
     assert!(rules.contains(&"deny network inet6,".to_string()));
     let allowed: Vec<&String> = rules.iter().filter(|r| r.starts_with("network")).collect();
     assert_eq!(allowed, ["network unix stream,"], "no other network rule");
+}
+
+/// Found by running the unit in the test VM: under systemd's mount namespace AppArmor sees the
+/// path of the bus socket without its leading slash ("disconnected path"), so the rule for
+/// `/run/dbus/system_bus_socket` never matches and the Agent cannot connect, unless the profile
+/// attaches disconnected paths.
+#[test]
+fn agent_profile_attaches_disconnected_paths_so_the_bus_socket_rule_matches() {
+    let header = profile_rules()
+        .into_iter()
+        .find(|r| r.starts_with("profile linuxhello-agent "))
+        .expect("the profile line");
+    assert!(header.contains("attach_disconnected"), "{header}");
+    assert!(profile_rules().contains(&"/run/dbus/system_bus_socket rw,".to_string()));
 }
 
 #[test]

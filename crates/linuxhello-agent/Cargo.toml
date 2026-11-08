@@ -9,6 +9,7 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
+futures-lite = "2"
 linuxhello-dbus = { path = "../linuxhello-dbus" }
 serde = { version = "1", features = ["derive"] }
 toml = "1.1"
@@ -16,7 +17,6 @@ zbus = "6.2"
 
 [dev-dependencies]
 async-io = "2"
-futures-lite = "2"
 tempfile = "3.27.0"
 
 [lints]
