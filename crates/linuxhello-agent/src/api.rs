@@ -12,6 +12,7 @@
 
 use linuxhello_dbus::{AuthMethod, PromptId, PromptResult, PromptState, SIGNALS};
 
+use crate::policy::user_store::{StoreError, UserPolicyStore};
 use crate::state::{Config, Error as StateError, Peer, StateStore, Update};
 
 /// The longest D-Bus bus name, in bytes.
@@ -34,6 +35,19 @@ pub enum ApiError {
     LimitReached,
     /// An argument is not valid: a prompt id, signal name, value or peer name.
     InvalidArgument,
+    /// The requested service (e.g. user policy store) is not available.
+    Unavailable,
+}
+
+impl From<StoreError> for ApiError {
+    /// A text the store refuses (it does not parse or is too long) is an invalid argument; a store
+    /// that cannot read or write its files is unavailable.
+    fn from(error: StoreError) -> Self {
+        match error {
+            StoreError::Invalid | StoreError::TooLarge => ApiError::InvalidArgument,
+            StoreError::Unavailable => ApiError::Unavailable,
+        }
+    }
 }
 
 impl From<StateError> for ApiError {
@@ -76,6 +90,8 @@ pub struct StateReply {
 pub struct Api {
     /// The per-prompt state and its access rules.
     store: StateStore,
+    /// The user policy layer.
+    user_policies: Option<UserPolicyStore>,
 }
 
 impl Api {
@@ -83,6 +99,15 @@ impl Api {
     pub fn new(config: Config) -> Self {
         Self {
             store: StateStore::new(config),
+            user_policies: None,
+        }
+    }
+
+    /// An API with a user policy store.
+    pub fn with_user_policy_store(self, store: Option<UserPolicyStore>) -> Self {
+        Self {
+            user_policies: store,
+            ..self
         }
     }
 
@@ -197,6 +222,31 @@ impl Api {
         let prompt = parse_prompt(prompt_id)?;
         Ok(self.store.close(uid, &prompt)?)
     }
+
+    /// Returns the caller's user policy as TOML text.
+    ///
+    /// # Errors
+    ///
+    /// [`ApiError::Denied`] without a caller uid;
+    /// [`ApiError::Unavailable`] if the user policy store is not configured.
+    pub fn get_user_policy(&self, caller: Caller) -> Result<String, ApiError> {
+        let uid = caller.uid.ok_or(ApiError::Denied)?;
+        let store = self.user_policies.as_ref().ok_or(ApiError::Unavailable)?;
+        store.get(uid).map_err(ApiError::from)
+    }
+
+    /// Replaces the caller's user policy with the provided TOML text.
+    ///
+    /// # Errors
+    ///
+    /// [`ApiError::Denied`] without a caller uid;
+    /// [`ApiError::Unavailable`] if the user policy store is not configured;
+    /// [`ApiError::InvalidArgument`] if the text is invalid or too large.
+    pub fn set_user_policy(&mut self, caller: Caller, text: &str) -> Result<(), ApiError> {
+        let uid = caller.uid.ok_or(ApiError::Denied)?;
+        let store = self.user_policies.as_ref().ok_or(ApiError::Unavailable)?;
+        store.set(uid, text).map_err(ApiError::from)
+    }
 }
 
 /// Parses a prompt id given as text.
@@ -245,6 +295,8 @@ fn wire_values(update: &Update) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::policy::user_store::UserPolicyStore;
+    use tempfile::TempDir;
 
     /// A valid prompt id as text, from a short name.
     fn pid(name: &str) -> String {
@@ -356,7 +408,7 @@ mod tests {
         let reply = api.get_state(USER, &id).unwrap();
         assert_eq!(reply.methods, vec!["face".to_string()]);
         assert_eq!(reply.active, Some("face".to_string()));
-        assert_eq!(reply.state, "scanning");
+        assert_eq!(reply.state, "scanning".to_string());
         assert_eq!(reply.result, Some("failure".to_string()));
     }
 
@@ -392,5 +444,84 @@ mod tests {
             );
         }
         assert_eq!(api.subscribe(USER, ":1.7", &id), Ok(()));
+    }
+
+    #[test]
+    fn user_cannot_set_another_users_policy() {
+        let tmp = TempDir::new().unwrap();
+        let store = UserPolicyStore::new(tmp.path());
+        let mut api = Api::new(Config::new(vec![990])).with_user_policy_store(Some(store));
+
+        let tighter = "[methods]\nbiometrics_allowed = false\n";
+        let valid = "[methods]\nface_requires_ir = true\n";
+
+        let uid1000 = Caller { uid: Some(1000) };
+        let uid1001 = Caller { uid: Some(1001) };
+
+        api.set_user_policy(uid1000, tighter).unwrap();
+        assert_eq!(api.get_user_policy(uid1001).unwrap(), "");
+
+        api.set_user_policy(uid1001, valid).unwrap();
+        assert_eq!(api.get_user_policy(uid1000).unwrap(), tighter);
+        assert_eq!(api.get_user_policy(uid1001).unwrap(), valid);
+    }
+
+    #[test]
+    fn unparseable_user_policy_is_refused_on_write() {
+        let tmp = TempDir::new().unwrap();
+        let store = UserPolicyStore::new(tmp.path());
+        let mut api = Api::new(Config::new(vec![990])).with_user_policy_store(Some(store));
+
+        let tighter = "[methods]\nbiometrics_allowed = false\n";
+        let uid = Caller { uid: Some(1000) };
+
+        api.set_user_policy(uid, tighter).unwrap();
+        assert_eq!(
+            api.set_user_policy(uid, "invalid = toml"),
+            Err(ApiError::InvalidArgument)
+        );
+        assert_eq!(api.get_user_policy(uid).unwrap(), tighter);
+    }
+
+    #[test]
+    fn oversized_user_policy_is_refused_on_write() {
+        let tmp = TempDir::new().unwrap();
+        let store = UserPolicyStore::new(tmp.path());
+        let mut api = Api::new(Config::new(vec![990])).with_user_policy_store(Some(store));
+
+        let uid = Caller { uid: Some(1000) };
+        let valid = "[methods]\nface_requires_ir = true\n";
+        api.set_user_policy(uid, valid).unwrap();
+
+        let oversized = "a".repeat(64 * 1024 + 1);
+        assert_eq!(
+            api.set_user_policy(uid, &oversized),
+            Err(ApiError::InvalidArgument)
+        );
+        assert_eq!(api.get_user_policy(uid).unwrap(), valid);
+    }
+
+    #[test]
+    fn user_policy_without_peer_credentials_is_refused() {
+        let tmp = TempDir::new().unwrap();
+        let mut api = Api::new(Config::new(vec![990]))
+            .with_user_policy_store(Some(UserPolicyStore::new(tmp.path())));
+        let tighter = "[methods]\nbiometrics_allowed = false\n";
+        let no_uid = Caller { uid: None };
+
+        assert_eq!(api.get_user_policy(no_uid), Err(ApiError::Denied));
+        assert_eq!(api.set_user_policy(no_uid, tighter), Err(ApiError::Denied));
+        // Nothing was stored for anyone, and a caller with a uid can still use the store.
+        assert_eq!(api.get_user_policy(USER), Ok(String::new()));
+        assert_eq!(api.set_user_policy(USER, tighter), Ok(()));
+        assert_eq!(api.get_user_policy(no_uid), Err(ApiError::Denied));
+    }
+
+    #[test]
+    fn user_policy_is_unavailable_without_a_store() {
+        let mut api = Api::new(Config::new(vec![990]));
+
+        assert_eq!(api.get_user_policy(USER), Err(ApiError::Unavailable));
+        assert_eq!(api.set_user_policy(USER, ""), Err(ApiError::Unavailable));
     }
 }

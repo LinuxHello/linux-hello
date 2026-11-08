@@ -4,7 +4,8 @@
 mod common;
 
 use common::{call, connect, is_error, my_uid, next_within, pid, run, signals, Daemon};
-use linuxhello_agent::bus::serve;
+use linuxhello_agent::bus::{serve, serve_with};
+use linuxhello_agent::policy::user_store::UserPolicyStore;
 use linuxhello_agent::state::Config;
 use linuxhello_dbus::{AGENT_BUS_NAME, AGENT_INTERFACE, AGENT_OBJECT_PATH};
 use zbus::connection::Builder;
@@ -201,5 +202,40 @@ fn the_interface_is_the_one_registered_in_adr_0012() {
                 "{member}"
             );
         }
+    });
+}
+
+#[test]
+fn user_policy_is_set_and_read_over_the_bus() {
+    let daemon = Daemon::start();
+    let tmp = tempfile::TempDir::new().unwrap();
+    let store = UserPolicyStore::new(tmp.path());
+    run(async {
+        let _service = serve_with(
+            Builder::address(daemon.address.as_str()),
+            Config::new(vec![]),
+            Some(store),
+        )
+        .await
+        .expect("serve the Agent");
+        let client = connect(&daemon).await;
+        let tighter = "[methods]\nbiometrics_allowed = false\n";
+
+        call(&client, "SetUserPolicy", &tighter.to_string())
+            .await
+            .expect("set policy");
+        let policy_msg = call(&client, "GetUserPolicy", &())
+            .await
+            .expect("get policy");
+        let policy: String = policy_msg.body().deserialize().expect("the policy");
+        assert_eq!(policy, tighter);
+
+        let bad = call(&client, "SetUserPolicy", &"invalid = toml".to_string()).await;
+        assert!(is_error(&bad, "org.freedesktop.DBus.Error.InvalidArgs"));
+        let policy_msg = call(&client, "GetUserPolicy", &())
+            .await
+            .expect("get policy");
+        let policy: String = policy_msg.body().deserialize().expect("the policy");
+        assert_eq!(policy, tighter);
     });
 }

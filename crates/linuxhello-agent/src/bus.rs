@@ -24,6 +24,7 @@ use zbus::names::{BusName, UniqueName};
 use zbus::{connection, interface, Connection};
 
 use crate::api::{Api, ApiError, Caller, Notification};
+use crate::policy::user_store::UserPolicyStore;
 use crate::state::Config;
 
 /// The Agent's state API as a D-Bus object.
@@ -39,6 +40,13 @@ impl AgentService {
             api: Api::new(config),
         }
     }
+
+    /// A service with a user policy store.
+    pub fn with_user_policy_store(config: Config, user_policies: Option<UserPolicyStore>) -> Self {
+        Self {
+            api: Api::new(config).with_user_policy_store(user_policies),
+        }
+    }
 }
 
 /// Serves the Agent's state API on the connection that `builder` makes: claims the bus name of
@@ -49,9 +57,21 @@ impl AgentService {
 ///
 /// Any error of the bus connection, of claiming the name, or of exporting the object.
 pub async fn serve(builder: connection::Builder<'_>, config: Config) -> zbus::Result<Connection> {
+    serve_with(builder, config, None).await
+}
+
+/// Serves the Agent's state API with an optional user policy store.
+pub async fn serve_with(
+    builder: connection::Builder<'_>,
+    config: Config,
+    user_policies: Option<UserPolicyStore>,
+) -> zbus::Result<Connection> {
     builder
         .name(AGENT_BUS_NAME)
-        .serve_at(AGENT_OBJECT_PATH, AgentService::new(config))
+        .serve_at(
+            AGENT_OBJECT_PATH,
+            AgentService::with_user_policy_store(config, user_policies),
+        )
         .build()
         .await
 }
@@ -79,6 +99,7 @@ fn to_fdo(error: ApiError) -> fdo::Error {
         ApiError::Denied => fdo::Error::AccessDenied("not allowed".to_string()),
         ApiError::LimitReached => fdo::Error::LimitsExceeded("limit reached".to_string()),
         ApiError::InvalidArgument => fdo::Error::InvalidArgs("invalid argument".to_string()),
+        ApiError::Unavailable => fdo::Error::Failed("unavailable".to_string()),
     }
 }
 
@@ -200,5 +221,26 @@ impl AgentService {
     ) -> fdo::Result<()> {
         let caller = caller_of(connection, header.sender()).await;
         self.api.close_prompt(caller, prompt_id).map_err(to_fdo)
+    }
+
+    /// Returns the caller's user policy as TOML text.
+    async fn get_user_policy(
+        &self,
+        #[zbus(header)] header: Header<'_>,
+        #[zbus(connection)] connection: &Connection,
+    ) -> fdo::Result<String> {
+        let caller = caller_of(connection, header.sender()).await;
+        self.api.get_user_policy(caller).map_err(to_fdo)
+    }
+
+    /// Replaces the caller's user policy with the provided TOML text.
+    async fn set_user_policy(
+        &mut self,
+        text: &str,
+        #[zbus(header)] header: Header<'_>,
+        #[zbus(connection)] connection: &Connection,
+    ) -> fdo::Result<()> {
+        let caller = caller_of(connection, header.sender()).await;
+        self.api.set_user_policy(caller, text).map_err(to_fdo)
     }
 }

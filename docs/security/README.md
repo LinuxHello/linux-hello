@@ -63,7 +63,7 @@ Semantics: [policy-semantics.md](../architecture/policy-semantics.md). Tests liv
 
 ### User policy layer (Agent)
 
-[ADR-0018](https://github.com/LinuxHello/architecture/blob/main/adr/0018-user-policy-layer.md). Tests are in `crates/linuxhello-agent/src/policy/user_store.rs`. The D-Bus methods that call the store are a later change.
+[ADR-0018](https://github.com/LinuxHello/architecture/blob/main/adr/0018-user-policy-layer.md). Tests are in `crates/linuxhello-agent/src/policy/user_store.rs` (the store) and `src/api.rs`, `tests/bus.rs` (the D-Bus methods). The names `unparseable_user_policy_is_refused_on_write` and `oversized_user_policy_is_refused_on_write` exist at both levels.
 
 | Property | Test |
 | :-- | :-- |
@@ -72,6 +72,9 @@ Semantics: [policy-semantics.md](../architecture/policy-semantics.md). Tests liv
 | One user's policy is never visible under another uid | `user_policies_are_kept_apart_by_uid` |
 | A write never leaves a half-written or temporary file, and the files are private to the Agent | `a_write_leaves_no_temporary_file_and_private_modes` |
 | The user layer is available without a home directory | `user_policy_is_available_without_a_home_directory` |
+| A caller can read and change only its own user policy layer | `user_cannot_set_another_users_policy`, `user_policy_is_set_and_read_over_the_bus` |
+| A user policy that does not parse, or is over 64 KiB, is refused over D-Bus with InvalidArgs and the stored layer stays | `unparseable_user_policy_is_refused_on_write`, `oversized_user_policy_is_refused_on_write` (`api.rs`), `user_policy_is_set_and_read_over_the_bus` |
+| A caller whose peer credentials cannot be read cannot read or set a user policy | `user_policy_without_peer_credentials_is_refused` |
 
 ### Confinement of the Agent
 
@@ -86,4 +89,3 @@ Files: [`security/`](../../security/). Tests: `crates/linuxhello-agent/tests/bus
 | The unit refuses to start unless its AppArmor profile is loaded in enforce mode | `agent_unit_refuses_to_start_unless_apparmor_enforces_its_profile` |
 | The profile grants no network but the unix socket, no capability, no tracing, no home directory and no device but the TPM | `agent_profile_grants_no_network_but_the_unix_socket`, `agent_profile_grants_no_capability_and_denies_tracing`, `agent_profile_denies_home_directories_and_names_the_registered_bus_name`, `agent_profile_grants_the_tpm_and_no_other_device` |
 | The unit and the profile are accepted by `systemd-analyze verify` and `apparmor_parser` (skipped, and said so, if a tool is missing) | `agent_unit_passes_systemd_analyze_verify`, `agent_profile_parses` |
-
