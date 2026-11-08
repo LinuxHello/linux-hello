@@ -26,7 +26,7 @@ What Linux Hello protects, from whom, across which boundaries, and which securit
 | A4 | The PIN | The root secret the user types | The user's head; briefly in the PAM module or a prompt |
 | A5 | Biometric templates | Cannot be changed if stolen | Howdy and fprintd; Linux Hello never copies them |
 | A6 | The unlock state of a session | Proof that this session may use A2 without asking again | Agent, backed by a TPM policy session |
-| A7 | The routing policy (default, user and admin layers) | Decides which methods and providers each context may use | Files under `/etc/linuxhello/policy.d/` and `~/.config/linuxhello/` |
+| A7 | The routing policy (default, user and admin layers) | Decides which methods and providers each context may use | Files under `/etc/linuxhello/policy.d/` (root-owned) and `/var/lib/linuxhello/users/<uid>/policy.toml` (the Agent's state, written only by the Agent over D-Bus, [ADR-0018](https://github.com/LinuxHello/architecture/blob/main/adr/0018-user-policy-layer.md)) |
 | A8 | The authentication decision at login, lock screen and `sudo` | A wrong "yes" is a bypass | PAM stack |
 | A9 | Which method a person is using, and when | Tells an observer who is authenticating | Agent method-state signals |
 | A10 | The audit log | The only evidence after an incident | journald |

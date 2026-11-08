@@ -69,8 +69,10 @@ Merging uses "most restrictive" per key:
 ## Layering
 
 1. Merge all admin files (`/etc/linuxhello/policy.d/*.toml`, in name order) into one admin layer, most restrictive per key.
-2. For each key: if the admin layer sets it, the admin value is effective and the key is **managed**. Otherwise the effective value is the most restrictive of the default and the user value (`~/.config/linuxhello/policy.toml`). The user can tighten the defaults, never loosen them; only an admin can loosen a default.
+2. For each key: if the admin layer sets it, the admin value is effective and the key is **managed**. Otherwise the effective value is the most restrictive of the default and the user value (the user's layer, kept by the Agent in `/var/lib/linuxhello/users/<uid>/policy.toml` and set over D-Bus, [ADR-0018](https://github.com/LinuxHello/architecture/blob/main/adr/0018-user-policy-layer.md)). The user can tighten the defaults, never loosen them; only an admin can loosen a default.
 3. Then apply the invariants below.
+
+The Agent stores a user layer only if it parses with this schema and is at most 64 KiB, so the stored file is loadable; a stored file that is later damaged still fails closed (*Fail closed*). A user reads and sets only their own layer, and there is no home-directory file: nothing is read from `~/.config/linuxhello/`.
 
 ## Invariants after merging
 
