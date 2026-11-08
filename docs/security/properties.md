@@ -7,12 +7,12 @@ owner: "@atterdag"
 concepts: [security-properties, tests, threat-model]
 tags: [security, properties, tests]
 sources: ["threat-model.md", "README.md", "../../SECURITY.md", "https://github.com/LinuxHello/architecture/blob/main/workspace.dsl"]
-date: 2026-11-06
+date: 2026-11-08
 ---
 
 # Security properties (planned)
 
-Each property answers a threat in the [threat model](threat-model.md) and is stated in plain language. Its test is named after it and lives in the crate of the container that owns it. **Every test below is a placeholder:** it is marked `#[ignore]` with the reason it cannot run yet and fails if someone runs it without writing it. A placeholder is not a passing test.
+Each property answers a threat in the [threat model](threat-model.md) and is stated in plain language. Its test is named after it and lives in the crate of the container that owns it. **Every test below is a placeholder unless its *Blocked by* cell says it is tested:** a placeholder is marked `#[ignore]` with the reason it cannot run yet and fails if someone runs it without writing it, and is not a passing test. P-02, P-04 and P-05 are tested at the layers named in their rows.
 
 Properties that already have a passing test are in the [README](README.md#properties) (quality gate, unsafe policy, release provenance, routing policy).
 
@@ -27,10 +27,10 @@ How to read the table:
 | Id | Property | Test | Owner | Blocked by |
 | :-- | :-- | :-- | :-- | :-- |
 | P-01 | A caller whose claimed origin differs from the identity the portal or bus verified is refused | `caller_from_other_origin_is_refused` | `agent`, crate `linuxhello-agent` | Origin verification ([threat model, open question 4](threat-model.md#open-questions)); the Agent's D-Bus API |
-| P-02 | A caller whose peer credentials cannot be read is refused | `caller_without_peer_credentials_is_refused` | `agent` | The Agent's D-Bus API |
+| P-02 | A caller whose peer credentials cannot be read is refused | `caller_without_peer_credentials_is_refused` | `agent` | **Tested** at the request layer (`api.rs`, `tests/security_properties.rs`); remaining: the Agent running as a system service that supplies the uid ([ADR-0014](https://github.com/LinuxHello/architecture/blob/main/adr/0014-agent-bus.md)) |
 | P-03 | A request for one relying party is never answered with another relying party's credential | `credential_for_another_relying_party_is_never_returned` (TPM), `kpxc_credential_for_another_relying_party_is_never_returned` (KeePassXC) | `tpmProvider`, crate `linuxhello-tpm-provider`; `kpxcBridge`, crate `linuxhello-kpxc-bridge` | Provider interface ([ADR-0005](https://github.com/LinuxHello/architecture/blob/main/adr/0005-provider-path.md)) |
-| P-04 | A process other than the PAM module of the user being authenticated cannot publish method state for that user | `unprivileged_process_cannot_publish_method_state_for_another_user` | `agent` | The Agent's bus and bus policy ([open question 3](threat-model.md#open-questions)) |
-| P-05 | Method state is delivered to the user who is authenticating and to nobody else | `method_state_is_not_broadcast_to_other_users` | `agent` | Same |
+| P-04 | A process other than the PAM module of the user being authenticated cannot publish method state for that user | `unprivileged_process_cannot_publish_method_state_for_another_user` | `agent` | **Tested** at the store layer (`state.rs`); remaining: the system-bus policy that lets only the Agent's user own the name ([open question 3](threat-model.md#open-questions)) |
+| P-05 | Method state is delivered to the user who is authenticating and to nobody else | `method_state_is_not_broadcast_to_other_users` | `agent` | **Tested** at the store layer, and as `signals_reach_only_the_subscribed_peer` over a private bus (`tests/bus.rs`); remaining: the same bus policy |
 
 ## Unlock and keys
 

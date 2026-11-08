@@ -6,5 +6,6 @@
 #![forbid(unsafe_code)]
 
 pub mod api;
+pub mod bus;
 pub mod policy;
 pub mod state;
