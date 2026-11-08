@@ -1,0 +1,57 @@
+# The Linux Hello Agent as a system service (ADR-0014). Install as
+# /usr/lib/systemd/system/linuxhello-agent.service. Fails closed: the unit does not start
+# unless its AppArmor profile is loaded in enforce mode (AGENTS.md invariant 3).
+[Unit]
+Description=Linux Hello Agent
+Documentation=https://github.com/LinuxHello/linux-hello
+Requires=dbus.socket
+After=dbus.socket
+
+[Service]
+Type=dbus
+BusName=io.github.LinuxHello.Agent1
+# "+" runs this check with full privileges: reading the profile list needs root.
+ExecStartPre=+/bin/sh -c 'grep -qx "linuxhello-agent (enforce)" /sys/kernel/security/apparmor/profiles'
+ExecStart=/usr/libexec/linuxhello/linuxhello-agent
+AppArmorProfile=linuxhello-agent
+User=linuxhello
+Group=linuxhello
+Restart=on-failure
+
+# State: root-key blobs and prompt data live under /var/lib/linuxhello, mode 0700.
+StateDirectory=linuxhello
+StateDirectoryMode=0700
+UMask=0077
+# The admin policy layer is read-only for the Agent.
+ReadOnlyPaths=/etc/linuxhello
+
+# Sandbox. The only device is the TPM resource manager; there is no network but the system bus.
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateNetwork=yes
+RestrictAddressFamilies=AF_UNIX
+DevicePolicy=closed
+DeviceAllow=/dev/tpmrm0 rw
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+
+[Install]
+WantedBy=multi-user.target
