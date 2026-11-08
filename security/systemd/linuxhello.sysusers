@@ -1,0 +1,4 @@
+# The user of the Linux Hello Agent: no login, no shell, no home. Install as
+# /usr/lib/sysusers.d/linuxhello.conf. The group tss gives access to /dev/tpmrm0.
+u linuxhello - "Linux Hello Agent" /var/lib/linuxhello /usr/sbin/nologin
+m linuxhello tss

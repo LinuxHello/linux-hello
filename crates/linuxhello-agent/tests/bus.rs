@@ -1,126 +1,13 @@
 //! The Agent's D-Bus glue against a real, private `dbus-daemon`: peers, credentials and unicast
 //! delivery are the bus's, not a fake's. Needs the `dbus-daemon` binary (package `dbus-daemon`).
 
-use std::future::Future;
-use std::io::{BufRead, BufReader};
-use std::os::unix::fs::MetadataExt;
-use std::process::{Child, Command, Stdio};
-use std::time::Duration;
+mod common;
 
-use futures_lite::StreamExt;
+use common::{call, connect, is_error, my_uid, next_within, pid, run, signals, Daemon};
 use linuxhello_agent::bus::serve;
 use linuxhello_agent::state::Config;
-use linuxhello_dbus::{PromptId, AGENT_BUS_NAME, AGENT_INTERFACE, AGENT_OBJECT_PATH};
-use zbus::message::Type;
-use zbus::DBusError;
-use zbus::{connection::Builder, Connection, MatchRule, Message, MessageStream};
-
-/// A private message bus that lives as long as this value.
-struct Daemon {
-    /// The `dbus-daemon` process.
-    child: Child,
-    /// Its address.
-    address: String,
-}
-
-impl Daemon {
-    /// Starts a private bus and waits for its address.
-    fn start() -> Self {
-        let mut child = Command::new("dbus-daemon")
-            .args(["--session", "--nofork", "--print-address=1"])
-            .stdout(Stdio::piped())
-            .spawn()
-            .expect("dbus-daemon must be installed (sudo apt install dbus-daemon)");
-        let stdout = child.stdout.take().expect("the daemon's stdout is piped");
-        let mut address = String::new();
-        BufReader::new(stdout)
-            .read_line(&mut address)
-            .expect("the daemon prints its address");
-        Self {
-            child,
-            address: address.trim().to_string(),
-        }
-    }
-}
-
-impl Drop for Daemon {
-    /// Stops the bus.
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
-}
-
-/// Runs a future to completion.
-fn run<F: Future>(future: F) -> F::Output {
-    futures_lite::future::block_on(future)
-}
-
-/// A new connection to the private bus.
-async fn connect(daemon: &Daemon) -> Connection {
-    Builder::address(daemon.address.as_str())
-        .build()
-        .await
-        .expect("connect to the private bus")
-}
-
-/// The uid of this test process.
-fn my_uid() -> u32 {
-    std::fs::metadata("/proc/self").expect("/proc/self").uid()
-}
-
-/// A valid prompt id as text.
-fn pid(name: &str) -> String {
-    PromptId::derive("test", name, "s1").as_str().to_string()
-}
-
-/// Calls a method of the Agent.
-async fn call<B>(connection: &Connection, member: &str, body: &B) -> zbus::Result<Message>
-where
-    B: serde::Serialize + zbus::zvariant::DynamicType,
-{
-    connection
-        .call_method(
-            Some(AGENT_BUS_NAME),
-            AGENT_OBJECT_PATH,
-            Some(AGENT_INTERFACE),
-            member,
-            body,
-        )
-        .await
-}
-
-/// A stream of the Agent's signals with the given member, as this connection receives them.
-async fn signals(connection: &Connection, member: &str) -> MessageStream {
-    let rule = MatchRule::builder()
-        .msg_type(Type::Signal)
-        .interface(AGENT_INTERFACE)
-        .member(member)
-        .build()
-        .expect("a valid match rule");
-    MessageStream::for_match_rule(rule, connection, None)
-        .await
-        .expect("match rule")
-}
-
-/// The next message of the stream, or none after `millis` milliseconds.
-async fn next_within(stream: &mut MessageStream, millis: u64) -> Option<Message> {
-    futures_lite::future::or(async { stream.next().await?.ok() }, async {
-        async_io::Timer::after(Duration::from_millis(millis)).await;
-        None
-    })
-    .await
-}
-
-/// Whether a failed call is the D-Bus error with this name. `zbus` returns the standard errors
-/// as `Error::FDO` and any other as `Error::MethodError`.
-fn is_error(result: &zbus::Result<Message>, name: &str) -> bool {
-    match result {
-        Err(zbus::Error::MethodError(n, _, _)) => n.as_str() == name,
-        Err(zbus::Error::FDO(e)) => e.name().as_str() == name,
-        _ => false,
-    }
-}
+use linuxhello_dbus::{AGENT_BUS_NAME, AGENT_INTERFACE, AGENT_OBJECT_PATH};
+use zbus::connection::Builder;
 
 #[test]
 fn signals_reach_only_the_subscribed_peer() {

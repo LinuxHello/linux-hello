@@ -60,3 +60,18 @@ Semantics: [policy-semantics.md](../architecture/policy-semantics.md). Tests liv
 | The caller's uid comes from the bus, not from the message | `a_prompt_for_another_user_is_refused_with_access_denied` |
 | A malformed prompt id, signal, value or peer name is refused before the state changes | `malformed_prompt_id_is_an_invalid_argument`, `bad_wire_values_are_refused_before_the_store_changes`, `invalid_peer_names_are_refused`, `malformed_requests_get_invalid_args_errors` |
 | No user can fill the store | `reporter_cannot_exceed_its_prompt_limit`, `subscriber_limit_is_enforced` |
+
+### Confinement of the Agent
+
+Files: [`security/`](../../security/). Tests: `crates/linuxhello-agent/tests/bus_policy.rs` (a real private bus with the default rules of the system bus and the policy included after them) and `profiles.rs`. None of this has run on a real system bus or under a loaded AppArmor profile yet.
+
+| Property | Test |
+| :-- | :-- |
+| Only the Agent's user can own the Agent's bus name | `only_the_agents_user_may_own_the_name` |
+| Only the Agent's user can send a signal of the Agent's interface; a forged signal reaches nobody, and the Agent's own signals are not blocked | `only_the_agents_user_can_send_the_agents_signals`, `a_subscriber_hears_the_agent_under_the_policy` |
+| Any user can call the Agent's methods; its properties and every other interface are denied | `any_user_can_call_the_agents_methods_but_not_its_other_interfaces` |
+| The unit runs as its own user with no capability and a strict sandbox, and allows only `/dev/tpmrm0` | `agent_unit_runs_as_its_own_user_with_no_privileges`, `agent_unit_sandbox_is_strict`, `agent_unit_allows_only_the_tpm_device` |
+| The unit refuses to start unless its AppArmor profile is loaded in enforce mode | `agent_unit_refuses_to_start_unless_apparmor_enforces_its_profile` |
+| The profile grants no network but the unix socket, no capability, no tracing, no home directory and no device but the TPM | `agent_profile_grants_no_network_but_the_unix_socket`, `agent_profile_grants_no_capability_and_denies_tracing`, `agent_profile_denies_home_directories_and_names_the_registered_bus_name`, `agent_profile_grants_the_tpm_and_no_other_device` |
+| The unit and the profile are accepted by `systemd-analyze verify` and `apparmor_parser` (skipped, and said so, if a tool is missing) | `agent_unit_passes_systemd_analyze_verify`, `agent_profile_parses` |
+

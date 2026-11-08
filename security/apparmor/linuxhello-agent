@@ -1,0 +1,51 @@
+# AppArmor profile of the Linux Hello Agent. Install as /etc/apparmor.d/linuxhello-agent and
+# load in enforce mode; the systemd unit refuses to start otherwise (AGENTS.md invariant 3).
+# It grants: the system bus, the TPM resource manager, its state directory and the read-only
+# admin policy. It grants no network, no capability, no ptrace and no access to home directories.
+abi <abi/4.0>,
+
+include <tunables/global>
+
+profile linuxhello-agent /usr/libexec/linuxhello/linuxhello-agent {
+  include <abstractions/base>
+
+  # The binary itself.
+  /usr/libexec/linuxhello/linuxhello-agent mr,
+
+  # The system bus, over a unix socket only, and the name of ADR-0012.
+  network unix stream,
+  /run/dbus/system_bus_socket rw,
+  dbus bind bus=system name=io.github.LinuxHello.Agent1,
+  dbus (send, receive) bus=system path=/io/github/LinuxHello/Agent1
+       interface=io.github.LinuxHello.Agent1,
+  dbus (send, receive) bus=system path=/io/github/LinuxHello/Agent1
+       interface=org.freedesktop.DBus.{Introspectable,Peer},
+  dbus send bus=system path=/org/freedesktop/DBus interface=org.freedesktop.DBus
+       member={Hello,RequestName,ReleaseName,GetConnectionCredentials,AddMatch,RemoveMatch}
+       peer=(name=org.freedesktop.DBus),
+
+  # The only device: the TPM resource manager.
+  /dev/tpmrm0 rw,
+
+  # State: root-key blobs and prompt data.
+  /var/lib/linuxhello/ rw,
+  /var/lib/linuxhello/** rwk,
+
+  # The admin policy layer, read-only.
+  /etc/linuxhello/policy.d/ r,
+  /etc/linuxhello/policy.d/** r,
+
+  # No tracing of or by the Agent, and no reading of other processes' memory.
+  deny ptrace,
+  deny @{PROC}/*/mem rw,
+  deny @{PROC}/kcore r,
+
+  # No network but the unix socket above, and no capability.
+  deny network inet,
+  deny network inet6,
+  deny capability,
+
+  # No home directories.
+  deny /home/** rwklx,
+  deny /root/** rwklx,
+}
