@@ -6,7 +6,7 @@ abi <abi/4.0>,
 
 include <tunables/global>
 
-profile linuxhello-agent /usr/libexec/linuxhello/linuxhello-agent {
+profile linuxhello-agent /usr/libexec/linuxhello/linuxhello-agent flags=(attach_disconnected) {
   include <abstractions/base>
 
   # The binary itself.

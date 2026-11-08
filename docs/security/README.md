@@ -63,7 +63,7 @@ Semantics: [policy-semantics.md](../architecture/policy-semantics.md). Tests liv
 
 ### Confinement of the Agent
 
-Files: [`security/`](../../security/). Tests: `crates/linuxhello-agent/tests/bus_policy.rs` (a real private bus with the default rules of the system bus and the policy included after them) and `profiles.rs`. None of this has run on a real system bus or under a loaded AppArmor profile yet.
+Files: [`security/`](../../security/). Tests: `crates/linuxhello-agent/tests/bus_policy.rs` (a real private bus with the default rules of the system bus and the policy included after them) and `profiles.rs`. The files were also installed in the test VM and exercised on a real system bus under an enforcing AppArmor profile (2026-11-08): the name is owned by the Agent's user, `nobody` is refused every call on another user's prompt, a signal reaches only the subscribed peer, forged signals reach nobody, and the unit does not start with the profile in complain mode or not loaded. That run is by hand, not a CI test.
 
 | Property | Test |
 | :-- | :-- |
