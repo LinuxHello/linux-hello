@@ -4,9 +4,13 @@
 
 # Linux Hello
 
-PIN-rooted, biometric-unlocked passkeys and secrets for the Linux desktop: a Windows Hello equivalent built as an integration layer on [credentialsd](https://github.com/linux-credentials/credentialsd), fprintd, Howdy, KeePassXC and TPM 2.0.
+PIN-rooted, biometric-unlocked passkeys and secrets for the Linux desktop: a Windows Hello equivalent built as an integration layer on a virtual CTAP authenticator (a `uhid` device that browsers see as a security key), fprintd, Howdy, KeePassXC and TPM 2.0 ([ADR-0005](https://github.com/LinuxHello/architecture/blob/main/adr/0005-provider-path.md)).
 
-**Status:** pre-alpha. Nothing here authenticates anyone yet. Milestone 0 (spikes) runs before any implementation.
+**Status:** pre-alpha. Nothing here authenticates anyone yet.
+
+- **Built and tested:** the Agent's state API on the system bus ([ADR-0014](https://github.com/LinuxHello/architecture/blob/main/adr/0014-agent-bus.md)) with its bus policy, systemd unit and AppArmor profile, checked on a real bus under an enforcing profile on Ubuntu 24.04 and 26.04; the routing policy engine; each user's policy layer, kept by the Agent and set over D-Bus ([ADR-0018](https://github.com/LinuxHello/architecture/blob/main/adr/0018-user-policy-layer.md)).
+- **Prototyped, not in this repository:** the virtual CTAP authenticator, which created and used TPM-backed credentials with libfido2, Chromium and Firefox in a test VM ([spike 0094](https://github.com/LinuxHello/architecture/blob/main/spikes/0094-virtual-ctap-end-to-end.md)).
+- **Next:** the TPM provider, the PAM module and the Plasma prompt. The [spikes](https://github.com/LinuxHello/architecture/blob/main/spikes/README.md) of Milestone 0 are mostly answered; the open ones are listed in the backlog.
 
 ## What it is
 
@@ -22,15 +26,17 @@ PIN-rooted, biometric-unlocked passkeys and secrets for the Linux desktop: a Win
 | `crates/linuxhello-dbus` | Shared D-Bus interface names and types |
 | `crates/linuxhello-agent` | Agent: unlock state, auth state, routing policy, PIN, enrolment, reset |
 | `crates/pam-linuxhello` | PAM module: parallel face, fingerprint and PIN |
-| `crates/linuxhello-tpm-provider` | credentialsd provider for device-bound passkeys |
-| `crates/linuxhello-kpxc-bridge` | credentialsd provider for portable passkeys from KeePassXC |
+| `crates/linuxhello-tpm-provider` | Device-bound passkeys: TPM keys behind the virtual CTAP authenticator |
+| `crates/linuxhello-kpxc-bridge` | Portable passkeys from KeePassXC, behind the virtual CTAP authenticator |
 | `crates/linuxhello-ctl` | CLI |
 | `plasma/` | Prompts, greeter integration, enrolment, settings |
-| `security/` | AppArmor profiles, Tetragon policies, alert rules |
+| `security/` | The Agent's bus policy, systemd unit and AppArmor profile; Tetragon policies and alert rules later |
 | `policy/` | Policy schema and examples |
 | `docs/` | Obsidian vault (open `docs/` as a vault); renders on GitHub. Start at [docs/index.md](docs/index.md) |
 | `architecture/` | Submodule: [`LinuxHello/architecture`](https://github.com/LinuxHello/architecture), the Arc42 sections, the C4 model (`workspace.dsl`), the architecture decision records and the Milestone 0 spikes |
 | `docs/security/`, `docs/architecture/policy-semantics.md` | Threat model and security properties; policy semantics |
+
+The virtual CTAP authenticator and its `uhid` helper are not crates yet.
 
 ## Build
 
