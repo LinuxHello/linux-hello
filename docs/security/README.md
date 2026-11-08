@@ -61,6 +61,18 @@ Semantics: [policy-semantics.md](../architecture/policy-semantics.md). Tests liv
 | A malformed prompt id, signal, value or peer name is refused before the state changes | `malformed_prompt_id_is_an_invalid_argument`, `bad_wire_values_are_refused_before_the_store_changes`, `invalid_peer_names_are_refused`, `malformed_requests_get_invalid_args_errors` |
 | No user can fill the store | `reporter_cannot_exceed_its_prompt_limit`, `subscriber_limit_is_enforced` |
 
+### User policy layer (Agent)
+
+[ADR-0018](https://github.com/LinuxHello/architecture/blob/main/adr/0018-user-policy-layer.md). Tests are in `crates/linuxhello-agent/src/policy/user_store.rs`. The D-Bus methods that call the store are a later change.
+
+| Property | Test |
+| :-- | :-- |
+| A user policy the schema rejects is refused on write and the previous layer stays | `unparseable_user_policy_is_refused_on_write` |
+| A user policy over 64 KiB is refused on write | `oversized_user_policy_is_refused_on_write` |
+| One user's policy is never visible under another uid | `user_policies_are_kept_apart_by_uid` |
+| A write never leaves a half-written or temporary file, and the files are private to the Agent | `a_write_leaves_no_temporary_file_and_private_modes` |
+| The user layer is available without a home directory | `user_policy_is_available_without_a_home_directory` |
+
 ### Confinement of the Agent
 
 Files: [`security/`](../../security/). Tests: `crates/linuxhello-agent/tests/bus_policy.rs` (a real private bus with the default rules of the system bus and the policy included after them) and `profiles.rs`. The files were also installed in the test VM and exercised on a real system bus under an enforcing AppArmor profile (2026-11-08): the name is owned by the Agent's user, `nobody` is refused every call on another user's prompt, a signal reaches only the subscribed peer, forged signals reach nobody, and the unit does not start with the profile in complain mode or not loaded. That run is by hand, not a CI test.
