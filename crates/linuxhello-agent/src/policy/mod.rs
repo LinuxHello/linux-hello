@@ -26,6 +26,8 @@ pub mod restrict;
 /// `docs/architecture/policy-semantics.md`. Parsing is strict: an unknown key, a
 /// value out of range or a malformed duration makes the whole file unparseable.
 pub mod schema;
+/// The user policy store for managing per-user policy files.
+pub mod user_store;
 /// Reports on a loaded policy: its PIN rules and every effective value with its `managed` flag (`pin_rules`, `effective`).
 pub mod view;
 
@@ -35,4 +37,5 @@ pub use merge::{merge, Effective};
 pub use query::{MethodRule, RpDecision};
 pub use restrict::{most_restrictive, Contradiction};
 pub use schema::{parse_layer, Layer};
+pub use user_store::{StoreError, UserPolicyStore};
 pub use view::{EffectiveView, PinRules, Setting};
