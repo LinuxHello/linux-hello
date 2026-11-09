@@ -35,8 +35,9 @@ Semantics: [policy-semantics.md](../architecture/policy-semantics.md). Tests liv
 | Property | Test |
 | :-- | :-- |
 | An unparseable, unreadable or schema-breaking policy file leaves only the PIN | `unparseable_user_file_leaves_only_pin`, `unparseable_admin_file_leaves_only_pin`, `non_utf8_file_leaves_only_pin` |
+| A policy directory or file that cannot be examined is a failure, never "absent"; a file that is not a regular file or is over 1 MiB leaves only the PIN | `admin_dir_that_cannot_be_examined_leaves_only_pin`, `admin_file_that_is_not_a_regular_file_leaves_only_pin`, `symlinked_admin_file_leaves_only_pin`, `oversized_admin_file_leaves_only_pin` |
 | An unknown key or out-of-range value makes a policy file unparseable | `unknown_key_makes_file_unparseable`, `out_of_range_value_makes_file_unparseable`, `invalid_rp_pattern_makes_file_unparseable` |
-| An admin policy file or directory that is not root-owned, or is writable by group or others, leaves only the PIN | `admin_file_writable_by_others_leaves_only_pin` |
+| An admin policy file or directory that is not root-owned, or is writable by group or others, leaves only the PIN | `admin_file_writable_by_others_leaves_only_pin`, `admin_dir_parent_writable_by_others_leaves_only_pin` |
 | The user can tighten a default but never loosen it | `user_can_tighten_a_default`, `user_cannot_loosen_a_default` |
 | An admin setting overrides the user's | `user_cannot_override_admin_setting` |
 | Conflicting admin files resolve to the most restrictive value; contradictions leave only the PIN | `conflicting_admin_files_resolve_to_most_restrictive`, `contradictory_merge_leaves_only_pin` |
