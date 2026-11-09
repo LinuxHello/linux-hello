@@ -68,43 +68,44 @@ impl Policy {
 
     /// The decision for relying party `rp_id`.
     ///
-    /// In the PIN-only state: `tpm`, `reverify`, one factor
-    /// (`pin_only_state_requires_tpm_and_reverify`). Otherwise `rp_id` is
-    /// lower-cased and one trailing dot removed; the classes with the most specific
-    /// matching pattern decide (exact beats wildcard, then the longer domain:
-    /// `exact_domain_beats_wildcard`, `longer_suffix_beats_shorter`), merged most
-    /// restrictive on a tie (`tied_classes_merge_most_restrictive`). Unset keys and
-    /// no match give `NO_MATCH`.
+    /// `rp_id` is lower-cased and one trailing dot removed. Among the admin's
+    /// classes, the ones with the most specific matching pattern decide (exact
+    /// beats wildcard, then the longer domain: `exact_domain_beats_wildcard`,
+    /// `longer_suffix_beats_shorter`), merged most restrictive on a tie
+    /// (`tied_classes_merge_most_restrictive`). Unset keys and no match give
+    /// `NO_MATCH`.
+    ///
+    /// The user's classes are asked the same way. When one matches, the answer is
+    /// the stricter of the two, key by key: a user class tightens and never loosens
+    /// (`user_layer_cannot_lower_rp_prompt_below_default`,
+    /// `user_class_cannot_shadow_a_stricter_admin_class`).
+    ///
+    /// In the PIN-only state the answer is at least `tpm`, `reverify`, one factor
+    /// (`pin_only_state_requires_tpm_and_reverify`), and stricter where a class
+    /// the state kept asks for more
+    /// (`pin_only_state_is_never_weaker_than_the_admin_layer`).
     pub fn decision_for(&self, rp_id: &str) -> RpDecision {
-        let effective = match self {
-            Policy::PinOnly(pin) => {
-                return RpDecision {
+        let lower = rp_id.to_ascii_lowercase();
+        let id = lower.strip_suffix('.').unwrap_or(&lower);
+        match self {
+            Policy::PinOnly(pin) => stricter(
+                class_decision(pin.layer.rp_class.values(), id).unwrap_or(NO_MATCH),
+                RpDecision {
                     provider: pin.rp_provider,
                     prompt: pin.rp_prompt,
                     factors: pin.rp_factors,
                     require_second_credential: false,
-                };
+                },
+            ),
+            Policy::Effective(effective) => {
+                let admin =
+                    class_decision(effective.layer.rp_class.values(), id).unwrap_or(NO_MATCH);
+                match class_decision(effective.user_rp_class.values(), id) {
+                    Some(user) => stricter(admin, user),
+                    None => admin,
+                }
             }
-            Policy::Effective(effective) => effective,
-        };
-        let lower = rp_id.to_ascii_lowercase();
-        let id = lower.strip_suffix('.').unwrap_or(&lower);
-
-        let matches: Vec<(Specificity, &RpClassPolicy)> = effective
-            .layer
-            .rp_class
-            .values()
-            .filter_map(|class| best_match(class, id).map(|s| (s, class)))
-            .collect();
-        let Some(best) = matches.iter().map(|(s, _)| *s).max() else {
-            return NO_MATCH;
-        };
-        matches
-            .iter()
-            .filter(|(s, _)| *s == best)
-            .map(|(_, class)| values_of(class))
-            .reduce(stricter)
-            .unwrap_or(NO_MATCH)
+        }
     }
 
     /// The layer the queries read: the effective layer, or the PIN-only layer.
@@ -114,6 +115,24 @@ impl Policy {
             Policy::PinOnly(pin) => &pin.layer,
         }
     }
+}
+
+/// The decision `classes` give the normalised `id`: the classes with the most
+/// specific matching pattern, merged most restrictive on a tie; `None` when no
+/// class matches.
+fn class_decision<'a>(
+    classes: impl Iterator<Item = &'a RpClassPolicy>,
+    id: &str,
+) -> Option<RpDecision> {
+    let matches: Vec<(Specificity, &RpClassPolicy)> = classes
+        .filter_map(|class| best_match(class, id).map(|s| (s, class)))
+        .collect();
+    let best = matches.iter().map(|(s, _)| *s).max()?;
+    matches
+        .iter()
+        .filter(|(s, _)| *s == best)
+        .map(|(_, class)| values_of(class))
+        .reduce(stricter)
 }
 
 /// How specific a pattern's match is: an exact match beats any wildcard
@@ -381,5 +400,71 @@ factors = 2
         let dec = pol.decision_for("bank.example");
         assert_eq!(dec.provider, RpProvider::Keepassxc);
         assert_eq!(dec.prompt, RpPrompt::None);
+    }
+
+    /// The policy of one admin layer and one user layer.
+    fn layered(admin: &str, user: &str) -> Policy {
+        let admin: Vec<_> = (!admin.is_empty())
+            .then(|| parse_layer(admin).unwrap())
+            .into_iter()
+            .collect();
+        Policy::Effective(merge(&admin, Some(&parse_layer(user).unwrap())).unwrap())
+    }
+
+    #[test]
+    fn user_layer_cannot_lower_rp_prompt_below_default() {
+        let pol = layered(
+            "",
+            "[rp_class.mine]\nmatch = [\"bank.example\"]\nprompt = \"none\"\nprovider = \"any\"",
+        );
+        let dec = pol.decision_for("bank.example");
+        assert_eq!(dec, pol.decision_for("unmatched.example"));
+        assert_eq!(dec.prompt, RpPrompt::Presence);
+    }
+
+    #[test]
+    fn user_layer_can_tighten_an_rp_decision() {
+        let pol = layered(
+            "",
+            "[rp_class.mine]\nmatch = [\"bank.example\"]\nprompt = \"reverify\"\nprovider = \"tpm\"\nfactors = 2",
+        );
+        let dec = pol.decision_for("bank.example");
+        assert_eq!(dec.prompt, RpPrompt::Reverify);
+        assert_eq!(dec.provider, RpProvider::Tpm);
+        assert_eq!(dec.factors, 2);
+        assert_eq!(pol.decision_for("other.example").prompt, RpPrompt::Presence);
+    }
+
+    #[test]
+    fn user_patterns_do_not_join_an_admin_class() {
+        // The admin loosens the prompt for the intranet. A user class of the same
+        // name does not bring another relying party under the admin's values.
+        let pol = layered(
+            "[rp_class.low]\nmatch = [\"intranet.example\"]\nprompt = \"none\"",
+            "[rp_class.low]\nmatch = [\"bank.example\"]",
+        );
+        assert_eq!(pol.decision_for("intranet.example").prompt, RpPrompt::None);
+        assert_eq!(pol.decision_for("bank.example").prompt, RpPrompt::Presence);
+        let Policy::Effective(effective) = &pol else {
+            panic!("expected an effective policy");
+        };
+        assert_eq!(
+            effective.layer.rp_class["low"].match_patterns,
+            vec!["intranet.example".to_string()]
+        );
+    }
+
+    #[test]
+    fn user_class_cannot_shadow_a_stricter_admin_class() {
+        // The user's exact pattern is more specific than the admin's wildcard, and
+        // still cannot take the relying party out of the admin's rule.
+        let pol = layered(
+            "[rp_class.all]\nmatch = [\"*.example\"]\nprompt = \"reverify\"\nprovider = \"tpm\"\nfactors = 2",
+            "[rp_class.mine]\nmatch = [\"bank.example\"]\nprompt = \"none\"\nprovider = \"any\"",
+        );
+        let dec = pol.decision_for("bank.example");
+        assert_eq!(dec.prompt, RpPrompt::Reverify);
+        assert_eq!(dec.provider, RpProvider::Tpm);
+        assert_eq!(dec.factors, 2);
     }
 }

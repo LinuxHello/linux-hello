@@ -139,6 +139,7 @@ special = "disallowed"
         let effective = Effective {
             layer: Layer::default(),
             managed: Default::default(),
+            user_rp_class: Default::default(),
         };
         assert_eq!(apply_invariants(effective.clone()), Ok(effective));
     }

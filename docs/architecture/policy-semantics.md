@@ -69,10 +69,11 @@ Merging uses "most restrictive" per key:
 ## Layering
 
 1. Merge all admin files (`/etc/linuxhello/policy.d/*.toml`, in name order) into one admin layer, most restrictive per key.
-2. For each key: if the admin layer sets it, the admin value is effective and the key is **managed**. Otherwise the effective value is the most restrictive of the default and the user value (the user's layer, kept by the Agent in `/var/lib/linuxhello/users/<uid>/policy.toml` and set over D-Bus, [ADR-0018](https://github.com/LinuxHello/architecture/blob/main/adr/0018-user-policy-layer.md)). The user can tighten the defaults, never loosen them; only an admin can loosen a default.
-3. Then apply the invariants below.
+2. For each key outside `[rp_class.*]`: if the admin layer sets it, the admin value is effective and the key is **managed**. Otherwise the effective value is the most restrictive of the default and the user value (the user's layer, kept by the Agent in `/var/lib/linuxhello/users/<uid>/policy.toml` and set over D-Bus, [ADR-0018](https://github.com/LinuxHello/architecture/blob/main/adr/0018-user-policy-layer.md)). The user can tighten the defaults, never loosen them; only an admin can loosen a default.
+3. The user's `[rp_class.*]` tables are kept apart from the admin's, also when they have the same name: a user's patterns never join an admin class. For a relying party, the admin's classes give a decision as under *Queries*; if a user class matches too, the answer is the stricter of the two, key by key. A user class therefore cannot lower a default (`prompt = "none"` stays `presence`) or an admin class, even with a more specific pattern.
+4. Then apply the invariants below.
 
-The Agent stores a user layer only if it parses with this schema and is at most 64 KiB, so the stored file is loadable; a stored file that is later damaged still fails closed (*Fail closed*). A user reads and sets only their own layer, and there is no home-directory file: nothing is read from `~/.config/linuxhello/`.
+The Agent stores a user layer only if it parses with this schema, is at most 64 KiB, merges without contradiction with the defaults and the admin layers on disk at that moment, and leaves no context needing more methods than it allows (a context the admin layers already leave that way is not counted). So the stored file is loadable and cannot lock its user out by itself; a stored file that is later damaged, or contradicts a later admin layer, still fails closed (*Fail closed*). A user reads and sets only their own layer, and there is no home-directory file: nothing is read from `~/.config/linuxhello/`.
 
 ## Invariants after merging
 
@@ -89,16 +90,21 @@ The engine enters the **PIN-only state** when any of these hold:
 - an admin file, the admin directory or its parent is not owned by root, or is writable by group or others;
 - the merged result is contradictory (`max_length` < `min_length`, `required` against `disallowed`, or all four PIN character classes are `disallowed`).
 
-In the PIN-only state every context allows only `pin` with `factors` 1, PIN rules are the built-in defaults, relying parties get provider `tpm` and prompt `reverify`, and the engine reports why. A missing file is not an error: it contributes nothing. Only "does not exist" counts as missing; a path that cannot be examined is a failure.
+In the PIN-only state every context allows only `pin`, biometrics are off, relying parties get at least provider `tpm` and prompt `reverify`, and the engine reports why. Which rules it keeps depends on which layer is at fault:
+
+- **The admin layers are at fault** (unreadable, unsafe, unparseable, or contradictory among themselves): PIN rules are the built-in defaults, every context has `factors` 1, and there is no relying-party class.
+- **Only the user's layer is at fault** (damaged, or contradictory with the other layers): the state is built on the admin layers and the defaults. It keeps their PIN rules, each context's `factors` and the admin's relying-party classes, so a user's file can never lower an admin rule. A context that then needs two factors is unsatisfiable, not lowered.
+
+A missing file is not an error: it contributes nothing. Only "does not exist" counts as missing; a path that cannot be examined is a failure.
 
 ## Queries
 
 | Query | Answer |
 | :-- | :-- |
 | `methods_for(context)` | methods, factors, `reverify_after` |
-| `decision_for(rp_id)` | provider, prompt, factors, `require_second_credential`; from the most specific matching class (exact domain beats `*.`, longer suffix beats shorter); ties merge most restrictive |
+| `decision_for(rp_id)` | provider, prompt, factors, `require_second_credential`; from the most specific matching admin class (exact domain beats `*.`, longer suffix beats shorter); ties merge most restrictive; then made stricter by the most specific matching user class, if any |
 | `pin_rules()` | the PIN settings |
-| `effective()` | every effective value with its `managed` flag, and the PIN-only reason if any |
+| `effective()` | every effective value with its `managed` flag, the user's relying-party classes under `user.rp_class.<name>`, and the PIN-only reason if any |
 
 ## Open points
 

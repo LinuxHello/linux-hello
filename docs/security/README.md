@@ -39,6 +39,8 @@ Semantics: [policy-semantics.md](../architecture/policy-semantics.md). Tests liv
 | An unknown key or out-of-range value makes a policy file unparseable | `unknown_key_makes_file_unparseable`, `out_of_range_value_makes_file_unparseable`, `invalid_rp_pattern_makes_file_unparseable` |
 | An admin policy file or directory that is not root-owned, or is writable by group or others, leaves only the PIN | `admin_file_writable_by_others_leaves_only_pin`, `admin_dir_parent_writable_by_others_leaves_only_pin` |
 | The user can tighten a default but never loosen it | `user_can_tighten_a_default`, `user_cannot_loosen_a_default` |
+| A user's relying-party class can tighten a decision but never lower a default or an admin class, by its values, its name or a more specific pattern | `user_layer_can_tighten_an_rp_decision`, `user_layer_cannot_lower_rp_prompt_below_default`, `user_patterns_do_not_join_an_admin_class`, `user_class_cannot_shadow_a_stricter_admin_class` |
+| A damaged or contradictory user layer never lowers an admin rule: the PIN-only state keeps the admin's PIN rules, factor counts and relying-party classes | `damaged_user_layer_does_not_remove_admin_rules`, `pin_only_state_is_never_weaker_than_the_admin_layer` |
 | An admin setting overrides the user's | `user_cannot_override_admin_setting` |
 | Conflicting admin files resolve to the most restrictive value; contradictions leave only the PIN | `conflicting_admin_files_resolve_to_most_restrictive`, `contradictory_merge_leaves_only_pin` |
 | The PIN is always an allowed method | `pin_is_always_allowed` |
@@ -70,6 +72,8 @@ Semantics: [policy-semantics.md](../architecture/policy-semantics.md). Tests liv
 | :-- | :-- |
 | A user policy the schema rejects is refused on write and the previous layer stays | `unparseable_user_policy_is_refused_on_write` |
 | A user policy over 64 KiB is refused on write | `oversized_user_policy_is_refused_on_write` |
+| A user policy that contradicts the defaults or the admin layers is refused on write | `user_layer_contradicting_defaults_is_refused_on_write`, `user_layer_contradicting_the_admin_layer_is_refused_on_write` |
+| A user policy that would leave a context needing more methods than it allows is refused on write, so a user's layer cannot lock its user out | `user_policy_that_makes_a_context_unsatisfiable_is_refused_on_write`, `context_the_admin_made_unsatisfiable_is_not_held_against_the_user` |
 | One user's policy is never visible under another uid | `user_policies_are_kept_apart_by_uid` |
 | A write never leaves a half-written or temporary file, and the files are private to the Agent | `a_write_leaves_no_temporary_file_and_private_modes` |
 | The user layer is available without a home directory | `user_policy_is_available_without_a_home_directory` |

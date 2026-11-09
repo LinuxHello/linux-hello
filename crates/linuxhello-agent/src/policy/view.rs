@@ -37,7 +37,8 @@ pub struct PinRules {
 /// One key of the effective policy.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Setting {
-    /// The key's path, e.g. `pin.min_length`, `context.sudo.methods`, `rp_class.bank.match`.
+    /// The key's path, e.g. `pin.min_length`, `context.sudo.methods`, `rp_class.bank.match`;
+    /// a key of a user's relying-party class is under `user.rp_class.<name>`.
     pub path: String,
     /// The value in TOML syntax, e.g. `8`, `true`, `"required"`, `["pin", "face"]`, `"8h"`.
     pub value: String,
@@ -99,6 +100,18 @@ impl Policy {
             Policy::PinOnly(pin) => (None, Some(pin.reason.clone())),
         };
         let mut settings = settings_of(self.view_layer(), managed);
+        if let Policy::Effective(effective) = self {
+            // The user's relying-party classes, under `user.rp_class.<name>`: they
+            // are kept apart from the admin's and are never managed.
+            let user = Layer {
+                rp_class: effective.user_rp_class.clone(),
+                ..Layer::default()
+            };
+            settings.extend(settings_of(&user, None).into_iter().map(|setting| Setting {
+                path: format!("user.{}", setting.path),
+                ..setting
+            }));
+        }
         settings.sort_by(|a, b| a.path.cmp(&b.path));
         EffectiveView {
             settings,
@@ -409,5 +422,22 @@ biometrics_allowed = true
         );
         assert_eq!(value("pin.min_length").as_deref(), Some("6"));
         assert!(view.settings.iter().all(|s| !s.managed));
+    }
+
+    #[test]
+    fn user_rp_classes_are_listed_apart_and_never_managed() {
+        use crate::policy::merge::merge;
+        use crate::policy::schema::parse_layer;
+        let admin = parse_layer("[rp_class.bank]\nmatch = [\"bank.example\"]").unwrap();
+        let user =
+            parse_layer("[rp_class.bank]\nmatch = [\"shop.example\"]\nprompt = \"reverify\"")
+                .unwrap();
+        let view = Policy::Effective(merge(&[admin], Some(&user)).unwrap()).effective();
+        let find = |path: &str| view.settings.iter().find(|s| s.path == path).unwrap();
+        assert_eq!(find("rp_class.bank.match").value, "[\"bank.example\"]");
+        assert!(find("rp_class.bank.match").managed);
+        assert_eq!(find("user.rp_class.bank.match").value, "[\"shop.example\"]");
+        assert_eq!(find("user.rp_class.bank.prompt").value, "\"reverify\"");
+        assert!(!find("user.rp_class.bank.match").managed);
     }
 }

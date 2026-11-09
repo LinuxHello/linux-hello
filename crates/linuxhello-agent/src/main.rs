@@ -20,13 +20,16 @@ use zbus::connection::Builder;
 /// The root directory where user policy subdirectories are located.
 const USER_POLICY_ROOT: &str = "/var/lib/linuxhello/users";
 
+/// The directory of the admin policy layer, owned by root.
+const ADMIN_POLICY_DIR: &str = "/etc/linuxhello/policy.d";
+
 /// Connects to the system bus, claims the Agent's name and serves until the process is stopped.
 ///
 /// # Errors
 ///
 /// Any error of connecting to the bus or claiming the name, such as the bus policy refusing it.
 async fn run() -> zbus::Result<()> {
-    let store = UserPolicyStore::new(USER_POLICY_ROOT);
+    let store = UserPolicyStore::new(USER_POLICY_ROOT).with_admin_layer(ADMIN_POLICY_DIR, 0);
     let _connection = serve_with(Builder::system(), Config::new(Vec::new()), Some(store)).await?;
     std::future::pending::<()>().await;
     Ok(())
