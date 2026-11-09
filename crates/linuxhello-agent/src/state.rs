@@ -4,9 +4,18 @@
 //! screen, a `sudo` conversation). The PAM module opens it and reports the live state; the
 //! prompt component reads it. The store decides who may do what, as ADR-0014 requires: only
 //! the PAM module of the user being authenticated (root, or the user's own uid) can open a
-//! prompt for that user; only the opener can change or close it; only the opener, the
-//! subject user and the configured prompt-host users can read it or be told about changes;
-//! a refusal looks the same whether the prompt exists or not; and no user can fill the store.
+//! prompt for that user; only the opener can change or close it; only the opener, and for a
+//! prompt that root opened the subject user and the configured prompt-host users, can read
+//! it or be told about changes; a refusal looks the same whether the prompt exists or not;
+//! and no user can fill the store.
+//!
+//! Prompts are kept per opener: the same id opened by two uids is two prompts. An
+//! unprivileged user who guesses the id of a login prompt and opens it first therefore
+//! neither blocks root's prompt nor is read by a prompt host, and learns nothing about
+//! whether it exists (`user_cannot_block_roots_prompt_by_opening_its_id_first`,
+//! `prompt_host_never_reads_state_published_by_an_unprivileged_squatter`,
+//! `open_does_not_reveal_whether_a_prompt_exists`). Every process of one uid is the same
+//! caller to the store: it cannot tell the PAM module from another process of that user.
 //!
 //! The store takes the caller's uid as an argument. The D-Bus layer reads it from the bus
 //! peer credentials; the store never trusts a uid that came inside a message. It sends
@@ -100,8 +109,6 @@ impl Snapshot {
 
 /// A prompt and who may do what with it.
 struct Entry {
-    /// The uid that opened the prompt. Only it may report on it or close it.
-    owner: u32,
     /// The user being authenticated, when known.
     subject: Option<u32>,
     /// The current state.
@@ -114,8 +121,8 @@ struct Entry {
 pub struct StateStore {
     /// The limits and the prompt hosts.
     config: Config,
-    /// Every open prompt.
-    prompts: HashMap<PromptId, Entry>,
+    /// Every open prompt, by the uid that opened it and its id.
+    prompts: HashMap<(u32, PromptId), Entry>,
 }
 
 impl StateStore {
@@ -127,18 +134,26 @@ impl StateStore {
         }
     }
 
-    /// Whether `uid` may read the prompt or be told about it: the opener, the subject user,
-    /// or a configured prompt host.
-    fn may_read(&self, entry: &Entry, uid: u32) -> bool {
-        uid == entry.owner || Some(uid) == entry.subject || self.config.prompt_hosts.contains(&uid)
+    /// The key of the prompt with this id that `uid` may read or be told about: its own,
+    /// or else the one root opened if `uid` is its subject user or a configured prompt
+    /// host. A prompt opened by another unprivileged user is never found.
+    fn readable(&self, uid: u32, prompt: &PromptId) -> Option<(u32, PromptId)> {
+        let own = (uid, prompt.clone());
+        if self.prompts.contains_key(&own) {
+            return Some(own);
+        }
+        let roots = (0, prompt.clone());
+        let entry = self.prompts.get(&roots)?;
+        (Some(uid) == entry.subject || self.config.prompt_hosts.contains(&uid)).then_some(roots)
     }
 
     /// Opens a prompt for `subject_uid`, owned by `reporter_uid`.
     ///
     /// # Errors
     ///
-    /// [`Error::Denied`] if `reporter_uid` is neither root nor the subject user, or if the
-    /// prompt is already open (by anyone). [`Error::LimitReached`] if `reporter_uid` already
+    /// [`Error::Denied`] if `reporter_uid` is neither root nor the subject user, or if
+    /// `reporter_uid` itself already has this prompt open; a prompt with the same id opened
+    /// by another uid makes no difference. [`Error::LimitReached`] if `reporter_uid` already
     /// owns `max_prompts_per_reporter` prompts.
     pub fn open(
         &mut self,
@@ -149,21 +164,21 @@ impl StateStore {
         if reporter_uid != 0 && Some(reporter_uid) != subject_uid {
             return Err(Error::Denied);
         }
-        if self.prompts.contains_key(prompt) {
+        let key = (reporter_uid, prompt.clone());
+        if self.prompts.contains_key(&key) {
             return Err(Error::Denied);
         }
         let owned = self
             .prompts
-            .values()
-            .filter(|e| e.owner == reporter_uid)
+            .keys()
+            .filter(|(owner, _)| *owner == reporter_uid)
             .count();
         if owned >= self.config.max_prompts_per_reporter {
             return Err(Error::LimitReached);
         }
         self.prompts.insert(
-            prompt.clone(),
+            key,
             Entry {
-                owner: reporter_uid,
                 subject: subject_uid,
                 snapshot: Snapshot::initial(),
                 subscribers: Vec::new(),
@@ -184,9 +199,8 @@ impl StateStore {
         prompt: &PromptId,
         update: Update,
     ) -> Result<Vec<Peer>, Error> {
-        let entry = match self.prompts.get_mut(prompt) {
-            Some(entry) if entry.owner == reporter_uid => entry,
-            _ => return Err(Error::Denied),
+        let Some(entry) = self.prompts.get_mut(&(reporter_uid, prompt.clone())) else {
+            return Err(Error::Denied);
         };
         match update {
             Update::Methods(methods) => entry.snapshot.methods = methods,
@@ -201,13 +215,13 @@ impl StateStore {
     ///
     /// # Errors
     ///
-    /// [`Error::Denied`] unless `reader_uid` is the opener, the subject user or a prompt
-    /// host, and also when the prompt does not exist.
+    /// [`Error::Denied`] unless `reader_uid` opened the prompt, or root opened it and
+    /// `reader_uid` is its subject user or a prompt host; also when the prompt does not exist.
     pub fn get(&self, reader_uid: u32, prompt: &PromptId) -> Result<Snapshot, Error> {
-        match self.prompts.get(prompt) {
-            Some(entry) if self.may_read(entry, reader_uid) => Ok(entry.snapshot.clone()),
-            _ => Err(Error::Denied),
-        }
+        self.readable(reader_uid, prompt)
+            .and_then(|key| self.prompts.get(&key))
+            .map(|entry| entry.snapshot.clone())
+            .ok_or(Error::Denied)
     }
 
     /// Adds `peer` to the peers told about changes to the prompt. Subscribing the same peer
@@ -223,15 +237,9 @@ impl StateStore {
         peer: Peer,
         prompt: &PromptId,
     ) -> Result<(), Error> {
-        let allowed = match self.prompts.get(prompt) {
-            Some(entry) => self.may_read(entry, reader_uid),
-            None => false,
-        };
-        if !allowed {
-            return Err(Error::Denied);
-        }
+        let key = self.readable(reader_uid, prompt).ok_or(Error::Denied)?;
         let limit = self.config.max_subscribers_per_prompt;
-        let entry = self.prompts.get_mut(prompt).ok_or(Error::Denied)?;
+        let entry = self.prompts.get_mut(&key).ok_or(Error::Denied)?;
         if entry.subscribers.contains(&peer) {
             return Ok(());
         }
@@ -248,13 +256,10 @@ impl StateStore {
     ///
     /// [`Error::Denied`] unless `reporter_uid` opened the prompt.
     pub fn close(&mut self, reporter_uid: u32, prompt: &PromptId) -> Result<(), Error> {
-        match self.prompts.get(prompt) {
-            Some(entry) if entry.owner == reporter_uid => {
-                self.prompts.remove(prompt);
-                Ok(())
-            }
-            _ => Err(Error::Denied),
-        }
+        self.prompts
+            .remove(&(reporter_uid, prompt.clone()))
+            .map(|_| ())
+            .ok_or(Error::Denied)
     }
 }
 
@@ -281,8 +286,13 @@ mod tests {
         let id = pid("p1");
         assert_eq!(store.open(1000, &id, Some(1000)), Ok(()));
         assert_eq!(store.open(1000, &id, Some(1000)), Err(Error::Denied));
-        assert_eq!(store.open(1001, &id, Some(1001)), Err(Error::Denied));
-        assert_eq!(store.open(0, &id, Some(1000)), Err(Error::Denied));
+        // Another uid gets a prompt of its own under the same id, never this one.
+        assert_eq!(store.open(1001, &id, Some(1001)), Ok(()));
+        store
+            .report(1001, &id, Update::State(PromptState::WaitingForInput))
+            .unwrap();
+        assert_eq!(store.get(1000, &id).unwrap().state, PromptState::Idle);
+        assert_eq!(store.close(1001, &id), Ok(()));
         // The first opener still controls it.
         assert!(store
             .report(1000, &id, Update::State(PromptState::Scanning))
@@ -291,6 +301,71 @@ mod tests {
             store.report(1001, &id, Update::State(PromptState::Idle)),
             Err(Error::Denied)
         );
+    }
+
+    #[test]
+    fn user_cannot_block_roots_prompt_by_opening_its_id_first() {
+        let mut store = StateStore::new(Config::new(vec![990]));
+        let id = PromptId::derive("sddm", ":0", "c1");
+        // An unprivileged user guesses the id of the login prompt and opens it first.
+        assert_eq!(store.open(1000, &id, Some(1000)), Ok(()));
+        // Root's PAM module still opens and reports the real prompt.
+        assert_eq!(store.open(0, &id, Some(1001)), Ok(()));
+        assert!(store
+            .report(0, &id, Update::State(PromptState::Scanning))
+            .is_ok());
+        assert_eq!(store.get(1001, &id).unwrap().state, PromptState::Scanning);
+        // Closing the squatter's prompt leaves root's in place, and the other way round.
+        assert_eq!(store.close(1000, &id), Ok(()));
+        assert_eq!(store.get(1001, &id).unwrap().state, PromptState::Scanning);
+    }
+
+    #[test]
+    fn prompt_host_never_reads_state_published_by_an_unprivileged_squatter() {
+        let mut store = StateStore::new(Config::new(vec![990]));
+        let id = PromptId::derive("sddm", ":0", "c1");
+        store.open(1000, &id, Some(1000)).unwrap();
+        store
+            .report(1000, &id, Update::Result(PromptResult::Success))
+            .unwrap();
+        // Without a prompt of root's, the host sees nothing, and cannot subscribe.
+        assert_eq!(store.get(990, &id), Err(Error::Denied));
+        assert_eq!(
+            store.subscribe(990, Peer(":1.9".into()), &id),
+            Err(Error::Denied)
+        );
+        // With root's prompt, the host reads root's state and is told only by root.
+        store.open(0, &id, Some(1001)).unwrap();
+        assert_eq!(store.get(990, &id).unwrap(), Snapshot::initial());
+        store.subscribe(990, Peer(":1.9".into()), &id).unwrap();
+        let told = store
+            .report(1000, &id, Update::State(PromptState::Scanning))
+            .unwrap();
+        assert!(told.is_empty());
+        let told = store
+            .report(0, &id, Update::State(PromptState::Scanning))
+            .unwrap();
+        assert_eq!(told, vec![Peer(":1.9".into())]);
+        // The squatter reads only its own prompt, never root's for another subject.
+        assert_eq!(
+            store.get(1000, &id).unwrap().result,
+            Some(PromptResult::Success)
+        );
+    }
+
+    #[test]
+    fn open_does_not_reveal_whether_a_prompt_exists() {
+        let mut store = StateStore::new(Config::new(vec![990]));
+        let taken = PromptId::derive("sddm", ":0", "c1");
+        let free = PromptId::derive("sddm", ":1", "c2");
+        store.open(0, &taken, Some(1001)).unwrap();
+        store.open(1000, &taken, Some(1000)).unwrap();
+        // A third user gets the same answer for an id in use and a free one.
+        assert_eq!(
+            store.open(1002, &taken, Some(1002)),
+            store.open(1002, &free, Some(1002))
+        );
+        assert_eq!(store.get(1002, &taken), store.get(1002, &free));
     }
 
     #[test]
