@@ -272,7 +272,9 @@ dependencies = [
 name = "linuxhello-ctl"
 version = "0.0.0"
 dependencies = [
+ "linuxhello-agent",
  "linuxhello-dbus",
+ "tempfile",
 ]
 
 [[package]]
