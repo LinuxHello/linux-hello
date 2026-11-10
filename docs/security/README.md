@@ -57,8 +57,9 @@ Semantics: [policy-semantics.md](../architecture/policy-semantics.md). Tests liv
 | Property | Test |
 | :-- | :-- |
 | A caller whose peer credentials cannot be read is refused by every operation, and nothing changes (P-02) | `caller_without_peer_credentials_is_refused` |
-| Only root or the user being authenticated can open a prompt for that user, and only the opener can change or close it (P-04) | `unprivileged_process_cannot_publish_method_state_for_another_user`, `prompt_cannot_be_hijacked_by_reopening`, `closed_prompt_is_gone` |
-| State is read by and told to only the opener, the subject user and the configured prompt hosts; a refusal does not say whether the prompt exists (P-05) | `method_state_is_not_broadcast_to_other_users`, `prompt_without_subject_is_visible_only_to_hosts_and_opener` |
+| Only root or the user being authenticated can open a prompt for that user, and only the opener can change or close it (P-04). Every process of one uid is the same caller: the store cannot tell the PAM module from another process of that user | `unprivileged_process_cannot_publish_method_state_for_another_user`, `prompt_cannot_be_hijacked_by_reopening`, `closed_prompt_is_gone` |
+| Prompts are kept per opener, so a user who opens the id of a login prompt first neither blocks root's prompt nor is read by a prompt host | `user_cannot_block_roots_prompt_by_opening_its_id_first`, `prompt_host_never_reads_state_published_by_an_unprivileged_squatter` |
+| State is read by and told to only the opener and, for a prompt root opened, the subject user and the configured prompt hosts; no answer says whether a prompt exists (P-05) | `method_state_is_not_broadcast_to_other_users`, `prompt_without_subject_is_visible_only_to_hosts_and_opener`, `open_does_not_reveal_whether_a_prompt_exists` |
 | A signal goes only to the peer that subscribed, as a unicast message on a real bus | `signals_reach_only_the_subscribed_peer` |
 | The caller's uid comes from the bus, not from the message | `a_prompt_for_another_user_is_refused_with_access_denied` |
 | A malformed prompt id, signal, value or peer name is refused before the state changes | `malformed_prompt_id_is_an_invalid_argument`, `bad_wire_values_are_refused_before_the_store_changes`, `invalid_peer_names_are_refused`, `malformed_requests_get_invalid_args_errors` |
