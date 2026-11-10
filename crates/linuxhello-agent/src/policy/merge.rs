@@ -6,7 +6,7 @@
 use crate::policy::defaults::default_layer;
 use crate::policy::restrict::{most_restrictive, Contradiction};
 use crate::policy::schema::{ContextPolicy, Layer, MethodsPolicy, PinPolicy, RpClassPolicy};
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 
 /// The effective policy resulting from merging admin and user layers.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -15,13 +15,28 @@ pub struct Effective {
     pub layer: Layer,
     /// The keys an admin set, as paths (e.g., `pin.min_length`).
     pub managed: BTreeSet<String>,
+    /// The user's relying-party classes, kept apart from `layer.rp_class`, which
+    /// holds only the admin's. A user class can only tighten: the decision for a
+    /// relying party is the stricter of the answer without the user's classes and
+    /// the answer of the user's classes, so a user class never lowers a default or
+    /// an admin class, by its values, its name or a more specific pattern
+    /// (`user_layer_cannot_lower_rp_prompt_below_default`,
+    /// `user_patterns_do_not_join_an_admin_class`).
+    pub user_rp_class: HashMap<String, RpClassPolicy>,
 }
 
 /// Merges admin and user policy layers into an effective policy.
 ///
 /// 1. Admin layers are combined using `most_restrictive`, starting from `Layer::default()`.
-/// 2. The user layer is merged with the default layer using `most_restrictive`.
+/// 2. The user layer, without its relying-party classes, is merged with the
+///    default layer using `most_restrictive`.
 /// 3. Admin settings override the combined default/user layer.
+/// 4. The user's relying-party classes are kept in `Effective::user_rp_class`.
+///
+/// # Errors
+///
+/// The [`Contradiction`] of the admin layers among themselves, of the user layer
+/// against the defaults, or of the merged PIN rules.
 pub fn merge(admin: &[Layer], user: Option<&Layer>) -> Result<Effective, Contradiction> {
     // 1. Combine admin layers
     let mut admin_combined = Layer::default();
@@ -31,7 +46,8 @@ pub fn merge(admin: &[Layer], user: Option<&Layer>) -> Result<Effective, Contrad
 
     // 2. Combine default and user
     let default = default_layer();
-    let user_layer = user.cloned().unwrap_or_default();
+    let mut user_layer = user.cloned().unwrap_or_default();
+    let user_rp_class = std::mem::take(&mut user_layer.rp_class);
     let base = most_restrictive(&default, &user_layer)?;
 
     // 3. Apply admin overrides
@@ -43,6 +59,7 @@ pub fn merge(admin: &[Layer], user: Option<&Layer>) -> Result<Effective, Contrad
     crate::policy::invariants::apply_invariants(Effective {
         layer: effective_layer,
         managed,
+        user_rp_class,
     })
 }
 
@@ -54,8 +71,8 @@ pub fn merge(admin: &[Layer], user: Option<&Layer>) -> Result<Effective, Contrad
 /// Key by key: a key the admin leaves unset keeps the base value, so an admin
 /// `[pin]` that sets only `min_length` never resets the other PIN keys. A table
 /// the base does not have (an rp_class only the admin defines) starts empty and
-/// takes the admin's keys, each managed under its own path. An rp_class's `match`
-/// is the union of the admin's and the base's patterns, base patterns first.
+/// takes the admin's keys, each managed under its own path. The base holds no
+/// rp_class: the defaults have none and the user's are kept apart.
 fn apply_admin_overrides(target: &mut Layer, admin: &Layer, managed: &mut BTreeSet<String>) {
     if let Some(a) = &admin.pin {
         let t = target.pin.get_or_insert_with(empty_pin);

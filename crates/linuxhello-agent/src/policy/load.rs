@@ -5,7 +5,9 @@
 //! regular file, is too large, cannot be read, is not UTF-8 or does not parse,
 //! and a contradictory merge all give the PIN-only state (policy-semantics.md,
 //! *Fail closed*; invariant 3). Only a path that does not exist counts as
-//! absent.
+//! absent. When the user's layer is at fault and the admin layers are sound, the
+//! PIN-only state keeps what the admin layers demand, so a user's file can never
+//! lower an admin rule (`damaged_user_layer_does_not_remove_admin_rules`).
 
 use std::fs;
 use std::io::{ErrorKind, Read};
@@ -33,13 +35,16 @@ pub enum Policy {
 /// The state returned when policy loading fails.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PinOnly {
-    /// The minimal PIN-only layer.
+    /// The PIN-only layer: every context allows `pin` only and biometrics are
+    /// off. When the admin layers could be read (the user's layer was at fault)
+    /// it keeps their PIN rules, factor counts and relying-party classes;
+    /// otherwise it is built from the defaults, with one factor and no class.
     pub layer: Layer,
-    /// Always `RpProvider::Tpm`.
+    /// Always `RpProvider::Tpm`: the least any relying party gets.
     pub rp_provider: RpProvider,
-    /// Always `RpPrompt::Reverify`.
+    /// Always `RpPrompt::Reverify`: the least any relying party gets.
     pub rp_prompt: RpPrompt,
-    /// Always 1.
+    /// Always 1: the least any relying party gets; a class in `layer` may ask for more.
     pub rp_factors: u32,
     /// Why the load failed (names the file, never its content).
     pub reason: String,
@@ -58,17 +63,22 @@ pub struct PinOnly {
 ///   is too large, is not UTF-8, or fails `parse_layer`.
 /// - `merge` returns a contradiction.
 ///
+/// When the admin layers merge without the user's layer, the fault is the user
+/// layer's and the PIN-only state is built on the admin layers
+/// (`damaged_user_layer_does_not_remove_admin_rules`,
+/// `pin_only_state_is_never_weaker_than_the_admin_layer`).
+///
 /// The reason names the path and what is wrong, never the file's content
 /// (`pin_only_reason_names_the_file_not_its_content`).
 pub fn load(admin_dir: &Path, user_file: &Path, admin_owner_uid: u32) -> Policy {
     let admin = match admin_layers(admin_dir, admin_owner_uid) {
         Ok(layers) => layers,
-        Err(reason) => return Policy::PinOnly(create_pin_only_state(reason)),
+        Err(reason) => return Policy::PinOnly(create_pin_only_state(None, reason)),
     };
 
     let user_layer = match read_optional_layer(user_file) {
         Ok(layer) => layer,
-        Err(what) => return Policy::PinOnly(create_pin_only_state(describe(user_file, &what))),
+        Err(what) => return user_layer_failure(&admin, describe(user_file, &what)),
     };
 
     match merge(&admin, user_layer.as_ref()) {
@@ -85,7 +95,11 @@ pub fn load(admin_dir: &Path, user_file: &Path, admin_owner_uid: u32) -> Policy 
                     "merge: contradiction AllClassesDisallowed".to_string()
                 }
             };
-            Policy::PinOnly(create_pin_only_state(reason))
+            if user_layer.is_some() {
+                user_layer_failure(&admin, reason)
+            } else {
+                Policy::PinOnly(create_pin_only_state(None, reason))
+            }
         }
     }
 }
@@ -213,19 +227,41 @@ fn describe(path: &Path, what: &str) -> String {
     format!("{}: {what}", path.to_string_lossy())
 }
 
-/// The PIN-only state: the default PIN rules; every context `pin` only with one
-/// factor; biometrics off; no rp_class; relying parties `tpm`, `reverify`, one
-/// factor (`pin_only_state_requires_tpm_and_reverify`).
-fn create_pin_only_state(reason: String) -> PinOnly {
-    let mut layer = default_layer();
+/// The PIN-only state for a fault of the user's layer: built on the admin layers
+/// when they merge on their own, and on the defaults when they do not.
+fn user_layer_failure(admin: &[Layer], reason: String) -> Policy {
+    let base = merge(admin, None).ok();
+    Policy::PinOnly(create_pin_only_state(base.as_ref(), reason))
+}
+
+/// The PIN-only state: every context `pin` only, biometrics off, relying parties
+/// at least `tpm`, `reverify`, one factor (`pin_only_state_requires_tpm_and_reverify`).
+///
+/// Without `base` (the admin layers are at fault or absent) it has the default
+/// PIN rules, one factor in every context and no rp_class. With `base`, the
+/// effective policy of the admin layers alone, it keeps that policy's PIN rules,
+/// each context's factor count and the admin's relying-party classes, so it is
+/// never weaker than what the admin layers demand
+/// (`pin_only_state_is_never_weaker_than_the_admin_layer`). A context that then
+/// needs two factors is unsatisfiable, not lowered (invariant 3).
+fn create_pin_only_state(base: Option<&Effective>, reason: String) -> PinOnly {
+    let mut layer = base.map_or_else(default_layer, |effective| effective.layer.clone());
     for context in layer.context.values_mut() {
         context.methods = vec!["pin".to_string()];
-        context.factors = Some(1);
+        if base.is_none() || context.factors.is_none() {
+            context.factors = Some(1);
+        }
+    }
+    let defaults = default_layer().methods;
+    if layer.methods.is_none() {
+        layer.methods = defaults;
     }
     if let Some(methods) = layer.methods.as_mut() {
         methods.biometrics_allowed = Some(false);
     }
-    layer.rp_class.clear();
+    if base.is_none() {
+        layer.rp_class.clear();
+    }
 
     PinOnly {
         layer,
@@ -411,6 +447,11 @@ mod tests {
         assert!(!reason.contains("secret_marker"));
     }
 
+    /// An admin file that demands a long PIN, two factors for `sudo` and a strict class.
+    const STRICT_ADMIN: &[u8] = b"[pin]\nmin_length = 12\n\
+        [context.sudo]\nmethods = [\"pin\", \"fingerprint\"]\nfactors = 2\n\
+        [rp_class.bank]\nmatch = [\"bank.example\"]\nfactors = 2\nrequire_second_credential = true\n";
+
     #[test]
     fn admin_dir_that_cannot_be_examined_leaves_only_pin() {
         let (tmp, admin_dir, user_file, uid) = setup();
@@ -471,5 +512,75 @@ mod tests {
         text.push(b'a');
         write(&admin_dir.join("10-site.toml"), &text, 0o644);
         assert!(reason(load(&admin_dir, &user_file, uid)).ends_with("10-site.toml: is too large"));
+    }
+
+    #[test]
+    fn damaged_user_layer_does_not_remove_admin_rules() {
+        let (_tmp, admin_dir, user_file, uid) = setup();
+        write(&admin_dir.join("10-site.toml"), STRICT_ADMIN, 0o644);
+        for damaged in [&b"invalid = toml"[..], &[0xff, 0xfe][..]] {
+            write(&user_file, damaged, 0o644);
+            let policy = load(&admin_dir, &user_file, uid);
+            assert!(matches!(policy, Policy::PinOnly(_)));
+            assert_eq!(policy.pin_rules().min_length, 12);
+            let sudo = policy.methods_for("sudo");
+            assert_eq!(sudo.methods, vec!["pin".to_string()]);
+            assert_eq!(sudo.factors, 2);
+            assert!(sudo.unsatisfiable);
+        }
+    }
+
+    #[test]
+    fn pin_only_state_is_never_weaker_than_the_admin_layer() {
+        let (_tmp, admin_dir, user_file, uid) = setup();
+        write(&admin_dir.join("10-site.toml"), STRICT_ADMIN, 0o644);
+        let Policy::Effective(_) = load(&admin_dir, &user_file, uid) else {
+            panic!("the admin layer alone is effective");
+        };
+        // A user layer that parses but contradicts the defaults.
+        write(&user_file, b"[pin]\ndigits = \"disallowed\"", 0o644);
+        let policy = load(&admin_dir, &user_file, uid);
+        assert_eq!(
+            reason(policy.clone()),
+            "merge: contradiction ClassConflict(digits)"
+        );
+        assert_eq!(policy.pin_rules().min_length, 12);
+        assert_eq!(policy.methods_for("sudo").factors, 2);
+        assert_eq!(policy.methods_for("login").factors, 1);
+        for context in ["login", "unlock", "sudo", "session"] {
+            assert_eq!(policy.methods_for(context).methods, vec!["pin".to_string()]);
+        }
+        let bank = policy.decision_for("bank.example");
+        assert_eq!(bank.provider, RpProvider::Tpm);
+        assert_eq!(bank.prompt, RpPrompt::Reverify);
+        assert_eq!(bank.factors, 2);
+        assert!(bank.require_second_credential);
+        let other = policy.decision_for("other.example");
+        assert_eq!(
+            (other.provider, other.prompt, other.factors),
+            (RpProvider::Tpm, RpPrompt::Reverify, 1)
+        );
+    }
+
+    #[test]
+    fn contradictory_admin_layers_leave_the_default_pin_only_state() {
+        let (_tmp, admin_dir, user_file, uid) = setup();
+        write(
+            &admin_dir.join("10-a.toml"),
+            b"[pin]\ndigits = \"required\"\nmin_length = 12",
+            0o644,
+        );
+        write(
+            &admin_dir.join("20-b.toml"),
+            b"[pin]\ndigits = \"disallowed\"",
+            0o644,
+        );
+        write(&user_file, b"[pin]\nmin_length = 8", 0o644);
+        let policy = load(&admin_dir, &user_file, uid);
+        assert_eq!(
+            reason(policy.clone()),
+            "merge: contradiction ClassConflict(digits)"
+        );
+        assert_eq!(policy.pin_rules().min_length, 6);
     }
 }
