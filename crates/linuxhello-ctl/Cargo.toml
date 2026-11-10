@@ -9,7 +9,11 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
+linuxhello-agent = { path = "../linuxhello-agent" }
 linuxhello-dbus = { path = "../linuxhello-dbus" }
+
+[dev-dependencies]
+tempfile = "3.27.0"
 
 [lints]
 workspace = true
