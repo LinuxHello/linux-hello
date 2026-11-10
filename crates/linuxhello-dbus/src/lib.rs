@@ -141,8 +141,15 @@ impl PromptId {
             hasher.update(arg.as_bytes());
         }
 
+        use std::fmt::Write as _;
+
         let result = hasher.finalize();
-        Self(format!("{:x}", result))
+        let mut hex = String::with_capacity(64);
+        for byte in result.iter() {
+            // Writing to a String cannot fail.
+            let _ = write!(hex, "{byte:02x}");
+        }
+        Self(hex)
     }
 
     /// Parses a `PromptId` from its hexadecimal string representation.
@@ -236,6 +243,17 @@ mod tests {
         let id1 = PromptId::derive("sddm", "tty3", "c12");
         let id2 = PromptId::derive("sddm", "tty3", "c12");
         assert_eq!(id1, id2);
+    }
+
+    #[test]
+    fn prompt_id_is_the_lowercase_hex_sha256_of_the_framed_fields() {
+        // Computed independently of this crate, so a change of the hash library cannot change
+        // the identifier the PAM module and the Agent must agree on.
+        let id = PromptId::derive("sddm", "tty3", "c12");
+        assert_eq!(
+            id.0,
+            "f198fac0ed8dfed11c660e89234082f330d63a5969a5a47df51c01156d88e752"
+        );
     }
 
     #[test]
