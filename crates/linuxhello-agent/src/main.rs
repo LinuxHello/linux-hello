@@ -12,7 +12,8 @@
 
 use std::process::ExitCode;
 
-use linuxhello_agent::bus::serve_with;
+use linuxhello_agent::audit::Audit;
+use linuxhello_agent::bus::serve_with_audit;
 use linuxhello_agent::policy::user_store::UserPolicyStore;
 use linuxhello_agent::state::Config;
 use zbus::connection::Builder;
@@ -30,7 +31,13 @@ const ADMIN_POLICY_DIR: &str = "/etc/linuxhello/policy.d";
 /// Any error of connecting to the bus or claiming the name, such as the bus policy refusing it.
 async fn run() -> zbus::Result<()> {
     let store = UserPolicyStore::new(USER_POLICY_ROOT).with_admin_layer(ADMIN_POLICY_DIR, 0);
-    let _connection = serve_with(Builder::system(), Config::new(Vec::new()), Some(store)).await?;
+    let _connection = serve_with_audit(
+        Builder::system(),
+        Config::new(Vec::new()),
+        Some(store),
+        Audit::journal(),
+    )
+    .await?;
     std::future::pending::<()>().await;
     Ok(())
 }

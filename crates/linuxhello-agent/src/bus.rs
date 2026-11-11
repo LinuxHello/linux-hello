@@ -24,6 +24,7 @@ use zbus::names::{BusName, UniqueName};
 use zbus::{connection, interface, Connection};
 
 use crate::api::{Api, ApiError, Caller, Notification};
+use crate::audit::Audit;
 use crate::policy::user_store::UserPolicyStore;
 use crate::state::Config;
 
@@ -43,8 +44,20 @@ impl AgentService {
 
     /// A service with a user policy store.
     pub fn with_user_policy_store(config: Config, user_policies: Option<UserPolicyStore>) -> Self {
+        Self::with_audit(config, user_policies, Audit::none())
+    }
+
+    /// A service with a user policy store that records its refusals and policy changes in
+    /// `audit`.
+    pub fn with_audit(
+        config: Config,
+        user_policies: Option<UserPolicyStore>,
+        audit: Audit,
+    ) -> Self {
         Self {
-            api: Api::new(config).with_user_policy_store(user_policies),
+            api: Api::new(config)
+                .with_user_policy_store(user_policies)
+                .with_audit(audit),
         }
     }
 }
@@ -66,11 +79,21 @@ pub async fn serve_with(
     config: Config,
     user_policies: Option<UserPolicyStore>,
 ) -> zbus::Result<Connection> {
+    serve_with_audit(builder, config, user_policies, Audit::none()).await
+}
+
+/// Serves the Agent's state API with an optional user policy store and an audit trail.
+pub async fn serve_with_audit(
+    builder: connection::Builder<'_>,
+    config: Config,
+    user_policies: Option<UserPolicyStore>,
+    audit: Audit,
+) -> zbus::Result<Connection> {
     builder
         .name(AGENT_BUS_NAME)
         .serve_at(
             AGENT_OBJECT_PATH,
-            AgentService::with_user_policy_store(config, user_policies),
+            AgentService::with_audit(config, user_policies, audit),
         )
         .build()
         .await

@@ -12,6 +12,7 @@
 
 use linuxhello_dbus::{AuthMethod, PromptId, PromptResult, PromptState, SIGNALS};
 
+use crate::audit::{Audit, Event};
 use crate::policy::user_store::{StoreError, UserPolicyStore};
 use crate::state::{Config, Error as StateError, Peer, StateStore, Update};
 
@@ -92,6 +93,8 @@ pub struct Api {
     store: StateStore,
     /// The user policy layer.
     user_policies: Option<UserPolicyStore>,
+    /// The audit trail of refusals and policy changes.
+    audit: Audit,
 }
 
 impl Api {
@@ -100,7 +103,28 @@ impl Api {
         Self {
             store: StateStore::new(config),
             user_policies: None,
+            audit: Audit::none(),
         }
+    }
+
+    /// An API that records its refusals and policy changes in `audit`.
+    pub fn with_audit(self, audit: Audit) -> Self {
+        Self { audit, ..self }
+    }
+
+    /// Records the refusal in `result`, if it is one, and returns the result unchanged. A
+    /// refusal is recorded with the caller's uid and its reason only; an unavailable service is
+    /// not a refusal of the caller.
+    fn audited<T>(&self, caller: Caller, result: Result<T, ApiError>) -> Result<T, ApiError> {
+        match result {
+            Err(ApiError::Denied) => self.audit.record(Event::denied(caller.uid)),
+            Err(ApiError::LimitReached) => self.audit.record(Event::limit_reached(caller.uid)),
+            Err(ApiError::InvalidArgument) => {
+                self.audit.record(Event::invalid_argument(caller.uid));
+            }
+            Err(ApiError::Unavailable) | Ok(_) => {}
+        }
+        result
     }
 
     /// An API with a user policy store.
@@ -124,6 +148,17 @@ impl Api {
         prompt_id: &str,
         subject_uid: Option<u32>,
     ) -> Result<(), ApiError> {
+        let result = self.open_prompt_unaudited(caller, prompt_id, subject_uid);
+        self.audited(caller, result)
+    }
+
+    /// The work of [`Api::open_prompt`], without the audit record.
+    fn open_prompt_unaudited(
+        &mut self,
+        caller: Caller,
+        prompt_id: &str,
+        subject_uid: Option<u32>,
+    ) -> Result<(), ApiError> {
         let uid = caller.uid.ok_or(ApiError::Denied)?;
         let prompt = parse_prompt(prompt_id)?;
         Ok(self.store.open(uid, &prompt, subject_uid)?)
@@ -141,6 +176,18 @@ impl Api {
     /// [`ApiError::Denied`] without a caller uid or when the store refuses;
     /// [`ApiError::InvalidArgument`] for a prompt id, signal name or value that is not valid.
     pub fn report_state(
+        &mut self,
+        caller: Caller,
+        prompt_id: &str,
+        signal: &str,
+        values: &[&str],
+    ) -> Result<Vec<Notification>, ApiError> {
+        let result = self.report_state_unaudited(caller, prompt_id, signal, values);
+        self.audited(caller, result)
+    }
+
+    /// The work of [`Api::report_state`], without the audit record.
+    fn report_state_unaudited(
         &mut self,
         caller: Caller,
         prompt_id: &str,
@@ -175,6 +222,12 @@ impl Api {
     /// [`ApiError::Denied`] without a caller uid, when the store refuses, and for an unknown
     /// prompt; [`ApiError::InvalidArgument`] for a prompt id that is not valid.
     pub fn get_state(&self, caller: Caller, prompt_id: &str) -> Result<StateReply, ApiError> {
+        let result = self.get_state_unaudited(caller, prompt_id);
+        self.audited(caller, result)
+    }
+
+    /// The work of [`Api::get_state`], without the audit record.
+    fn get_state_unaudited(&self, caller: Caller, prompt_id: &str) -> Result<StateReply, ApiError> {
         let uid = caller.uid.ok_or(ApiError::Denied)?;
         let prompt = parse_prompt(prompt_id)?;
         let snapshot = self.store.get(uid, &prompt)?;
@@ -203,6 +256,17 @@ impl Api {
         peer: &str,
         prompt_id: &str,
     ) -> Result<(), ApiError> {
+        let result = self.subscribe_unaudited(caller, peer, prompt_id);
+        self.audited(caller, result)
+    }
+
+    /// The work of [`Api::subscribe`], without the audit record.
+    fn subscribe_unaudited(
+        &mut self,
+        caller: Caller,
+        peer: &str,
+        prompt_id: &str,
+    ) -> Result<(), ApiError> {
         let uid = caller.uid.ok_or(ApiError::Denied)?;
         let prompt = parse_prompt(prompt_id)?;
         if !peer.starts_with(':') || peer.len() > MAX_PEER_NAME {
@@ -218,6 +282,12 @@ impl Api {
     /// [`ApiError::Denied`] without a caller uid or unless the caller opened the prompt;
     /// [`ApiError::InvalidArgument`] for a prompt id that is not valid.
     pub fn close_prompt(&mut self, caller: Caller, prompt_id: &str) -> Result<(), ApiError> {
+        let result = self.close_prompt_unaudited(caller, prompt_id);
+        self.audited(caller, result)
+    }
+
+    /// The work of [`Api::close_prompt`], without the audit record.
+    fn close_prompt_unaudited(&mut self, caller: Caller, prompt_id: &str) -> Result<(), ApiError> {
         let uid = caller.uid.ok_or(ApiError::Denied)?;
         let prompt = parse_prompt(prompt_id)?;
         Ok(self.store.close(uid, &prompt)?)
@@ -230,6 +300,12 @@ impl Api {
     /// [`ApiError::Denied`] without a caller uid;
     /// [`ApiError::Unavailable`] if the user policy store is not configured.
     pub fn get_user_policy(&self, caller: Caller) -> Result<String, ApiError> {
+        let result = self.get_user_policy_unaudited(caller);
+        self.audited(caller, result)
+    }
+
+    /// The work of [`Api::get_user_policy`], without the audit record.
+    fn get_user_policy_unaudited(&self, caller: Caller) -> Result<String, ApiError> {
         let uid = caller.uid.ok_or(ApiError::Denied)?;
         let store = self.user_policies.as_ref().ok_or(ApiError::Unavailable)?;
         store.get(uid).map_err(ApiError::from)
@@ -243,6 +319,19 @@ impl Api {
     /// [`ApiError::Unavailable`] if the user policy store is not configured;
     /// [`ApiError::InvalidArgument`] if the text is invalid or too large.
     pub fn set_user_policy(&mut self, caller: Caller, text: &str) -> Result<(), ApiError> {
+        let result = self.set_user_policy_unaudited(caller, text);
+        if let (Ok(()), Some(uid)) = (&result, caller.uid) {
+            self.audit.record(if text.is_empty() {
+                Event::user_policy_removed(uid)
+            } else {
+                Event::user_policy_set(uid)
+            });
+        }
+        self.audited(caller, result)
+    }
+
+    /// The work of [`Api::set_user_policy`], without the audit record.
+    fn set_user_policy_unaudited(&mut self, caller: Caller, text: &str) -> Result<(), ApiError> {
         let uid = caller.uid.ok_or(ApiError::Denied)?;
         let store = self.user_policies.as_ref().ok_or(ApiError::Unavailable)?;
         store.set(uid, text).map_err(ApiError::from)
@@ -523,5 +612,163 @@ mod tests {
 
         assert_eq!(api.get_user_policy(USER), Err(ApiError::Unavailable));
         assert_eq!(api.set_user_policy(USER, ""), Err(ApiError::Unavailable));
+    }
+
+    /// A sink that keeps the events it is given.
+    #[derive(Clone, Default)]
+    struct Recorder(std::sync::Arc<std::sync::Mutex<Vec<Event>>>);
+
+    impl crate::audit::AuditSink for Recorder {
+        fn record(&self, event: &Event) {
+            self.0.lock().unwrap().push(event.clone());
+        }
+    }
+
+    impl Recorder {
+        /// The events recorded so far.
+        fn events(&self) -> Vec<Event> {
+            self.0.lock().unwrap().clone()
+        }
+    }
+
+    /// An `Api` that audits into a recorder.
+    fn audited_api(config: Config) -> (Api, Recorder) {
+        let recorder = Recorder::default();
+        let api = Api::new(config).with_audit(Audit::new(Box::new(recorder.clone())));
+        (api, recorder)
+    }
+
+    #[test]
+    fn refused_call_is_audited_with_uid_and_reason() {
+        let mut config = Config::new(vec![]);
+        config.max_prompts_per_reporter = 1;
+        let (mut api, recorder) = audited_api(config);
+        let no_uid = Caller { uid: None };
+
+        assert_eq!(
+            api.open_prompt(no_uid, &pid("a"), None),
+            Err(ApiError::Denied)
+        );
+        assert_eq!(recorder.events(), vec![Event::denied(None)]);
+
+        api.open_prompt(USER, &pid("a"), Some(1000)).unwrap();
+        let other = Caller { uid: Some(1001) };
+        assert_eq!(api.get_state(other, &pid("a")), Err(ApiError::Denied));
+        assert_eq!(recorder.events().last(), Some(&Event::denied(Some(1001))));
+
+        assert_eq!(
+            api.open_prompt(USER, &pid("b"), Some(1000)),
+            Err(ApiError::LimitReached)
+        );
+        assert_eq!(
+            recorder.events().last(),
+            Some(&Event::limit_reached(Some(1000)))
+        );
+
+        assert_eq!(
+            api.open_prompt(USER, "x", None),
+            Err(ApiError::InvalidArgument)
+        );
+        assert_eq!(
+            recorder.events().last(),
+            Some(&Event::invalid_argument(Some(1000)))
+        );
+        assert_eq!(recorder.events().len(), 4);
+    }
+
+    #[test]
+    fn successful_calls_are_not_audited() {
+        let (mut api, recorder) = audited_api(Config::new(vec![]));
+        let id = pid("a");
+
+        api.open_prompt(USER, &id, Some(1000)).unwrap();
+        api.report_state(USER, &id, "State", &["idle"]).unwrap();
+        api.get_state(USER, &id).unwrap();
+        api.subscribe(USER, ":1.7", &id).unwrap();
+        api.close_prompt(USER, &id).unwrap();
+
+        assert!(recorder.events().is_empty());
+    }
+
+    #[test]
+    fn user_policy_change_is_audited_without_its_text() {
+        let tmp = TempDir::new().unwrap();
+        let (api, recorder) = audited_api(Config::new(vec![]));
+        let mut api = api.with_user_policy_store(Some(UserPolicyStore::new(tmp.path())));
+        let marker = "MARKER".repeat(3);
+        let text = format!("# {marker}\n[methods]\nbiometrics_allowed = false\n");
+
+        api.set_user_policy(USER, &text).unwrap();
+        api.set_user_policy(USER, "").unwrap();
+        assert_eq!(
+            recorder.events(),
+            vec![
+                Event::user_policy_set(1000),
+                Event::user_policy_removed(1000)
+            ]
+        );
+
+        assert_eq!(
+            api.set_user_policy(USER, "invalid = toml"),
+            Err(ApiError::InvalidArgument)
+        );
+        assert_eq!(
+            recorder.events().last(),
+            Some(&Event::invalid_argument(Some(1000)))
+        );
+        assert_eq!(recorder.events().len(), 3);
+
+        for event in recorder.events() {
+            for (_, value) in event.fields() {
+                assert!(!value.contains(&marker));
+                assert!(value.len() <= 64);
+            }
+        }
+    }
+
+    #[test]
+    fn audit_events_are_rate_limited_per_uid() {
+        let (mut api, recorder) = audited_api(Config::new(vec![]));
+        let other = Caller { uid: Some(1001) };
+
+        for _ in 0..20 {
+            let _ = api.open_prompt(USER, "x", None);
+        }
+        let _ = api.open_prompt(other, "x", None);
+
+        let events = recorder.events();
+        let count = |event: Event| events.iter().filter(|e| **e == event).count();
+        assert_eq!(count(Event::invalid_argument(Some(1000))), 5);
+        assert_eq!(count(Event::invalid_argument(Some(1001))), 1);
+
+        let no_uid = Caller { uid: None };
+        for _ in 0..20 {
+            let _ = api.open_prompt(no_uid, "x", None);
+        }
+        let denied = recorder
+            .events()
+            .iter()
+            .filter(|e| **e == Event::denied(None))
+            .count();
+        assert_eq!(denied, 20);
+    }
+
+    #[test]
+    fn a_journal_that_cannot_be_written_does_not_change_the_answer() {
+        let tmp = TempDir::new().unwrap();
+        let audit = Audit::new(Box::new(crate::audit::JournalSink::at(
+            "/nonexistent/journal",
+        )));
+        let mut api = Api::new(Config::new(vec![]))
+            .with_user_policy_store(Some(UserPolicyStore::new(tmp.path())))
+            .with_audit(audit);
+
+        assert_eq!(
+            api.open_prompt(Caller { uid: None }, &pid("a"), None),
+            Err(ApiError::Denied)
+        );
+        let text = "[methods]\nbiometrics_allowed = false\n";
+        assert_eq!(api.set_user_policy(USER, text), Ok(()));
+        assert_eq!(api.get_user_policy(USER).unwrap(), text);
     }
 }
