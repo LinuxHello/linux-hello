@@ -6,6 +6,8 @@
 
 PIN-rooted, biometric-unlocked passkeys and secrets for the Linux desktop: a Windows Hello equivalent built as an integration layer on a virtual CTAP authenticator (a `uhid` device that browsers see as a security key), fprintd, Howdy, KeePassXC and TPM 2.0 ([ADR-0005](https://github.com/LinuxHello/architecture/blob/main/adr/0005-provider-path.md)).
 
+Homepage: [linuxhello.github.io](https://linuxhello.github.io/).
+
 **Status:** pre-alpha. Nothing here authenticates anyone yet.
 
 - **Built and tested:** the Agent's state API on the system bus ([ADR-0014](https://github.com/LinuxHello/architecture/blob/main/adr/0014-agent-bus.md)) with its bus policy, systemd unit and AppArmor profile, checked on a real bus under an enforcing profile on Ubuntu 24.04 and 26.04; the routing policy engine; each user's policy layer, kept by the Agent and set over D-Bus ([ADR-0018](https://github.com/LinuxHello/architecture/blob/main/adr/0018-user-policy-layer.md)).
