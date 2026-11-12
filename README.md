@@ -4,6 +4,9 @@
 
 # Linux Hello
 
+[![Quality gate status](https://sonarcloud.io/api/project_badges/measure?project=LinuxHello_linux-hello&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=LinuxHello_linux-hello)
+[![AI Code Assurance](https://sonarcloud.io/api/project_badges/ai_code_assurance?project=LinuxHello_linux-hello)](https://sonarcloud.io/summary/new_code?id=LinuxHello_linux-hello)
+
 PIN-rooted, biometric-unlocked passkeys and secrets for the Linux desktop: a Windows Hello equivalent built as an integration layer on a virtual CTAP authenticator (a `uhid` device that browsers see as a security key), fprintd, Howdy, KeePassXC and TPM 2.0 ([ADR-0005](https://github.com/LinuxHello/architecture/blob/main/adr/0005-provider-path.md)).
 
 Homepage: [linuxhello.github.io](https://linuxhello.github.io/).
