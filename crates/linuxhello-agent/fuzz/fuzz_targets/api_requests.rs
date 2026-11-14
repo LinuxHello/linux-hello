@@ -45,18 +45,18 @@ fuzz_target!(|data: &[u8]| {
 
     for record in data.chunks_exact(3) {
         let (b0, b1, b2) = (record[0], record[1], record[2]);
-        let uid = CALLERS[usize::from(b0 % 6)];
-        let caller = Caller { uid };
+        let who = CALLERS[usize::from(b0 % 6)];
+        let caller = Caller { uid: who };
         let id = format!("{b2:064x}");
         let peer = format!(":1.{}", b2 % 20);
         let subject = match b2 % 3 {
             0 => None,
-            1 => uid,
+            1 => who,
             _ => Some(1000),
         };
         let method = b1 % 5;
 
-        let Some(u) = uid else {
+        let Some(u) = who else {
             // Rule 1: nothing changes, so the model stays as it is.
             let denied = |what: &str, ok: bool, err: Option<ApiError>| {
                 assert!(
