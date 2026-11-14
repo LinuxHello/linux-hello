@@ -109,11 +109,77 @@ fn unlock_requires_a_satisfied_tpm_policy_session() {
     unimplemented!("P-07: write this test when it is unblocked");
 }
 
-/// P-13: see `docs/security/properties.md`.
+/// P-13: see `docs/security/properties.md`. Covers the five audit events that exist today (denied, limit
+/// reached, invalid argument, user policy set and removed); it claims nothing about unlock, signature,
+/// PIN change or reset.
 #[test]
-#[ignore = "placeholder, blocked: the audit logger does not exist yet"]
 fn secrets_never_appear_in_logs_errors_or_audit() {
-    unimplemented!("P-13: write this test when it is unblocked");
+    use linuxhello_agent::audit::Event;
+
+    // No `Event` constructor takes text from a caller, so a PIN, a policy text or an argument cannot
+    // reach the journal: the only thing a caller can influence is the numeric uid. Two uids show it:
+    // the records of one kind differ in `LH_UID` and nowhere else.
+    let uid: u32 = 4_242_424;
+    let other: u32 = 7;
+    let pairs = [
+        (Event::denied(Some(uid)), Event::denied(Some(other))),
+        (
+            Event::limit_reached(Some(uid)),
+            Event::limit_reached(Some(other)),
+        ),
+        (
+            Event::invalid_argument(Some(uid)),
+            Event::invalid_argument(Some(other)),
+        ),
+        (Event::user_policy_set(uid), Event::user_policy_set(other)),
+        (
+            Event::user_policy_removed(uid),
+            Event::user_policy_removed(other),
+        ),
+    ];
+    let names = [
+        "PRIORITY",
+        "SYSLOG_IDENTIFIER",
+        "MESSAGE_ID",
+        "LH_EVENT",
+        "LH_UID",
+        "LH_OUTCOME",
+        "MESSAGE",
+    ];
+    // Strings a caller could send; none of them can be handed to an `Event`, so none may appear.
+    let secrets = [
+        "1234",
+        "hunter2",
+        "pin=",
+        "[context.",
+        "methods",
+        "reverify_after",
+    ];
+
+    for (event, same_kind) in &pairs {
+        let fields = event.fields();
+        for (name, value) in &fields {
+            assert!(names.contains(name), "unexpected audit field {name}");
+            assert!(!value.contains('\n'), "newline in audit field {name}");
+            for secret in secrets {
+                assert!(
+                    !value.contains(secret),
+                    "{secret} found in audit field {name}"
+                );
+            }
+        }
+        let without_uid = |fields: Vec<(&'static str, String)>| -> Vec<(&'static str, String)> {
+            fields
+                .into_iter()
+                .filter(|(name, _)| *name != "LH_UID")
+                .collect()
+        };
+        assert_eq!(
+            without_uid(fields),
+            without_uid(same_kind.fields()),
+            "a record differs by more than the uid"
+        );
+    }
 }
 
 /// P-14: see `docs/security/properties.md`.
@@ -158,9 +224,48 @@ fn agent_refuses_to_start_without_enforced_apparmor_profile() {
     unimplemented!("P-24: write this test when it is unblocked");
 }
 
-/// P-27: see `docs/security/properties.md`.
+/// P-27: see `docs/security/properties.md`. Partially unblocked: the events listed there that exist today
+/// (denied, limit reached, invalid argument, user policy set and removed). The remaining events (unlock,
+/// signature, PIN change, reset) are the "later" set of the original issue and are covered by no test here
+/// until they exist.
 #[test]
-#[ignore = "placeholder, blocked: the audit logger does not exist yet"]
 fn every_unlock_signature_pin_change_and_reset_is_audited() {
-    unimplemented!("P-27: write this test when it is unblocked");
+    use linuxhello_agent::audit::Event;
+
+    let uid: u32 = 4_242_424;
+    let events = [
+        Event::denied(Some(uid)),
+        Event::limit_reached(Some(uid)),
+        Event::invalid_argument(Some(uid)),
+        Event::user_policy_set(uid),
+        Event::user_policy_removed(uid),
+    ];
+    let mut seen = Vec::new();
+    for event in &events {
+        let fields = event.fields();
+        let get = |name: &str| {
+            fields
+                .iter()
+                .find(|(n, _)| *n == name)
+                .map(|(_, v)| v.clone())
+        };
+        let kind = get("LH_EVENT").expect("every record names its event");
+        assert!(!kind.is_empty());
+        assert!(get("LH_OUTCOME").is_some_and(|v| !v.is_empty()));
+        assert_eq!(
+            get("LH_UID"),
+            Some(uid.to_string()),
+            "{kind} does not carry the uid"
+        );
+        seen.push(kind);
+    }
+    // Each event is audited as itself: five different words.
+    seen.sort();
+    seen.dedup();
+    assert_eq!(seen.len(), events.len());
+    // A record without a uid says so by omitting the field.
+    assert!(Event::denied(None)
+        .fields()
+        .iter()
+        .all(|(n, _)| *n != "LH_UID"));
 }

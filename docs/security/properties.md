@@ -43,7 +43,7 @@ How to read the table:
 | P-10 | The KeePassXC bridge never receives a passkey private key, only assertions | `kpxc_bridge_never_receives_private_key_material` | `kpxcBridge` | The bridge's protocol client |
 | P-11 | A signature without a user-presence confirmation is refused | `signature_without_user_presence_is_refused` | `tpmProvider` | Provider interface (ADR-0005) |
 | P-12 | The PIN is checked by the TPM's authorisation, never compared in software | `pin_is_never_compared_outside_the_tpm` | `pamModule`, crate `pam-linuxhello` | PIN verifier |
-| P-13 | The PIN and key material never appear in logs, errors or audit events | `secrets_never_appear_in_logs_errors_or_audit` | `agent` | Audit logger |
+| P-13 | The PIN and key material never appear in logs, errors or audit events | `secrets_never_appear_in_logs_errors_or_audit` | `agent` | Audit logger (the five events that exist are tested; the rest wait for their components) |
 | P-14 | One user's failed PIN attempts cannot lock another user out | `one_users_failed_pins_cannot_lock_out_another_user` | `agent` | Whether the TPM lockout is shared ([open question 2](threat-model.md#open-questions)); PIN manager |
 | P-15 | An unlock ends after its configured duration and when the session locks | `unlock_expires_after_the_configured_duration`, `unlock_ends_when_the_session_locks` | `agent` | Unlock state manager |
 | P-16 | Changing the PIN keeps every child key loadable, and the old PIN stops working | `pin_change_keeps_child_keys_loadable`, `old_pin_is_refused_after_a_change` | `tpmProvider` | Spike [#11](https://github.com/LinuxHello/linux-hello/issues/11) (change the root key's authorisation in place) |
@@ -79,7 +79,7 @@ Each parser also gets a cargo-fuzz target, as [AGENTS.md](../../AGENTS.md#gates)
 | P-24 | A daemon whose AppArmor profile is not loaded in enforce mode refuses to start | `agent_refuses_to_start_without_enforced_apparmor_profile`, `tpm_provider_refuses_to_start_without_enforced_apparmor_profile`, `kpxc_bridge_refuses_to_start_without_enforced_apparmor_profile` | `agent`, `tpmProvider`, `kpxcBridge` | The daemons' start-up code |
 | P-25 | Only the Agent and the TPM provider may open the TPM device, and no process may trace them | *CI job:* `apparmor_only_agent_and_tpm_provider_open_tpm_device`, `apparmor_denies_ptrace_of_agent_and_providers` | `secProfiles`, directory `security/apparmor` | The CI job that loads the profiles ([Arc42 section 8](https://github.com/LinuxHello/architecture/blob/main/arc42/08-crosscutting-concepts.md#runtime-confinement-and-detection)) |
 | P-26 | No Linux Hello process may open an internet socket | *CI job:* `apparmor_denies_inet_sockets_to_every_daemon` | `secProfiles` | Same |
-| P-27 | Every unlock, signature, PIN change and reset is audited | `every_unlock_signature_pin_change_and_reset_is_audited` | `agent` | Audit logger |
+| P-27 | Every unlock, signature, PIN change and reset is audited | `every_unlock_signature_pin_change_and_reset_is_audited` | `agent` | Audit logger (the five events that exist are tested; the rest wait for their components) |
 
 ## Coverage
 

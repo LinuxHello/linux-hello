@@ -11,7 +11,8 @@
 //!
 //! Security properties: `refused_call_is_audited_with_uid_and_reason`,
 //! `user_policy_change_is_audited_without_its_text` and `audit_events_are_rate_limited_per_uid`
-//! (P-13, partly: the events that exist so far).
+//! (P-13, partly: the events that exist so far). P-27 is covered by
+//! `every_unlock_signature_pin_change_and_reset_is_audited` for the same events only.
 //!
 //! C4 component: `auditLog` ([workspace.dsl](https://github.com/LinuxHello/architecture/blob/main/workspace.dsl))
 
