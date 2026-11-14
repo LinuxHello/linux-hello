@@ -36,8 +36,9 @@ pub struct RpDecision {
 
 /// The decision for a relying party no class matches, and the value of every key
 /// a matching class leaves unset (`unmatched_rp_gets_default_decision`).
+/// Unmatched relying parties are served by the TPM by default.
 const NO_MATCH: RpDecision = RpDecision {
-    provider: RpProvider::Any,
+    provider: RpProvider::Tpm,
     prompt: RpPrompt::Presence,
     factors: 1,
     require_second_credential: false,
@@ -259,7 +260,7 @@ provider = "tpm"
 "#;
         let pol = effective(toml);
         let dec = pol.decision_for("bank.example");
-        assert_eq!(dec.provider, RpProvider::Any);
+        assert_eq!(dec.provider, RpProvider::Tpm);
     }
 
     #[test]
@@ -271,7 +272,7 @@ provider = "tpm"
 "#;
         let pol = effective(toml);
         let dec = pol.decision_for("evilbank.example");
-        assert_eq!(dec.provider, RpProvider::Any);
+        assert_eq!(dec.provider, RpProvider::Tpm);
     }
 
     #[test]
@@ -302,7 +303,7 @@ provider = "tpm"
     fn unmatched_rp_gets_default_decision() {
         let pol = effective("");
         let dec = pol.decision_for("unknown.com");
-        assert_eq!(dec.provider, RpProvider::Any);
+        assert_eq!(dec.provider, RpProvider::Tpm);
         assert_eq!(dec.prompt, RpPrompt::Presence);
         assert_eq!(dec.factors, 1);
         assert!(!dec.require_second_credential);
@@ -336,7 +337,7 @@ factors = 2
 "#;
         let pol = effective(toml);
         let dec = pol.decision_for("bank.example");
-        assert_eq!(dec.provider, RpProvider::Any);
+        assert_eq!(dec.provider, RpProvider::Tpm);
         assert_eq!(dec.prompt, RpPrompt::Presence);
         assert_eq!(dec.factors, 2);
         assert!(!dec.require_second_credential);

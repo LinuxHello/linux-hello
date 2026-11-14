@@ -1,5 +1,18 @@
 # Example admin-layer policy (/etc/linuxhello/policy.d/*.toml).
 # Draft schema; key names are proposals.
+#
+# To loosen defaults:
+# [context.sudo]
+# methods = ["pin", "fingerprint", "face"]
+#
+# [context.session]
+# methods = ["pin", "fingerprint", "face"]
+# reverify_after = "12h"
+#
+# [rp_class.legacy]
+# match = ["old.example"]
+# provider = "any"
+
 [pin]
 min_length = 6
 digits = "required"
