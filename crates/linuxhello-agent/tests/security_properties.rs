@@ -146,10 +146,10 @@ fn secrets_never_appear_in_logs_errors_or_audit() {
         "LH_OUTCOME",
         "MESSAGE",
     ];
-    // Strings a caller could send; none of them can be handed to an `Event`, so none may appear.
-    let secrets = [
+    // Text a caller could send; none of it can be handed to an `Event`, so none of it may appear.
+    let probes = [
         "1234",
-        "hunter2",
+        "caller-text",
         "pin=",
         "[context.",
         "methods",
@@ -161,10 +161,10 @@ fn secrets_never_appear_in_logs_errors_or_audit() {
         for (name, value) in &fields {
             assert!(names.contains(name), "unexpected audit field {name}");
             assert!(!value.contains('\n'), "newline in audit field {name}");
-            for secret in secrets {
+            for probe in probes {
                 assert!(
-                    !value.contains(secret),
-                    "{secret} found in audit field {name}"
+                    !value.contains(probe),
+                    "caller text {probe:?} found in audit field {name}"
                 );
             }
         }
