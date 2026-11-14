@@ -26,6 +26,9 @@ pub mod restrict;
 /// `docs/architecture/policy-semantics.md`. Parsing is strict: an unknown key, a
 /// value out of range or a malformed duration makes the whole file unparseable.
 pub mod schema;
+/// How to compare two answers of the policy engine: whether one is at least as strict as the other
+/// (`at_least_as_strict_rule`, `at_least_as_strict_decision`).
+pub mod strictness;
 /// The user policy store for managing per-user policy files.
 pub mod user_store;
 /// Reports on a loaded policy: its PIN rules and every effective value with its `managed` flag (`pin_rules`, `effective`).

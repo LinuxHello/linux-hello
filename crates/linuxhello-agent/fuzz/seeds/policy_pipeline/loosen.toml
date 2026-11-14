@@ -1,0 +1,21 @@
+[context.sudo]
+methods = ["pin", "fingerprint"]
+factors = 2
+reverify_after = "1h"
+
+[rp_class.bank]
+match = ["bank.example"]
+provider = "tpm"
+prompt = "reverify"
+factors = 2
+---
+[context.sudo]
+methods = ["pin", "fingerprint", "face"]
+factors = 1
+reverify_after = "12h"
+
+[rp_class.mine]
+match = ["bank.example"]
+provider = "any"
+prompt = "none"
+factors = 1
