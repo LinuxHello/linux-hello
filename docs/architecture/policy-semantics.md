@@ -22,7 +22,7 @@ A policy file is TOML. Every table and key is optional. Any key, table or value 
 | :-- | :-- | :-- |
 | `[pin]` | `min_length` | integer, 4–64 |
 | | `max_length` | integer, 4–127, and ≥ `min_length` after merging |
-| | `digits`, `lowercase`, `uppercase`, `special` | `"required"`, `"allowed"` or `"disallowed"` |
+| | `digits`, `lowercase`, `uppercase`, `special` | `"required"`, `"allowed" or `"disallowed"` |
 | | `history` | integer, 0–50 (0: no history) |
 | | `expiry_days` | integer, 1–730 (absent: never expires) |
 | | `lockout_attempts` | integer, 1–32 |
@@ -47,8 +47,16 @@ A relying-party pattern is either an exact domain (`bank.example`) or `*.` follo
 | :-- | :-- |
 | PIN | `min_length` 6, `max_length` 127, `digits` required, other classes allowed, `history` 0, no expiry, `lockout_attempts` 5, `lockout_minutes` 15 |
 | Methods | `biometrics_allowed` true, `face_requires_ir` true, `require_hardware_tpm` true |
-| Every context | `methods` = pin, fingerprint, face; `factors` 1; no `reverify_after` |
-| Relying parties | no classes; decision defaults are provider `any`, prompt `presence`, factors 1, no second credential. These apply to unmatched relying parties and to decision fields still absent after merging explicit settings from the selected matching classes, including specificity ties |
+| Every context | `login`, `unlock`: pin, fingerprint, face; `sudo`: pin, fingerprint; `session`: pin, fingerprint, face and `reverify_after` 8h |
+| Relying parties | provider `tpm`. Unmatched relying parties get `tpm`, `presence`, 1 factor, and no second credential. |
+
+Face is Howdy, which has no liveness check and whose IR use cannot be verified by Linux Hello. By default a photograph-class attack then grants `sudo`.
+
+No `reverify_after` on `session` means one login unlocks passkey use until logout, however long the machine is left.
+
+An unmatched relying party gets `provider = tpm`, so by default a passkey may be created as a software key. Until an administrator adds a class (or sets `provider`), a passkey for a relying party no class matches can only be created with the TPM, so a machine without an enrolled TPM key cannot create one.
+
+An administrator can loosen each of these with one key in `/etc/linuxhello/policy.d/`.
 
 ## Restrictiveness
 
@@ -108,5 +116,4 @@ A missing file is not an error: it contributes nothing. Only "does not exist" co
 
 ## Open points
 
-- The defaults and ranges above are proposals for the maintainer to confirm before implementation starts.
-- The user layer only tightens. This differs from a plain "later layer wins" reading of the target architecture, which allowed the user to set any value an admin has not locked.
+- The defaults and ranges above are proposals for the maintainer to confirm before implementation starts. The `sudo`, `session` and relying-party defaults were confirmed by the maintainer on 2026-11-10; the other defaults and the ranges are still proposals. Say that ending a session unlock when the screen locks is the unlock state's job (P-15), not a policy default.
