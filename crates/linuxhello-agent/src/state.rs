@@ -111,6 +111,9 @@ impl Snapshot {
 struct Entry {
     /// The user being authenticated, when known.
     subject: Option<u32>,
+    /// The unique bus name of the connection that opened the prompt, when it was opened with
+    /// [`StateStore::open_named`].
+    opener: Option<Peer>,
     /// The current state.
     snapshot: Snapshot,
     /// The peers to tell about changes, each once, in subscription order.
@@ -161,6 +164,35 @@ impl StateStore {
         prompt: &PromptId,
         subject_uid: Option<u32>,
     ) -> Result<(), Error> {
+        self.open_entry(reporter_uid, None, prompt, subject_uid)
+    }
+
+    /// Opens a prompt as [`StateStore::open`] does, and remembers `opener`, the unique bus
+    /// name of the caller, so that [`StateStore::drop_opener`] can remove the prompt when
+    /// that connection leaves the bus.
+    ///
+    /// # Errors
+    ///
+    /// The same as [`StateStore::open`].
+    pub fn open_named(
+        &mut self,
+        reporter_uid: u32,
+        opener: Peer,
+        prompt: &PromptId,
+        subject_uid: Option<u32>,
+    ) -> Result<(), Error> {
+        self.open_entry(reporter_uid, Some(opener), prompt, subject_uid)
+    }
+
+    /// The work of [`StateStore::open`] and [`StateStore::open_named`]: the permission, the
+    /// duplicate and the limit rules are the same for both.
+    fn open_entry(
+        &mut self,
+        reporter_uid: u32,
+        opener: Option<Peer>,
+        prompt: &PromptId,
+        subject_uid: Option<u32>,
+    ) -> Result<(), Error> {
         if reporter_uid != 0 && Some(reporter_uid) != subject_uid {
             return Err(Error::Denied);
         }
@@ -180,6 +212,7 @@ impl StateStore {
             key,
             Entry {
                 subject: subject_uid,
+                opener,
                 snapshot: Snapshot::initial(),
                 subscribers: Vec::new(),
             },
@@ -248,6 +281,28 @@ impl StateStore {
         }
         entry.subscribers.push(peer);
         Ok(())
+    }
+
+    /// Removes every prompt whose recorded opener is `opener`, with its subscribers, whatever
+    /// the uid that opened it. A prompt opened with [`StateStore::open`] has no recorded
+    /// opener and is never removed. Returns how many prompts it removed.
+    pub fn drop_opener(&mut self, opener: &Peer) -> usize {
+        let before = self.prompts.len();
+        self.prompts
+            .retain(|_, entry| entry.opener.as_ref() != Some(opener));
+        before - self.prompts.len()
+    }
+
+    /// Removes `peer` from the subscribers of every prompt, keeping the order of the others.
+    /// No prompt is closed. Returns how many subscriptions it removed.
+    pub fn drop_subscriber(&mut self, peer: &Peer) -> usize {
+        let mut removed = 0;
+        for entry in self.prompts.values_mut() {
+            let before = entry.subscribers.len();
+            entry.subscribers.retain(|subscriber| subscriber != peer);
+            removed += before - entry.subscribers.len();
+        }
+        removed
     }
 
     /// Closes the prompt and forgets its state and subscribers. The id can be opened again.
@@ -457,5 +512,123 @@ mod tests {
         assert_eq!(snapshot.active, Some(AuthMethod::Face));
         assert_eq!(snapshot.state, PromptState::Scanning);
         assert_eq!(snapshot.result, Some(PromptResult::Failure));
+    }
+
+    /// A peer with the given unique bus name.
+    fn peer(name: &str) -> Peer {
+        Peer(name.to_string())
+    }
+
+    #[test]
+    fn prompts_of_a_disconnected_opener_are_removed() {
+        let mut store = StateStore::new(Config::new(vec![990]));
+        let (a, b) = (pid("a"), pid("b"));
+        store.open_named(0, peer(":1.5"), &a, Some(1000)).unwrap();
+        store.open_named(0, peer(":1.6"), &b, Some(1001)).unwrap();
+        // One peer can have several prompts; all of them go.
+        let c = pid("c");
+        store.open_named(0, peer(":1.5"), &c, Some(1002)).unwrap();
+        store.subscribe(1000, peer(":1.2"), &a).unwrap();
+        assert_eq!(store.drop_opener(&peer(":1.5")), 2);
+        assert_eq!(store.get(1002, &c), Err(Error::Denied));
+        assert_eq!(store.get(1000, &a), Err(Error::Denied));
+        assert_eq!(store.open_named(0, peer(":1.7"), &a, Some(1000)), Ok(()));
+        assert_eq!(store.get(1000, &a), Ok(Snapshot::initial()));
+        let told = store
+            .report(0, &a, Update::State(PromptState::Scanning))
+            .unwrap();
+        assert!(told.is_empty());
+        // The other root caller's prompt is untouched.
+        assert!(store.get(1001, &b).is_ok());
+    }
+
+    #[test]
+    fn a_leaving_opener_frees_its_place_in_the_prompt_limit() {
+        let mut store = StateStore::new(limited(1, 16));
+        store
+            .open_named(1000, peer(":1.1"), &pid("a"), Some(1000))
+            .unwrap();
+        assert_eq!(
+            store.open_named(1000, peer(":1.1"), &pid("b"), Some(1000)),
+            Err(Error::LimitReached)
+        );
+        assert_eq!(store.drop_opener(&peer(":1.1")), 1);
+        assert_eq!(
+            store.open_named(1000, peer(":1.2"), &pid("b"), Some(1000)),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn subscriptions_of_a_disconnected_peer_are_removed() {
+        let mut store = StateStore::new(Config::new(vec![]));
+        let a = pid("a");
+        store.open(0, &a, Some(1000)).unwrap();
+        store.subscribe(1000, peer(":1.1"), &a).unwrap();
+        store.subscribe(1000, peer(":1.2"), &a).unwrap();
+        assert_eq!(store.drop_subscriber(&peer(":1.1")), 1);
+        let update = Update::State(PromptState::Scanning);
+        assert_eq!(store.report(0, &a, update.clone()), Ok(vec![peer(":1.2")]));
+        assert!(store.get(1000, &a).is_ok());
+        store.subscribe(1000, peer(":1.1"), &a).unwrap();
+        assert_eq!(
+            store.report(0, &a, update),
+            Ok(vec![peer(":1.2"), peer(":1.1")])
+        );
+    }
+
+    #[test]
+    fn a_leaving_subscriber_frees_its_place_in_the_subscriber_limit() {
+        let mut store = StateStore::new(limited(64, 1));
+        let a = pid("a");
+        store.open(1000, &a, Some(1000)).unwrap();
+        store.subscribe(1000, peer(":1.1"), &a).unwrap();
+        assert_eq!(
+            store.subscribe(1000, peer(":1.2"), &a),
+            Err(Error::LimitReached)
+        );
+        assert_eq!(store.drop_subscriber(&peer(":1.1")), 1);
+        assert_eq!(store.subscribe(1000, peer(":1.2"), &a), Ok(()));
+    }
+
+    #[test]
+    fn dropping_a_peer_that_was_never_named_changes_nothing() {
+        let mut store = StateStore::new(Config::new(vec![]));
+        let a = pid("a");
+        store.open_named(0, peer(":1.1"), &a, Some(1000)).unwrap();
+        store.subscribe(1000, peer(":1.2"), &a).unwrap();
+        assert_eq!(store.drop_opener(&peer(":1.9")), 0);
+        assert_eq!(store.drop_subscriber(&peer(":1.9")), 0);
+        assert!(store.get(1000, &a).is_ok());
+        let told = store
+            .report(0, &a, Update::State(PromptState::Scanning))
+            .unwrap();
+        assert_eq!(told, vec![peer(":1.2")]);
+    }
+
+    #[test]
+    fn a_prompt_opened_with_open_has_no_bus_name_to_drop() {
+        let mut store = StateStore::new(Config::new(vec![]));
+        let a = pid("a");
+        store.open(0, &a, Some(1000)).unwrap();
+        assert_eq!(store.drop_opener(&peer(":1.1")), 0);
+        assert_eq!(store.drop_opener(&peer("")), 0);
+        assert!(store.get(1000, &a).is_ok());
+    }
+
+    #[test]
+    fn a_peer_that_is_opener_and_subscriber_loses_both() {
+        let mut store = StateStore::new(Config::new(vec![]));
+        let (a, b) = (pid("a"), pid("b"));
+        store.open_named(0, peer(":1.1"), &a, Some(1000)).unwrap();
+        store.open_named(0, peer(":1.2"), &b, Some(1000)).unwrap();
+        store.subscribe(1000, peer(":1.1"), &b).unwrap();
+        assert_eq!(store.drop_opener(&peer(":1.1")), 1);
+        assert_eq!(store.drop_subscriber(&peer(":1.1")), 1);
+        assert!(store.get(1000, &b).is_ok());
+        let told = store
+            .report(0, &b, Update::State(PromptState::Scanning))
+            .unwrap();
+        assert!(told.is_empty());
     }
 }
