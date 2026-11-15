@@ -6,6 +6,7 @@
 //! before writing the code it tests.
 
 use linuxhello_agent::api::{Api, ApiError, Caller};
+use linuxhello_agent::pinlock::PinLock;
 use linuxhello_agent::state::{Config, Error, Peer, StateStore, Update};
 use linuxhello_dbus::{PromptId, PromptState};
 
@@ -184,9 +185,19 @@ fn secrets_never_appear_in_logs_errors_or_audit() {
 
 /// P-14: see `docs/security/properties.md`.
 #[test]
-#[ignore = "placeholder, blocked: whether the TPM lockout is shared is unchecked; the PIN manager does not exist yet"]
 fn one_users_failed_pins_cannot_lock_out_another_user() {
-    unimplemented!("P-14: write this test when it is unblocked");
+    let mut lock = PinLock::new(3, 60, 3600);
+    assert_eq!(lock.record_failure(1000, 100), 0);
+    assert_eq!(lock.record_failure(1000, 100), 0);
+    assert_eq!(lock.record_failure(1000, 100), 60);
+    assert!(lock.check(1000, 100).is_err());
+    // Another user is not affected, and can record a failure of their own unrefused.
+    assert_eq!(lock.check(2000, 100), Ok(()));
+    assert_eq!(lock.record_failure(2000, 100), 0);
+    assert_eq!(lock.check(2000, 100), Ok(()));
+    // A correct PIN resets the locked user.
+    lock.record_pin_success(1000);
+    assert_eq!(lock.check(1000, 100), Ok(()));
 }
 
 /// P-15: see `docs/security/properties.md`.

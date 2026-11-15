@@ -8,5 +8,6 @@
 pub mod api;
 pub mod audit;
 pub mod bus;
+pub mod pinlock;
 pub mod policy;
 pub mod state;
