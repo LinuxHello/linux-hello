@@ -90,7 +90,7 @@ fn usage(err: &mut dyn Write, why: &str) -> u8 {
 
 /// The uid named by `user`: a decimal `u32` (digits only, no sign) or the first field of a line of
 /// `passwd`. `None` when it is neither.
-fn resolve_user(user: &str, passwd: &str) -> Option<u32> {
+pub(crate) fn resolve_user(user: &str, passwd: &str) -> Option<u32> {
     if user.is_empty() {
         return None;
     }
