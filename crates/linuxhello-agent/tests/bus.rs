@@ -4,7 +4,8 @@
 mod common;
 
 use common::{call, connect, is_error, my_uid, next_within, pid, run, signals, Daemon};
-use linuxhello_agent::bus::{serve, serve_with};
+use linuxhello_agent::audit::{Audit, AuditSink, Event};
+use linuxhello_agent::bus::{serve, serve_with, serve_with_audit};
 use linuxhello_agent::policy::user_store::UserPolicyStore;
 use linuxhello_agent::state::Config;
 use linuxhello_dbus::{AGENT_BUS_NAME, AGENT_INTERFACE, AGENT_OBJECT_PATH};
@@ -277,5 +278,46 @@ fn a_prompt_without_reports_is_closed_by_the_next_call() {
         call(&client, "GetState", &(fresh.as_str(),))
             .await
             .expect("the new prompt is open");
+    });
+}
+
+/// An audit sink that keeps what it is given.
+#[derive(Clone, Default)]
+struct Recorder(std::sync::Arc<std::sync::Mutex<Vec<Event>>>);
+
+impl AuditSink for Recorder {
+    fn record(&self, event: &Event) {
+        self.0.lock().unwrap().push(event.clone());
+    }
+}
+
+#[test]
+fn a_refusal_over_the_bus_is_audited_with_the_callers_unique_name() {
+    let daemon = Daemon::start();
+    run(async {
+        let recorder = Recorder::default();
+        let _service = serve_with_audit(
+            Builder::address(daemon.address.as_str()),
+            Config::new(vec![]),
+            None,
+            Audit::new(Box::new(recorder.clone())),
+        )
+        .await
+        .expect("serve the Agent");
+        let client = connect(&daemon).await;
+        let refused = call(&client, "GetState", &(pid("unknown").as_str(),)).await;
+        assert!(is_error(
+            &refused,
+            "org.freedesktop.DBus.Error.AccessDenied"
+        ));
+        let events = recorder.0.lock().unwrap().clone();
+        assert_eq!(events.len(), 1);
+        let name = client.unique_name().expect("a unique name").to_string();
+        let peer = events[0]
+            .fields()
+            .into_iter()
+            .find(|(n, _)| *n == "LH_PEER")
+            .map(|(_, v)| v);
+        assert_eq!(peer, Some(name));
     });
 }

@@ -62,7 +62,10 @@ mod tests {
     fn credentials_are_looked_up_once_per_connection() {
         let mut cache = CallerCache::new();
         let lookups = Cell::new(0);
-        let answer = Caller { uid: Some(1000) };
+        let answer = Caller {
+            uid: Some(1000),
+            peer: None,
+        };
 
         // First three calls for ":1.3" should only trigger 1 lookup.
         through(&mut cache, ":1.3", &lookups, answer);
@@ -71,7 +74,15 @@ mod tests {
         assert_eq!(lookups.get(), 1);
 
         // A new connection ":1.4" should trigger a second lookup.
-        through(&mut cache, ":1.4", &lookups, Caller { uid: Some(1001) });
+        through(
+            &mut cache,
+            ":1.4",
+            &lookups,
+            Caller {
+                uid: Some(1001),
+                peer: None,
+            },
+        );
         assert_eq!(lookups.get(), 2);
     }
 
@@ -79,14 +90,23 @@ mod tests {
     fn a_caller_without_credentials_is_cached_as_refused() {
         let mut cache = CallerCache::new();
         let lookups = Cell::new(0);
-        let refused = Caller { uid: None };
+        let refused = Caller {
+            uid: None,
+            peer: None,
+        };
 
         // Insert a refused caller.
         cache.insert(":1.3", refused);
 
         // get(":1.3") should return the cached None, not trigger a lookup.
         // We use a manual get here to verify the cache state.
-        assert_eq!(cache.get(":1.3"), Some(Caller { uid: None }));
+        assert_eq!(
+            cache.get(":1.3"),
+            Some(Caller {
+                uid: None,
+                peer: None
+            })
+        );
 
         // A completely new name should still return None (no entry).
         assert_eq!(cache.get(":1.9"), None);
@@ -98,18 +118,48 @@ mod tests {
         let mut cache = CallerCache::new();
         let lookups = Cell::new(0);
 
-        through(&mut cache, ":1.3", &lookups, Caller { uid: Some(1000) });
-        through(&mut cache, ":1.4", &lookups, Caller { uid: Some(1001) });
+        through(
+            &mut cache,
+            ":1.3",
+            &lookups,
+            Caller {
+                uid: Some(1000),
+                peer: None,
+            },
+        );
+        through(
+            &mut cache,
+            ":1.4",
+            &lookups,
+            Caller {
+                uid: Some(1001),
+                peer: None,
+            },
+        );
         assert_eq!(lookups.get(), 2);
 
         // Evict ":1.3".
         cache.evict(":1.3");
         assert_eq!(cache.get(":1.3"), None);
         // ":1.4" should still be there.
-        assert_eq!(cache.get(":1.4"), Some(Caller { uid: Some(1001) }));
+        assert_eq!(
+            cache.get(":1.4"),
+            Some(Caller {
+                uid: Some(1001),
+                peer: None
+            })
+        );
 
         // Re-lookup ":1.3" should increment lookups.
-        through(&mut cache, ":1.3", &lookups, Caller { uid: Some(1000) });
+        through(
+            &mut cache,
+            ":1.3",
+            &lookups,
+            Caller {
+                uid: Some(1000),
+                peer: None,
+            },
+        );
         assert_eq!(lookups.get(), 3);
 
         // Evicting twice should not panic.
@@ -120,8 +170,20 @@ mod tests {
     #[test]
     fn clear_drops_every_entry() {
         let mut cache = CallerCache::new();
-        cache.insert(":1.1", Caller { uid: Some(1) });
-        cache.insert(":1.2", Caller { uid: Some(2) });
+        cache.insert(
+            ":1.1",
+            Caller {
+                uid: Some(1),
+                peer: None,
+            },
+        );
+        cache.insert(
+            ":1.2",
+            Caller {
+                uid: Some(2),
+                peer: None,
+            },
+        );
 
         cache.clear();
 

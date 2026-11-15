@@ -18,14 +18,23 @@ fn caller_from_other_origin_is_refused() {
 }
 
 /// P-02: see `docs/security/properties.md`. Request-layer level; reading the credentials from
-/// the bus is the D-Bus layer's job, which passes `Caller { uid: None }` when it cannot.
+/// the bus is the D-Bus layer's job, which passes `Caller { uid: None, peer: None }` when it cannot.
 #[test]
 fn caller_without_peer_credentials_is_refused() {
     let mut api = Api::new(Config::new(vec![990]));
     let id = PromptId::derive("test", "p1", "s1").as_str().to_string();
-    let root = Caller { uid: Some(0) };
-    let user = Caller { uid: Some(1000) };
-    let nobody = Caller { uid: None };
+    let root = Caller {
+        uid: Some(0),
+        peer: None,
+    };
+    let user = Caller {
+        uid: Some(1000),
+        peer: None,
+    };
+    let nobody = Caller {
+        uid: None,
+        peer: None,
+    };
     assert_eq!(api.open_prompt(root, &id, Some(1000)), Ok(()));
 
     // Every operation refuses a caller whose credentials could not be read.
@@ -233,6 +242,56 @@ fn reset_without_account_authentication_is_refused() {
 #[ignore = "placeholder, blocked: the Agent's start-up code does not exist yet"]
 fn agent_refuses_to_start_without_enforced_apparmor_profile() {
     unimplemented!("P-24: write this test when it is unblocked");
+}
+
+/// P-13 for the bus name of the caller (`LH_PEER`): a `PeerName` has no form but a unique bus name, so
+/// the field cannot carry text a caller chose, and a record without a name omits the field.
+#[test]
+fn audit_peer_is_only_ever_a_unique_bus_name() {
+    use linuxhello_agent::api::PeerName;
+    use linuxhello_agent::audit::Event;
+
+    for good in [":1.42", ":1.0", ":1", ":1.4294967295"] {
+        assert_eq!(
+            PeerName::new(good).map(|p| p.as_str().to_string()),
+            Some(good.to_string())
+        );
+    }
+    let too_long = format!(":1.{}", "9".repeat(40));
+    for bad in [
+        "",
+        ":",
+        ":x",
+        "org.example.Name",
+        "1.42",
+        ":1.4\n2",
+        ":1.42 MESSAGE=forged",
+        ":1.\u{661}",
+        too_long.as_str(),
+    ] {
+        assert!(
+            PeerName::new(bad).is_none(),
+            "{bad:?} must not be a peer name"
+        );
+    }
+
+    let peer = PeerName::new(":1.42");
+    let with = Event::denied(Some(1000)).with_peer(peer).fields();
+    let names: Vec<&str> = with.iter().map(|(n, _)| *n).collect();
+    let (uid_at, peer_at, outcome_at) = (
+        names.iter().position(|n| *n == "LH_UID"),
+        names.iter().position(|n| *n == "LH_PEER"),
+        names.iter().position(|n| *n == "LH_OUTCOME"),
+    );
+    assert!(uid_at < peer_at && peer_at < outcome_at, "{names:?}");
+    assert_eq!(
+        with.iter()
+            .find(|(n, _)| *n == "LH_PEER")
+            .map(|(_, v)| v.as_str()),
+        Some(":1.42")
+    );
+    let without = Event::denied(Some(1000)).fields();
+    assert!(without.iter().all(|(n, _)| *n != "LH_PEER"));
 }
 
 /// P-27: see `docs/security/properties.md`. Partially unblocked: the events listed there that exist today

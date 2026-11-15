@@ -22,6 +22,8 @@ use std::path::PathBuf;
 use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
+use crate::api::PeerName;
+
 /// The socket the journal reads native records from.
 const JOURNAL_SOCKET: &str = "/run/systemd/journal/socket";
 
@@ -70,6 +72,9 @@ pub struct Event {
     kind: Kind,
     /// The uid of the caller, when the bus gave one.
     uid: Option<u32>,
+    /// The unique bus name of the caller's connection, when the bus gave one and it has the form
+    /// of one (see [`Event::with_peer`]).
+    peer: Option<PeerName>,
 }
 
 impl Event {
@@ -78,6 +83,7 @@ impl Event {
         Self {
             kind: Kind::Denied,
             uid,
+            peer: None,
         }
     }
 
@@ -86,6 +92,7 @@ impl Event {
         Self {
             kind: Kind::LimitReached,
             uid,
+            peer: None,
         }
     }
 
@@ -94,6 +101,7 @@ impl Event {
         Self {
             kind: Kind::InvalidArgument,
             uid,
+            peer: None,
         }
     }
 
@@ -102,6 +110,7 @@ impl Event {
         Self {
             kind: Kind::UserPolicySet,
             uid: Some(uid),
+            peer: None,
         }
     }
 
@@ -110,12 +119,20 @@ impl Event {
         Self {
             kind: Kind::UserPolicyRemoved,
             uid: Some(uid),
+            peer: None,
         }
     }
 
+    /// The same event for the connection `peer`, the unique bus name the bus daemon gave the
+    /// caller (see [`PeerName`]: it has no form that could carry a caller's own text, P-13).
+    #[must_use]
+    pub fn with_peer(self, peer: Option<PeerName>) -> Self {
+        Self { peer, ..self }
+    }
+
     /// The journal fields of the record, in the order they are written: `PRIORITY`,
-    /// `SYSLOG_IDENTIFIER`, `MESSAGE_ID`, `LH_EVENT`, `LH_UID` (only with a uid), `LH_OUTCOME`
-    /// and `MESSAGE`. Names and words are fixed and contain no newline.
+    /// `SYSLOG_IDENTIFIER`, `MESSAGE_ID`, `LH_EVENT`, `LH_UID` (only with a uid), `LH_PEER`
+    /// (only with a bus name), `LH_OUTCOME` and `MESSAGE`. Names and words are fixed and contain no newline.
     pub fn fields(&self) -> Vec<(&'static str, String)> {
         let (priority, message_id, event, outcome, message) = match self.kind {
             Kind::Denied => ("4", ID_DENIED, "denied", "refused", "request denied"),
@@ -156,6 +173,9 @@ impl Event {
         ];
         if let Some(uid) = self.uid {
             fields.push(("LH_UID", uid.to_string()));
+        }
+        if let Some(peer) = &self.peer {
+            fields.push(("LH_PEER", peer.as_str().to_string()));
         }
         fields.push(("LH_OUTCOME", outcome.to_string()));
         fields.push(("MESSAGE", message.to_string()));
