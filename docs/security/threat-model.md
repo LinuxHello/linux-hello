@@ -39,7 +39,7 @@ What Linux Hello protects, from whom, across which boundaries, and which securit
 | U1 | The desktop user | Legitimate. Can also make mistakes: forgets the PIN, approves a prompt they did not read |
 | U2 | The administrator | Legitimate. Writes the admin policy layer; authorises a trust-chain reset |
 | M1 | Another local user | An unprivileged account on the same machine; can use the system bus, read world-readable files and run processes |
-| M2 | A malicious process in the user's session | Same user id as U1, including a sandboxed or Electron app and a compromised browser; can use the session bus and read the user's files |
+| M2 | A malicious process in the user's session | Same user id as U1, including a sandboxed or Electron app and a compromised browser; can use the session bus, read the user's files and send synthetic input to other windows of the session (spike 0120) |
 | M3 | A malicious website or relying party | Controls a web page, its origin claims and the requests the browser forwards |
 | M4 | A person with physical access | Holds the machine locked or powered off; may show a photograph, a mask or a fingerprint cast to a sensor |
 | M5 | A supply-chain attacker | Publishes a malicious crate, action or release, or submits a pull request |
@@ -143,7 +143,7 @@ The columns *Actor*, *Entry point* and *Asset* use the ids above. *Answered by* 
 | T2 | **Confused deputy.** A request for one relying party is answered with another's credential | M2, M3 | Provider interface | A2, A3 | P-03 |
 | T3 | **Unlock bypass.** A biometric match is accepted without a TPM policy being satisfied, or unlock is a flag in a daemon | M2, M4, M6 | PAM, Agent API | A1, A2, A6 | P-06, P-07 |
 | T4 | **Key exfiltration.** Private key material leaves the TPM or KeePassXC, or lands in the Secret Service, a log or an error | M2, M6 | Provider interface, logs | A2, A3 | P-08, P-09, P-10, P-13 |
-| T5 | **Silent use.** A passkey signs without the user knowing | M2, M3 | Provider interface | A2 | P-11 |
+| T5 | **Silent use.** A passkey signs without the user knowing. A click-only prompt does not stop M2: synthetic input presses it. Presence is a sensor match or a PIN checked by the TPM, and the prompt is confined (not dumpable, own AppArmor profile); a PIN typed under X11 can be observed by an X client of the same user ([ADR-0020](https://github.com/LinuxHello/architecture/blob/main/adr/0020-presence-and-verification.md), [spike 0120](https://github.com/LinuxHello/architecture/blob/main/spikes/0120-resident-keys-presence-and-uv.md)) | M2, M3 | Provider interface | A2 | P-11 |
 | T6 | **PIN guessing.** Online guessing through the Agent or PAM, or a PIN compared in software instead of by the TPM | M1, M2, M4 | PAM, Agent API | A1, A4 | P-12, P-14 |
 | T7 | **Lockout of another user.** One user's failed PIN attempts exhaust a shared TPM lockout counter and block everyone (see [Open questions](#open-questions)) | M1 | Agent API, PAM | A1, A8 | P-14 |
 | T8 | **Biometric spoofing.** A photograph, mask or cast passes a sensor | M4 | Howdy, fprintd | A5, A6 | P-06 limits the damage: a match alone releases no key. Resisting the spoof itself is Howdy's and fprintd's job (out of scope above, except a bypass of IR anti-spoofing) |
