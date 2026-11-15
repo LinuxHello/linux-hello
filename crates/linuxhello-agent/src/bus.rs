@@ -28,6 +28,8 @@ use crate::audit::Audit;
 use crate::policy::user_store::UserPolicyStore;
 use crate::state::Config;
 
+pub mod credentials;
+
 /// The Agent's state API as a D-Bus object.
 pub struct AgentService {
     /// The request layer that decides every call.
