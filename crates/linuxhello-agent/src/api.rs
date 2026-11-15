@@ -205,6 +205,52 @@ impl Api {
         self.audited(&caller, result)
     }
 
+    /// Opens a prompt owned by the caller and remembers `opener`, the unique bus name of the
+    /// connection that asked, so that [`Api::peer_left`] can remove the prompt when that
+    /// connection leaves the bus. The rules are those of [`Api::open_prompt`], and the opener may
+    /// reopen its own prompt (`opener_can_reopen_its_own_prompt`).
+    ///
+    /// # Errors
+    ///
+    /// Those of [`Api::open_prompt`], and [`ApiError::InvalidArgument`] for an `opener` that is
+    /// not a unique bus name.
+    pub fn open_prompt_from(
+        &mut self,
+        caller: Caller,
+        opener: &str,
+        prompt_id: &str,
+        subject_uid: Option<u32>,
+    ) -> Result<(), ApiError> {
+        let result = self.open_prompt_from_unaudited(&caller, opener, prompt_id, subject_uid);
+        self.audited(&caller, result)
+    }
+
+    /// The work of [`Api::open_prompt_from`], without the audit record.
+    fn open_prompt_from_unaudited(
+        &mut self,
+        caller: &Caller,
+        opener: &str,
+        prompt_id: &str,
+        subject_uid: Option<u32>,
+    ) -> Result<(), ApiError> {
+        let uid = caller.uid.ok_or(ApiError::Denied)?;
+        let prompt = parse_prompt(prompt_id)?;
+        if !opener.starts_with(':') || opener.len() > MAX_PEER_NAME {
+            return Err(ApiError::InvalidArgument);
+        }
+        Ok(self
+            .store
+            .open_named(uid, Peer(opener.to_string()), &prompt, subject_uid)?)
+    }
+
+    /// The bus says the connection `peer` left: removes the prompts it opened and its
+    /// subscriptions, and returns how many of each together. Not a request of a caller, so not
+    /// audited.
+    pub fn peer_left(&mut self, peer: &str) -> usize {
+        let peer = Peer(peer.to_string());
+        self.store.drop_opener(&peer) + self.store.drop_subscriber(&peer)
+    }
+
     /// The work of [`Api::open_prompt`], without the audit record.
     fn open_prompt_unaudited(
         &mut self,
@@ -460,6 +506,52 @@ mod tests {
         let mut api = Api::new(Config::new(vec![990]));
         api.open_prompt(USER, id, Some(1000)).unwrap();
         api
+    }
+
+    #[test]
+    fn peer_left_removes_what_that_peer_opened_and_subscribed() {
+        let mut api = Api::new(Config::new(vec![]));
+        let (opened, shared) = (pid("opened"), pid("shared"));
+        api.open_prompt_from(USER, ":1.1", &opened, Some(1000))
+            .unwrap();
+        api.open_prompt_from(USER, ":1.1", &shared, Some(1000))
+            .unwrap();
+        api.subscribe(USER, ":1.2", &shared).unwrap();
+        // A subscriber leaving removes only its subscription.
+        assert_eq!(api.peer_left(":1.2"), 1);
+        let told = api
+            .report_state(USER, &shared, "State", &["scanning"])
+            .unwrap();
+        assert!(told.is_empty());
+        // The opener leaving removes both prompts.
+        assert_eq!(api.peer_left(":1.1"), 2);
+        assert_eq!(api.get_state(USER, &opened), Err(ApiError::Denied));
+        assert_eq!(api.get_state(USER, &shared), Err(ApiError::Denied));
+        // A name that never opened or subscribed changes nothing.
+        assert_eq!(api.peer_left(":1.9"), 0);
+    }
+
+    #[test]
+    fn a_prompt_is_opened_from_a_unique_bus_name_only() {
+        let mut api = Api::new(Config::new(vec![]));
+        for opener in ["org.example.Name", "", "1.1"] {
+            assert_eq!(
+                api.open_prompt_from(USER, opener, &pid("p1"), Some(1000)),
+                Err(ApiError::InvalidArgument)
+            );
+        }
+        assert_eq!(
+            api.open_prompt_from(
+                Caller {
+                    uid: None,
+                    peer: None
+                },
+                ":1.1",
+                &pid("p1"),
+                Some(1000)
+            ),
+            Err(ApiError::Denied)
+        );
     }
 
     #[test]
