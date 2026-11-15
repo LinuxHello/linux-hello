@@ -44,7 +44,7 @@ How to read the table:
 | P-11 | A signature without a user-presence confirmation is refused | `signature_without_user_presence_is_refused` | `tpmProvider` | Provider interface (ADR-0005) |
 | P-12 | The PIN is checked by the TPM's authorisation, never compared in software | `pin_is_never_compared_outside_the_tpm` | `pamModule`, crate `pam-linuxhello` | PIN verifier |
 | P-13 | The PIN and key material never appear in logs, errors or audit events | `secrets_never_appear_in_logs_errors_or_audit` | `agent` | Audit logger (the five events that exist are tested; the rest wait for their components) |
-| P-14 | One user's failed PIN attempts cannot lock another user out | `one_users_failed_pins_cannot_lock_out_another_user` | `agent` | Whether the TPM lockout is shared ([open question 2](threat-model.md#open-questions)); PIN manager |
+| P-14 | One user's failed PIN attempts cannot lock another user out (tested at the counter level) | `one_users_failed_pins_cannot_lock_out_another_user` | `agent` | Wiring the counter into the PIN path and the software-TPM test (#137) |
 | P-15 | An unlock ends after its configured duration and when the session locks | `unlock_expires_after_the_configured_duration`, `unlock_ends_when_the_session_locks` | `agent` | Unlock state manager |
 | P-16 | Changing the PIN keeps every child key loadable, and the old PIN stops working | `pin_change_keeps_child_keys_loadable`, `old_pin_is_refused_after_a_change` | `tpmProvider` | Spike [#11](https://github.com/LinuxHello/linux-hello/issues/11) (change the root key's authorisation in place) |
 
