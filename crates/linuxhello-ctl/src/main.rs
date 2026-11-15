@@ -5,12 +5,17 @@
 #![forbid(unsafe_code)]
 
 mod policy;
+mod status;
 
 use std::process::ExitCode;
 
 /// The Agent's state directory for the user layers (the same value as `USER_POLICY_ROOT` in the
 /// Agent's `main.rs`, which is private there).
 const USER_POLICY_ROOT: &str = "/var/lib/linuxhello/users";
+
+/// The Agent's admin policy directory (the same value as `ADMIN_POLICY_DIR` in the Agent's
+/// `main.rs`, which is private there).
+const ADMIN_POLICY_DIR: &str = "/etc/linuxhello/policy.d";
 
 /// Without arguments prints the skeleton line; with arguments runs the command and exits with its
 /// code (0 done, 1 failed, 2 usage error).
@@ -26,11 +31,23 @@ fn main() -> ExitCode {
     }
     // A missing /etc/passwd only means user names cannot be resolved; a numeric uid still works.
     let passwd = std::fs::read_to_string("/etc/passwd").unwrap_or_default();
-    ExitCode::from(policy::run(
-        &args,
+    let (state_root, mut out, mut err) = (
         std::path::Path::new(USER_POLICY_ROOT),
-        &passwd,
-        &mut std::io::stdout(),
-        &mut std::io::stderr(),
-    ))
+        std::io::stdout(),
+        std::io::stderr(),
+    );
+    let code = if matches!(args[0].as_str(), "status" | "doctor") {
+        status::run(
+            &args,
+            std::path::Path::new(ADMIN_POLICY_DIR),
+            0,
+            state_root,
+            &passwd,
+            &mut out,
+            &mut err,
+        )
+    } else {
+        policy::run(&args, state_root, &passwd, &mut out, &mut err)
+    };
+    ExitCode::from(code)
 }
