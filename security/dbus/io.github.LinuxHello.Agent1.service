@@ -1,0 +1,6 @@
+# D-Bus activation service for the Linux Hello Agent.
+[D-Bus Service]
+Name=io.github.LinuxHello.Agent1
+Exec=/bin/false
+User=root
+SystemdService=linuxhello-agent.service

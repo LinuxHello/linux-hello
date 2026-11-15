@@ -18,24 +18,29 @@ fn read(relative: &str) -> String {
         .unwrap_or_else(|e| panic!("{relative}: {e}"))
 }
 
-/// The `[Service]` settings of the unit: every value of each key, in order.
-fn service_settings() -> HashMap<String, Vec<String>> {
+/// Reads a file under `security/` and returns every value of each key in the named section.
+fn settings_of(file: &str, section: &str) -> HashMap<String, Vec<String>> {
     let mut settings: HashMap<String, Vec<String>> = HashMap::new();
-    let mut in_service = false;
-    for line in read("systemd/linuxhello-agent.service").lines() {
+    let mut in_section = false;
+    for line in read(file).lines() {
         let line = line.trim();
         if line.starts_with('[') {
-            in_service = line == "[Service]";
-        } else if in_service && !line.starts_with('#') {
+            in_section = line == format!("[{}]", section);
+        } else if in_section && !line.starts_with('#') && !line.is_empty() {
             if let Some((key, value)) = line.split_once('=') {
                 settings
-                    .entry(key.to_string())
+                    .entry(key.trim().to_string())
                     .or_default()
-                    .push(value.to_string());
+                    .push(value.trim().to_string());
             }
         }
     }
     settings
+}
+
+/// The `[Service]` settings of the unit: every value of each key, in order.
+fn service_settings() -> HashMap<String, Vec<String>> {
+    settings_of("systemd/linuxhello-agent.service", "Service")
 }
 
 /// The one value of a setting; fails if it is missing or set more than once.
@@ -236,4 +241,46 @@ fn agent_profile_parses() {
         return;
     };
     assert!(ok, "apparmor_parser refused the profile: {output}");
+}
+
+#[test]
+fn agent_unit_is_dbus_activatable() {
+    let s = settings_of("dbus/io.github.LinuxHello.Agent1.service", "D-Bus Service");
+    assert_eq!(only(&s, "Name"), AGENT_BUS_NAME);
+    assert_eq!(only(&s, "SystemdService"), "linuxhello-agent.service");
+    assert_eq!(only(&s, "Exec"), "/bin/false");
+    assert_eq!(only(&s, "User"), "root");
+}
+
+#[test]
+fn activation_file_and_unit_name_the_same_bus_name() {
+    let dbus_name = only(
+        &settings_of("dbus/io.github.LinuxHello.Agent1.service", "D-Bus Service"),
+        "Name",
+    );
+    let unit_bus_name = only(&service_settings(), "BusName");
+    assert_eq!(dbus_name, unit_bus_name);
+}
+
+#[test]
+fn agent_unit_orders_before_the_display_manager() {
+    let s = settings_of("systemd/linuxhello-agent.service", "Unit");
+    assert_eq!(only(&s, "Before"), "display-manager.service");
+    assert_eq!(only(&s, "After"), "dbus.socket");
+}
+
+#[test]
+fn agent_unit_restarts_after_a_pause_and_has_no_start_limit() {
+    let s = service_settings();
+    assert_eq!(only(&s, "Restart"), "on-failure");
+    assert_eq!(only(&s, "RestartSec"), "1");
+
+    let u = settings_of("systemd/linuxhello-agent.service", "Unit");
+    assert_eq!(only(&u, "StartLimitIntervalSec"), "0");
+
+    let s_keys: Vec<String> = s.keys().cloned().collect();
+    assert!(
+        !s_keys.contains(&"StartLimitIntervalSec".to_string()),
+        "StartLimitIntervalSec should not be in [Service]"
+    );
 }
