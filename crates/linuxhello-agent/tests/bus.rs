@@ -239,3 +239,43 @@ fn user_policy_is_set_and_read_over_the_bus() {
         assert_eq!(policy, tighter);
     });
 }
+
+#[test]
+fn a_prompt_without_reports_is_closed_by_the_next_call() {
+    let daemon = Daemon::start();
+    run(async {
+        let config = Config {
+            max_idle: std::time::Duration::from_millis(300),
+            ..Config::new(vec![])
+        };
+        let _service = serve(Builder::address(daemon.address.as_str()), config)
+            .await
+            .expect("serve the Agent");
+        let client = connect(&daemon).await;
+        let (stale, fresh) = (pid("stale"), pid("fresh"));
+        call(
+            &client,
+            "OpenPrompt",
+            &(stale.as_str(), i64::from(my_uid())),
+        )
+        .await
+        .expect("open the prompt");
+        call(&client, "GetState", &(stale.as_str(),))
+            .await
+            .expect("the prompt exists");
+        async_io::Timer::after(std::time::Duration::from_millis(600)).await;
+        // A call that changes state closes what is stale first.
+        call(
+            &client,
+            "OpenPrompt",
+            &(fresh.as_str(), i64::from(my_uid())),
+        )
+        .await
+        .expect("open another prompt");
+        let seen = call(&client, "GetState", &(stale.as_str(),)).await;
+        assert!(is_error(&seen, "org.freedesktop.DBus.Error.AccessDenied"));
+        call(&client, "GetState", &(fresh.as_str(),))
+            .await
+            .expect("the new prompt is open");
+    });
+}

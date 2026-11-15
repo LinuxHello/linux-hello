@@ -28,6 +28,7 @@
 //! C4 component: `authState` ([workspace.dsl](https://github.com/LinuxHello/architecture/blob/main/workspace.dsl))
 
 use std::collections::HashMap;
+use std::time::Duration;
 
 use linuxhello_dbus::{AuthMethod, PromptId, PromptResult, PromptState};
 
@@ -41,16 +42,19 @@ pub struct Config {
     pub max_prompts_per_reporter: usize,
     /// How many distinct peers may subscribe to one prompt.
     pub max_subscribers_per_prompt: usize,
+    /// How long a prompt may go without a report before [`StateStore::advance`] closes it.
+    pub max_idle: Duration,
 }
 
 impl Config {
     /// A configuration with the given prompt hosts and the default limits: 64 prompts per
-    /// opener and 16 subscribers per prompt.
+    /// opener, 16 subscribers per prompt and 5 minutes without a report.
     pub fn new(prompt_hosts: Vec<u32>) -> Self {
         Self {
             prompt_hosts,
             max_prompts_per_reporter: 64,
             max_subscribers_per_prompt: 16,
+            max_idle: Duration::from_secs(300),
         }
     }
 }
@@ -114,6 +118,8 @@ struct Entry {
     /// The unique bus name of the connection that opened the prompt, when it was opened with
     /// [`StateStore::open_named`].
     opener: Option<Peer>,
+    /// The time of the store's clock when the prompt was opened or last reported.
+    touched: Duration,
     /// The current state.
     snapshot: Snapshot,
     /// The peers to tell about changes, each once, in subscription order.
@@ -126,6 +132,9 @@ pub struct StateStore {
     config: Config,
     /// Every open prompt, by the uid that opened it and its id.
     prompts: HashMap<(u32, PromptId), Entry>,
+    /// The store's clock: the latest time given to [`StateStore::advance`]. The store reads no
+    /// clock of its own.
+    now: Duration,
 }
 
 impl StateStore {
@@ -134,7 +143,22 @@ impl StateStore {
         Self {
             config,
             prompts: HashMap::new(),
+            now: Duration::ZERO,
         }
+    }
+
+    /// Moves the store's clock to `now` (a monotonic time, such as the time since the Agent
+    /// started) and closes every prompt that has had no report for longer than
+    /// `max_idle`, as the second line of defence when a peer leaves without the bus noticing
+    /// (`stale_prompt_expires`). Returns how many prompts it closed. A time earlier than the
+    /// clock is ignored, so the clock never runs backwards (`time_never_runs_backwards`).
+    pub fn advance(&mut self, now: Duration) -> usize {
+        self.now = self.now.max(now);
+        let (now, max_idle) = (self.now, self.config.max_idle);
+        let before = self.prompts.len();
+        self.prompts
+            .retain(|_, entry| now.saturating_sub(entry.touched) <= max_idle);
+        before - self.prompts.len()
     }
 
     /// The key of the prompt with this id that `uid` may read or be told about: its own,
@@ -213,6 +237,7 @@ impl StateStore {
             Entry {
                 subject: subject_uid,
                 opener,
+                touched: self.now,
                 snapshot: Snapshot::initial(),
                 subscribers: Vec::new(),
             },
@@ -235,6 +260,7 @@ impl StateStore {
         let Some(entry) = self.prompts.get_mut(&(reporter_uid, prompt.clone())) else {
             return Err(Error::Denied);
         };
+        entry.touched = self.now;
         match update {
             Update::Methods(methods) => entry.snapshot.methods = methods,
             Update::Active(active) => entry.snapshot.active = active,
@@ -517,6 +543,61 @@ mod tests {
     /// A peer with the given unique bus name.
     fn peer(name: &str) -> Peer {
         Peer(name.to_string())
+    }
+
+    #[test]
+    fn stale_prompt_expires() {
+        let mut store = StateStore::new(Config::new(vec![]));
+        let (quiet, busy) = (pid("quiet"), pid("busy"));
+        store.open(1000, &quiet, Some(1000)).unwrap();
+        store.open(1000, &busy, Some(1000)).unwrap();
+        let minute = Duration::from_secs(60);
+        // Four minutes: nothing is stale yet.
+        assert_eq!(store.advance(4 * minute), 0);
+        // A report counts: `busy` is touched at minute 4, `quiet` is not.
+        store
+            .report(1000, &busy, Update::State(PromptState::Scanning))
+            .unwrap();
+        // Exactly five idle minutes is still allowed; one second more is not.
+        assert_eq!(store.advance(5 * minute), 0);
+        assert_eq!(store.advance(5 * minute + Duration::from_secs(1)), 1);
+        assert_eq!(store.get(1000, &quiet), Err(Error::Denied));
+        assert!(store.get(1000, &busy).is_ok());
+        // `busy` goes too after five minutes without a report, and frees its place.
+        assert_eq!(store.advance(9 * minute + Duration::from_secs(1)), 1);
+        assert_eq!(store.get(1000, &busy), Err(Error::Denied));
+    }
+
+    #[test]
+    fn time_never_runs_backwards() {
+        let mut store = StateStore::new(Config::new(vec![]));
+        let id = pid("p1");
+        store.advance(Duration::from_secs(1000));
+        store.open(1000, &id, Some(1000)).unwrap();
+        // An earlier time is ignored: it neither expires nor revives anything.
+        assert_eq!(store.advance(Duration::from_secs(10)), 0);
+        assert!(store.get(1000, &id).is_ok());
+        // A prompt opened after the earlier time is stamped with the clock, which is still at
+        // 1000 s, not at 10 s: it is not stale at 1200 s.
+        let later = pid("later");
+        store.open(1000, &later, Some(1000)).unwrap();
+        assert_eq!(store.advance(Duration::from_secs(1200)), 0);
+        assert!(store.get(1000, &later).is_ok());
+        // Both were opened at 1000 s, so both are stale after 1300 s, not before.
+        assert_eq!(store.advance(Duration::from_secs(1300)), 0);
+        assert_eq!(store.advance(Duration::from_secs(1301)), 2);
+    }
+
+    #[test]
+    fn an_expired_prompt_frees_its_place_in_the_limit() {
+        let mut store = StateStore::new(limited(1, 16));
+        store.open(1000, &pid("p1"), Some(1000)).unwrap();
+        assert_eq!(
+            store.open(1000, &pid("p2"), Some(1000)),
+            Err(Error::LimitReached)
+        );
+        assert_eq!(store.advance(Duration::from_secs(301)), 1);
+        assert_eq!(store.open(1000, &pid("p2"), Some(1000)), Ok(()));
     }
 
     #[test]
