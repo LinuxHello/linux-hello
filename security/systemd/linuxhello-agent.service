@@ -30,6 +30,8 @@ ReadOnlyPaths=/etc/linuxhello
 
 # Sandbox. The only device is the TPM resource manager; there is no network but the system bus.
 NoNewPrivileges=yes
+# No core dump of a process that holds a PIN or a stretched key: a core file would write it to disk.
+LimitCORE=0
 CapabilityBoundingSet=
 AmbientCapabilities=
 ProtectSystem=strict

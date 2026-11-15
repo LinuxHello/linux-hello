@@ -117,6 +117,12 @@ fn agent_unit_sandbox_is_strict() {
 }
 
 #[test]
+fn agent_unit_writes_no_core_dump() {
+    // A core file of the Agent would put PINs and key material on disk (ADR-0021, decision 4).
+    assert_eq!(only(&service_settings(), "LimitCORE"), "0");
+}
+
+#[test]
 fn agent_unit_allows_only_the_tpm_device() {
     let s = service_settings();
     assert_eq!(only(&s, "DevicePolicy"), "closed");
