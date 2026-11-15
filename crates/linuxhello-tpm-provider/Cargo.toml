@@ -1,6 +1,6 @@
 [package]
 name = "linuxhello-tpm-provider"
-description = "credentialsd provider for device-bound passkeys under a per-user TPM root key"
+description = "Provider for device-bound passkeys under a per-user TPM root key, behind the virtual CTAP authenticator"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

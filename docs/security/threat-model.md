@@ -43,7 +43,7 @@ What Linux Hello protects, from whom, across which boundaries, and which securit
 | M3 | A malicious website or relying party | Controls a web page, its origin claims and the requests the browser forwards |
 | M4 | A person with physical access | Holds the machine locked or powered off; may show a photograph, a mask or a fingerprint cast to a sensor |
 | M5 | A supply-chain attacker | Publishes a malicious crate, action or release, or submits a pull request |
-| M6 | A compromised upstream component | credentialsd, KeePassXC, Howdy, fprintd, xdg-desktop-portal or Plasma returns false answers |
+| M6 | A compromised upstream component | KeePassXC, Howdy, fprintd, libwebauthn or Plasma returns false answers |
 
 **Out of scope**, as in [SECURITY.md](../../SECURITY.md#scope): an attacker with root or a kernel compromise on the running machine, unless Linux Hello claims to resist it; a biometric false match inside the documented error rate of the sensor or Howdy; a user's denial of service against their own session. Not addressed by the design today either, and therefore not claimed: tampering with the firmware or boot chain, and binding the root key to boot measurements (PCRs).
 
@@ -56,8 +56,8 @@ flowchart LR
     other["Another local user (M1)"]
   end
 
-  subgraph session["User session (session bus)"]
-    portal["credentialsd and the portal"]
+  subgraph session["User session"]
+    ctap["Virtual CTAP authenticator (uhid)"]
     agent["Linux Hello Agent"]
     tpmp["TPM provider"]
     kpxcb["KeePassXC bridge"]
@@ -88,16 +88,16 @@ flowchart LR
     ci["Pull requests, CI, release"]
   end
 
-  app -- "TB1 CTAP requests" --> portal
-  portal -- "TB1 provider interface (pending ADR-0005)" --> tpmp
-  portal --> kpxcb
+  app -- "TB1 CTAP requests" --> ctap
+  ctap -- "TB1 provider interface (pending ADR-0005)" --> tpmp
+  ctap --> kpxcb
   app -. "TB2 D-Bus calls" .-> agent
   other -. "TB3 system bus" .-> agent
   pam -- "TB3 system bus" --> agent
   agent -- "TB4 TPM commands" --> tpm
   tpmp -- "TB4" --> tpm
-  pam -- "TB5 match requests" --> howdy
-  pam --> fprintd
+  agent -- "TB5 match requests" --> howdy
+  agent --> fprintd
   kpxcb -- "TB5 browser protocol, Unix socket" --> kpxc
   howdy --> cam
   fprintd --> cam
@@ -109,7 +109,7 @@ flowchart LR
 
 | Id | Boundary | What crosses it | What the far side must not assume |
 | :-- | :-- | :-- | :-- |
-| TB1 | Application or browser to credentialsd, and credentialsd to a provider | CTAP requests with an origin and a relying party id | That the origin is honest: an unprivileged client's claim is never trusted, only what the portal verified |
+| TB1 | Application or browser to the virtual CTAP authenticator ([ADR-0005](https://github.com/LinuxHello/architecture/blob/main/adr/0005-provider-path.md)), and the authenticator to a provider | CTAP requests with a relying party id and a hash of the client data | That the origin is honest: a CTAP device sees the relying party id and a hash, not a verified origin (open question 4) |
 | TB2 | A process in the session to the Agent's D-Bus API | Method calls: unlock state, PIN change, enrolment, reset | That the caller is who it says. Peer credentials are checked on every call |
 | TB3 | A PAM context to the Agent over the **system bus** | Method state, session unlock | That the bus is private: any local user can reach the system bus. Spike [0007](https://github.com/LinuxHello/architecture/blob/main/spikes/0007-pam-dbus-method-state.md) found the system bus is the only one reachable in every PAM context |
 | TB4 | Agent or provider to the TPM | TPM commands, policy sessions, signatures | Nothing: the TPM is the one place that enforces the PIN and holds the keys |
@@ -117,17 +117,17 @@ flowchart LR
 | TB6 | Policy files to the parser | TOML text | That the file is well formed, owned by root (admin layer) or written by the owner |
 | TB7 | Contributors and dependencies to the release | Source, crates, actions | That a dependency is honest |
 
-There is no network boundary inside Linux Hello: none of its processes needs the network. Remote parties reach it only through a browser and credentialsd.
+There is no network boundary inside Linux Hello: none of its processes needs the network. Remote parties reach it only through a browser and the virtual CTAP authenticator.
 
 ## Entry points
 
 | Entry point | Container | Untrusted input | Boundary |
 | :-- | :-- | :-- | :-- |
 | Agent D-Bus API | Agent | Method arguments, caller identity | TB2, TB3 |
-| credentialsd provider interface (does not exist at v0.3.1; [ADR-0005](https://github.com/LinuxHello/architecture/blob/main/adr/0005-provider-path.md)) | TPM provider, KeePassXC bridge | CTAP/CBOR requests, origin, relying party id | TB1 |
+| Virtual CTAP authenticator and the provider interface behind it (not built yet; [ADR-0005](https://github.com/LinuxHello/architecture/blob/main/adr/0005-provider-path.md)) | TPM provider, KeePassXC bridge | CTAP/CBOR requests, origin, relying party id | TB1 |
 | PAM entry points `pam_sm_authenticate`, `pam_sm_open_session` | pam_linuxhello | The PAM conversation, the user name | TB3, TB5 |
 | KeePassXC browser protocol | KeePassXC bridge | Messages from the KeePassXC side | TB5 |
-| Howdy and fprintd results | pam_linuxhello | Match verdicts, error codes | TB5 |
+| Howdy and fprintd results | Agent (method orchestrator, [ADR-0023](https://github.com/LinuxHello/architecture/blob/main/adr/0023-pam-module-and-login-failure.md)) | Match verdicts, error codes | TB5 |
 | Policy files | Agent | TOML | TB6 |
 | `linuxhello-ctl` | CLI | Arguments, the invoking user | TB2 |
 | Plasma prompts | Plasma integration | Method state from the Agent; the user's PIN, typed | TB2 |
@@ -168,8 +168,8 @@ These are things a threat above depends on and the design has not settled. Each 
 1. **How does a biometric match satisfy a TPM policy?** The invariant says it does; no note says by which TPM mechanism, nor who holds the authorisation. T3, T8 and T21 are only as strong as that answer. Blocks P-06 and P-07. Needs a spike or an ADR.
 2. **Is the TPM's dictionary-attack lockout shared across users?** *Answered.* Yes in effect: the TPM has one `TPM2_PT_LOCKOUT_COUNTER` for the whole machine, and a wrong PIN raised it in [spike 0094](https://github.com/LinuxHello/architecture/blob/main/spikes/0094-virtual-ctap-end-to-end.md) (the software TPM locks after three). The Agent therefore keeps its own per-user counter and refuses a locked user before the attempt reaches the TPM (`PinLock`, P-14; `lockout_attempts` and `lockout_minutes` configure that counter). The text below is the question as first written.
    > My understanding of the TPM 2.0 design is that the lockout counter is global to the TPM, so many failed authorisations by one user could lock out all. I have not checked this against the specification or the TPM in use, so it is an assumption. If it holds, the Agent must stop a user's repeated failures before they reach the TPM (the policy already has `lockout_attempts` and `lockout_minutes`). Blocks P-14.
-3. **Which bus does the Agent serve the PAM module on, and under what bus policy?** Spike 0007 says the system bus and calls for an ADR. Blocks P-04 and P-05.
-4. **How is the origin of a browser request verified?** The provider interface does not exist yet ([ADR-0005](https://github.com/LinuxHello/architecture/blob/main/adr/0005-provider-path.md)), and spike [0006](https://github.com/LinuxHello/architecture/blob/main/spikes/0006-browser-webauthn-portal.md) found that no stock browser calls the portal and that the credentialsd extension passes the origin from the page side. Blocks P-01 for the browser path.
+3. **Which bus does the Agent serve the PAM module on, and under what bus policy?** *Answered* by [ADR-0014](https://github.com/LinuxHello/architecture/blob/main/adr/0014-agent-bus.md): the system bus, with a bus policy that lets any user call the interface and only the Agent's user own the name and send its signals. P-04 and P-05 are tested at the store layer and on a private bus.
+4. **How is the origin of a browser request verified?** The virtual CTAP authenticator and the provider interface behind it do not exist yet ([ADR-0005](https://github.com/LinuxHello/architecture/blob/main/adr/0005-provider-path.md)), and spike [0006](https://github.com/LinuxHello/architecture/blob/main/spikes/0006-browser-webauthn-portal.md) found that no stock browser calls the portal and that the credentialsd extension passes the origin from the page side. Blocks P-01 for the browser path.
 5. **Is the root key bound to boot measurements?** Not in the design. A stolen powered-off machine with a modified boot chain is not modelled.
 
 ## Review

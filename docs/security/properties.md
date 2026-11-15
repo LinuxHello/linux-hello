@@ -41,7 +41,7 @@ How to read the table:
 | P-08 | Every key is created non-exportable | `tpm_keys_are_created_non_exportable` | `tpmProvider` | TPM key service |
 | P-09 | No interface of the TPM provider returns private key material | `no_interface_returns_private_key_material` | `tpmProvider` | TPM key service |
 | P-10 | The KeePassXC bridge never receives a passkey private key, only assertions | `kpxc_bridge_never_receives_private_key_material` | `kpxcBridge` | The bridge's protocol client |
-| P-11 | A signature without a user-presence confirmation is refused | `signature_without_user_presence_is_refused` | `tpmProvider` | Provider interface (ADR-0005) |
+| P-11 | A signature without a user-presence confirmation is refused | `signature_without_user_presence_is_refused` | `tpmProvider` | The virtual CTAP authenticator and the provider interface behind it (ADR-0005, decided, not built yet) |
 | P-12 | The PIN is checked by the TPM's authorisation, never compared in software | `pin_is_never_compared_outside_the_tpm` | `pamModule`, crate `pam-linuxhello` | PIN verifier |
 | P-13 | The PIN and key material never appear in logs, errors or audit events | `secrets_never_appear_in_logs_errors_or_audit` | `agent` | Audit logger (the five events that exist are tested; the rest wait for their components) |
 | P-14 | One user's failed PIN attempts cannot lock another user out (tested at the counter level) | `one_users_failed_pins_cannot_lock_out_another_user` | `agent` | Wiring the counter into the PIN path and the software-TPM test (#137) |
@@ -70,7 +70,7 @@ Each parser also gets a cargo-fuzz target, as [AGENTS.md](../../AGENTS.md#gates)
 
 | Id | Property | Test | Owner | Blocked by |
 | :-- | :-- | :-- | :-- | :-- |
-| P-22 | A malformed CTAP/CBOR request is refused, never a panic | `malformed_ctap_request_is_refused` | `tpmProvider` | Provider interface (ADR-0005) |
+| P-22 | A malformed CTAP/CBOR request is refused, never a panic | `malformed_ctap_request_is_refused` | `tpmProvider` | The virtual CTAP authenticator and the provider interface behind it (ADR-0005, decided, not built yet) |
 | P-23 | A malformed KeePassXC protocol message is refused, never a panic | `malformed_kpxc_message_is_refused` | `kpxcBridge` | The bridge's protocol client |
 
 ## Confinement and evidence

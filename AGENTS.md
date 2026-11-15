@@ -6,7 +6,7 @@ This file is the single source of agent rules. Tool-specific files ([CLAUDE.md](
 
 ## What this is
 
-Linux Hello is a session credential broker for the Linux desktop. The user unlocks once with face, fingerprint or PIN; passkeys then work in browsers, native and Electron apps through the credentialsd portal; a routing policy decides per relying party whether a key is device-bound (TPM) or portable (KeePassXC).
+Linux Hello is a session credential broker for the Linux desktop. The user unlocks once with face, fingerprint or PIN; passkeys then work in browsers, native and Electron apps through a virtual CTAP authenticator that presents Linux Hello as a security key ([ADR-0005](https://github.com/LinuxHello/architecture/blob/main/adr/0005-provider-path.md)); a routing policy decides per relying party whether a key is device-bound (TPM) or portable (KeePassXC).
 
 The maintainer (@atterdag) owns the architecture, the threat model and every merge, and reviews **behaviour, tests and test results**, not Rust. Write code that can be trusted without being read: the tests and their names are the review surface.
 
@@ -14,9 +14,10 @@ The maintainer (@atterdag) owns the architecture, the threat model and every mer
 | :-- | :-- | :-- |
 | `crates/linuxhello-dbus` | Shared D-Bus names and types; the only coupling between containers | component `dbusApi` |
 | `crates/linuxhello-agent` | Agent: unlock and auth state, routing policy, PIN, enrolment, reset | container `agent` |
-| `crates/pam-linuxhello` | PAM module: parallel face, fingerprint and PIN | container `pamModule` |
-| `crates/linuxhello-tpm-provider` | credentialsd provider for device-bound passkeys | container `tpmProvider` |
-| `crates/linuxhello-kpxc-bridge` | credentialsd provider for portable passkeys from KeePassXC | container `kpxcBridge` |
+| `crates/pam-linuxhello` | PAM module: a thin synchronous client of the Agent; the Agent runs face, fingerprint and PIN in parallel ([ADR-0023](https://github.com/LinuxHello/architecture/blob/main/adr/0023-pam-module-and-login-failure.md)) | container `pamModule` |
+| `crates/linuxhello-tpm-provider` | Provider for device-bound passkeys, behind the virtual CTAP authenticator | container `tpmProvider` |
+| `crates/linuxhello-kpxc-bridge` | Provider for portable passkeys from KeePassXC, behind the virtual CTAP authenticator | container `kpxcBridge` |
+| (no crate yet) | Virtual CTAP authenticator with its privileged `uhid` helper ([ADR-0005](https://github.com/LinuxHello/architecture/blob/main/adr/0005-provider-path.md), option B) | container `ctapHelper` |
 | `crates/linuxhello-ctl` | CLI | container `cli` |
 | `plasma/`, `security/`, `policy/` | Plasma integration; AppArmor, Tetragon, alerts; policy schema | `plasma`, `secProfiles`, `policyStore` |
 | `architecture/` | Submodule pinning [`LinuxHello/architecture`](https://github.com/LinuxHello/architecture): Arc42 sections, the C4 model `workspace.dsl`, ADRs, spikes ([ADR-0011](https://github.com/LinuxHello/architecture/blob/main/adr/0011-architecture-repository.md)) | — |
@@ -93,7 +94,7 @@ Resolve conflicts in this order, and say which source you used:
 3. The architecture documentation in [`LinuxHello/architecture`](https://github.com/LinuxHello/architecture/blob/main/arc42/README.md), structured by Arc42 ([ADR-0010](https://github.com/LinuxHello/architecture/blob/main/adr/0010-arc42-architecture-documentation.md)), and its `workspace.dsl`
 
 Items 2 and 3 count at the commit this repository pins in `architecture/` ([ADR-0011](https://github.com/LinuxHello/architecture/blob/main/adr/0011-architecture-repository.md)). A newer commit of `LinuxHello/architecture` is a proposal until the pin moves.
-4. Upstream documentation and source (credentialsd, libwebauthn, Howdy, fprintd, KeePassXC, tss-esapi, zbus, KDE) at the version in `Cargo.lock`
+4. Upstream documentation and source (libwebauthn, the kernel `uhid` and CTAP HID documentation, Howdy, fprintd, KeePassXC, tss-esapi, zbus, KDE) at the version in `Cargo.lock`
 
 Upstream behaviour you have not checked in source or docs is an assumption. Say so.
 
@@ -118,7 +119,7 @@ Never propose or write anything that breaks these. If a task seems to need it, s
 - **Small PRs, one container where possible.** Each PR states intent, affected containers, tests added, how to verify, and rollback.
 - **Document every item, and name its C4 element.** See [Code documentation](#code-documentation).
 - **Docs change with code.** A change inside a component updates its doc comments, and `docs/security/` or `policy-semantics.md` where they apply, in the same PR. A change to a container, component, interface or decision has a pull request in `LinuxHello/architecture` (the Arc42 notes, `workspace.dsl` or an ADR); it merges first, and the code PR bumps the `architecture` pin and links it. Flag drift when you see it.
-- **Check versions before trusting an API.** credentialsd is pre-release; tss-esapi, zbus, cxx-qt and the PAM crates change between versions. Read `Cargo.lock`, then the docs for that version.
+- **Check versions before trusting an API.** tss-esapi, zbus, cxx-qt, libwebauthn and the PAM crates change between versions. Read `Cargo.lock`, then the docs for that version.
 - **Automate.** Prefer Makefile targets and scripts that check their own prerequisites over sequences of manual commands. Scripts are idempotent and fail closed.
 - **Dependencies** must pass `cargo-deny` (licences, advisories, sources). Do not add one to work around a missing feature without saying why.
 

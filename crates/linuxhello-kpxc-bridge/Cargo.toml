@@ -1,6 +1,6 @@
 [package]
 name = "linuxhello-kpxc-bridge"
-description = "credentialsd provider serving portable passkeys from KeePassXC"
+description = "Provider serving portable passkeys from KeePassXC, behind the virtual CTAP authenticator"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
