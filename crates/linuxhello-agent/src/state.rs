@@ -196,9 +196,16 @@ impl StateStore {
     /// name of the caller, so that [`StateStore::drop_opener`] can remove the prompt when
     /// that connection leaves the bus.
     ///
+    /// The one difference: a prompt that was opened with the same `opener` under the same
+    /// id is replaced by a fresh one (state `Idle`, no result, no subscribers), so that a
+    /// caller that retries gets the same answer every time (`opener_can_reopen_its_own_prompt`).
+    /// Another connection of the same uid, and [`StateStore::open`], are still refused
+    /// (`another_connection_of_the_same_uid_cannot_reopen_the_prompt`), and the replaced
+    /// prompt does not count against the limit (`reopening_does_not_use_up_the_prompt_limit`).
+    ///
     /// # Errors
     ///
-    /// The same as [`StateStore::open`].
+    /// The same as [`StateStore::open`], except that reopening one's own prompt is not an error.
     pub fn open_named(
         &mut self,
         reporter_uid: u32,
@@ -222,13 +229,19 @@ impl StateStore {
             return Err(Error::Denied);
         }
         let key = (reporter_uid, prompt.clone());
-        if self.prompts.contains_key(&key) {
+        // A named opener may replace the prompt it opened itself, and no other.
+        let replaces = opener.is_some()
+            && self
+                .prompts
+                .get(&key)
+                .is_some_and(|entry| entry.opener == opener);
+        if self.prompts.contains_key(&key) && !replaces {
             return Err(Error::Denied);
         }
         let owned = self
             .prompts
             .keys()
-            .filter(|(owner, _)| *owner == reporter_uid)
+            .filter(|(owner, id)| *owner == reporter_uid && !(replaces && *id == *prompt))
             .count();
         if owned >= self.config.max_prompts_per_reporter {
             return Err(Error::LimitReached);
@@ -599,6 +612,75 @@ mod tests {
         );
         assert_eq!(store.advance(Duration::from_secs(301)), 1);
         assert_eq!(store.open(1000, &pid("p2"), Some(1000)), Ok(()));
+    }
+
+    #[test]
+    fn opener_can_reopen_its_own_prompt() {
+        let mut store = StateStore::new(Config::new(vec![]));
+        let id = pid("p1");
+        store
+            .open_named(1000, peer(":1.1"), &id, Some(1000))
+            .unwrap();
+        store.subscribe(1000, peer(":1.9"), &id).unwrap();
+        store
+            .report(1000, &id, Update::State(PromptState::Scanning))
+            .unwrap();
+        assert_eq!(
+            store.open_named(1000, peer(":1.1"), &id, Some(1000)),
+            Ok(())
+        );
+        // A fresh prompt: idle again, and the old subscriber is gone.
+        assert_eq!(store.get(1000, &id).unwrap().state, PromptState::Idle);
+        let told = store
+            .report(1000, &id, Update::State(PromptState::Scanning))
+            .unwrap();
+        assert!(told.is_empty());
+        // The replaced prompt is still the opener's: its connection leaving removes it.
+        assert_eq!(store.drop_opener(&peer(":1.1")), 1);
+        assert_eq!(store.get(1000, &id), Err(Error::Denied));
+    }
+
+    #[test]
+    fn another_connection_of_the_same_uid_cannot_reopen_the_prompt() {
+        let mut store = StateStore::new(Config::new(vec![]));
+        let id = pid("p1");
+        store
+            .open_named(1000, peer(":1.1"), &id, Some(1000))
+            .unwrap();
+        assert_eq!(
+            store.open_named(1000, peer(":1.2"), &id, Some(1000)),
+            Err(Error::Denied)
+        );
+        assert_eq!(store.open(1000, &id, Some(1000)), Err(Error::Denied));
+        // A prompt opened without a bus name has no opener to match.
+        let bare = pid("p2");
+        store.open(1000, &bare, Some(1000)).unwrap();
+        assert_eq!(
+            store.open_named(1000, peer(":1.1"), &bare, Some(1000)),
+            Err(Error::Denied)
+        );
+    }
+
+    #[test]
+    fn reopening_does_not_use_up_the_prompt_limit() {
+        let mut store = StateStore::new(limited(1, 16));
+        let id = pid("p1");
+        store
+            .open_named(1000, peer(":1.1"), &id, Some(1000))
+            .unwrap();
+        assert_eq!(
+            store.open_named(1000, peer(":1.1"), &id, Some(1000)),
+            Ok(())
+        );
+        assert_eq!(
+            store.open_named(1000, peer(":1.1"), &id, Some(1000)),
+            Ok(())
+        );
+        // The limit is still in force for another id.
+        assert_eq!(
+            store.open_named(1000, peer(":1.1"), &pid("p2"), Some(1000)),
+            Err(Error::LimitReached)
+        );
     }
 
     #[test]
