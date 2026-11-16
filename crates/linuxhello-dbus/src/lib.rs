@@ -211,6 +211,12 @@ pub const SIGNALS: &[SignalSpec] = &[
         delivery: Delivery::Unicast,
         args: &["prompt_id", "result"],
     },
+    // Sent by the Agent when a prompt closes, never reported by a client.
+    SignalSpec {
+        name: "Closed",
+        delivery: Delivery::Unicast,
+        args: &["prompt_id"],
+    },
 ];
 
 #[cfg(test)]
@@ -345,13 +351,20 @@ mod tests {
 
     #[test]
     fn signals_carry_no_user_or_session_data() {
-        assert_eq!(SIGNALS.len(), 4);
-        let expected_names = ["MethodsAvailable", "ActiveMethod", "State", "Result"];
-        let expected_args = [
+        assert_eq!(SIGNALS.len(), 5);
+        let expected_names = [
+            "MethodsAvailable",
+            "ActiveMethod",
+            "State",
+            "Result",
+            "Closed",
+        ];
+        let expected_args: [&[&str]; 5] = [
             &["prompt_id", "methods"],
             &["prompt_id", "method"],
             &["prompt_id", "state"],
             &["prompt_id", "result"],
+            &["prompt_id"],
         ];
 
         for (i, sig) in SIGNALS.iter().enumerate() {

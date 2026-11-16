@@ -398,6 +398,62 @@ impl Api {
         Ok(self.store.subscribe(uid, Peer(peer.to_string()), &prompt)?)
     }
 
+    /// Stops the signals of a prompt to the caller's connection `peer`. A connection that was
+    /// not subscribed is not an error. The prompt must be one the caller may read, as for
+    /// [`Api::subscribe`].
+    ///
+    /// # Errors
+    ///
+    /// [`ApiError::Denied`] without a caller uid or for a prompt the caller may not read;
+    /// [`ApiError::InvalidArgument`] for a prompt id or a peer that is not valid.
+    pub fn unsubscribe(
+        &mut self,
+        caller: Caller,
+        peer: &str,
+        prompt_id: &str,
+    ) -> Result<(), ApiError> {
+        let result = self.unsubscribe_unaudited(&caller, peer, prompt_id);
+        self.audited(&caller, result)
+    }
+
+    /// The work of [`Api::unsubscribe`], without the audit record.
+    fn unsubscribe_unaudited(
+        &mut self,
+        caller: &Caller,
+        peer: &str,
+        prompt_id: &str,
+    ) -> Result<(), ApiError> {
+        let uid = caller.uid.ok_or(ApiError::Denied)?;
+        let prompt = parse_prompt(prompt_id)?;
+        if !peer.starts_with(':') || peer.len() > MAX_PEER_NAME {
+            return Err(ApiError::InvalidArgument);
+        }
+        Ok(self
+            .store
+            .unsubscribe(uid, &Peer(peer.to_string()), &prompt)?)
+    }
+
+    /// The `Closed` signals owed to the peers of the prompts that closed since the last call:
+    /// one per subscriber, each naming only the prompt (`a_subscriber_is_told_when_the_prompt_closes`).
+    pub fn take_closures(&mut self) -> Vec<Notification> {
+        self.store
+            .take_closed()
+            .into_iter()
+            .flat_map(|closure| {
+                let prompt_id = closure.prompt.as_str().to_string();
+                closure
+                    .subscribers
+                    .into_iter()
+                    .map(move |peer| Notification {
+                        peer,
+                        signal: "Closed",
+                        prompt_id: prompt_id.clone(),
+                        values: Vec::new(),
+                    })
+            })
+            .collect()
+    }
+
     /// Closes a prompt opened by the caller.
     ///
     /// # Errors
@@ -900,6 +956,64 @@ mod tests {
         let (api, recorder) = audited_api(Config::new(vec![]));
         assert_eq!(api.policy_of(1000), Err(ApiError::Unavailable));
         assert!(recorder.events().is_empty());
+    }
+
+    #[test]
+    fn a_client_cannot_report_a_closed_signal() {
+        let mut api = Api::new(Config::new(vec![]));
+        api.open_prompt(USER, &pid("p1"), Some(1000)).unwrap();
+        assert_eq!(
+            api.report_state(USER, &pid("p1"), "Closed", &[]),
+            Err(ApiError::InvalidArgument)
+        );
+    }
+
+    #[test]
+    fn closures_are_one_signal_per_subscriber_naming_only_the_prompt() {
+        let mut api = Api::new(Config::new(vec![]));
+        let id = pid("p1");
+        api.open_prompt_from(USER, ":1.1", &id, Some(1000)).unwrap();
+        api.subscribe(USER, ":1.5", &id).unwrap();
+        api.subscribe(USER, ":1.6", &id).unwrap();
+        api.unsubscribe(USER, ":1.6", &id).unwrap();
+        api.close_prompt(USER, &id).unwrap();
+        let notes = api.take_closures();
+        assert_eq!(
+            notes,
+            vec![Notification {
+                peer: Peer(":1.5".to_string()),
+                signal: "Closed",
+                prompt_id: id.clone(),
+                values: vec![],
+            }]
+        );
+        assert!(api.take_closures().is_empty());
+    }
+
+    #[test]
+    fn unsubscribe_checks_its_arguments_like_subscribe() {
+        let mut api = Api::new(Config::new(vec![]));
+        let id = pid("p1");
+        api.open_prompt(USER, &id, Some(1000)).unwrap();
+        assert_eq!(
+            api.unsubscribe(
+                Caller {
+                    uid: None,
+                    peer: None
+                },
+                ":1.5",
+                &id
+            ),
+            Err(ApiError::Denied)
+        );
+        assert_eq!(
+            api.unsubscribe(USER, "not-a-unique-name", &id),
+            Err(ApiError::InvalidArgument)
+        );
+        assert_eq!(
+            api.unsubscribe(USER, ":1.5", "not a prompt id"),
+            Err(ApiError::InvalidArgument)
+        );
     }
 
     #[test]

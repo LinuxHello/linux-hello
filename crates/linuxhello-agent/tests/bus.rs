@@ -427,3 +427,86 @@ fn names_are_split_into_words() {
     assert_eq!(words_of("user_pin_code"), ["user", "pin", "code"]);
     assert_eq!(words_of("GetPINState"), ["get", "pin", "state"]);
 }
+
+#[test]
+fn a_subscriber_is_told_over_the_bus_when_the_prompt_closes() {
+    let daemon = Daemon::start();
+    run(async {
+        let _service = serve(
+            Builder::address(daemon.address.as_str()),
+            Config::new(vec![]),
+        )
+        .await
+        .expect("serve the Agent");
+        let (owner, follower, left, bystander) = (
+            connect(&daemon).await,
+            connect(&daemon).await,
+            connect(&daemon).await,
+            connect(&daemon).await,
+        );
+        let id = pid("p1");
+        call(&owner, "OpenPrompt", &(id.as_str(), i64::from(my_uid())))
+            .await
+            .expect("open the prompt");
+        let mut heard = signals(&follower, "Closed").await;
+        let mut stopped = signals(&left, "Closed").await;
+        let mut overheard = signals(&bystander, "Closed").await;
+        for client in [&follower, &left] {
+            call(client, "Subscribe", &(id.as_str(),))
+                .await
+                .expect("subscribe");
+        }
+        call(&left, "Unsubscribe", &(id.as_str(),))
+            .await
+            .expect("unsubscribe");
+        call(&owner, "ClosePrompt", &(id.as_str(),))
+            .await
+            .expect("close the prompt");
+
+        let note = next_within(&mut heard, 3000)
+            .await
+            .expect("the subscriber is told");
+        let (prompt,): (String,) = note.body().deserialize().expect("the body");
+        assert_eq!(prompt, id.as_str());
+        assert_eq!(
+            note.header().destination().map(|d| d.to_string()),
+            Some(follower.unique_name().expect("a unique name").to_string())
+        );
+        assert!(
+            next_within(&mut stopped, 400).await.is_none(),
+            "a peer that unsubscribed must hear nothing"
+        );
+        assert!(
+            next_within(&mut overheard, 400).await.is_none(),
+            "a peer that did not subscribe must hear nothing"
+        );
+    });
+}
+
+#[test]
+fn a_subscriber_is_told_when_the_opener_leaves_the_bus() {
+    let daemon = Daemon::start();
+    run(async {
+        let _service = serve(
+            Builder::address(daemon.address.as_str()),
+            Config::new(vec![]),
+        )
+        .await
+        .expect("serve the Agent");
+        let (owner, follower) = (connect(&daemon).await, connect(&daemon).await);
+        let id = pid("p1");
+        call(&owner, "OpenPrompt", &(id.as_str(), i64::from(my_uid())))
+            .await
+            .expect("open the prompt");
+        let mut heard = signals(&follower, "Closed").await;
+        call(&follower, "Subscribe", &(id.as_str(),))
+            .await
+            .expect("subscribe");
+        drop(owner);
+        let note = next_within(&mut heard, 3000)
+            .await
+            .expect("the subscriber is told that the prompt is gone");
+        let (prompt,): (String,) = note.body().deserialize().expect("the body");
+        assert_eq!(prompt, id.as_str());
+    });
+}

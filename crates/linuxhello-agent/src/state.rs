@@ -130,6 +130,15 @@ struct Entry {
     subscribers: Vec<Peer>,
 }
 
+/// A prompt that has closed, and the peers that were subscribed to it and must be told.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Closure {
+    /// The prompt that closed.
+    pub prompt: PromptId,
+    /// The peers that were subscribed, in subscription order. Never empty.
+    pub subscribers: Vec<Peer>,
+}
+
 /// The per-prompt state of the Agent, with the access rules of ADR-0014.
 pub struct StateStore {
     /// The limits and the prompt hosts.
@@ -139,6 +148,8 @@ pub struct StateStore {
     /// The store's clock: the latest time given to [`StateStore::advance`]. The store reads no
     /// clock of its own.
     now: Duration,
+    /// Prompts that closed since the last [`StateStore::take_closed`], with their subscribers.
+    closed: Vec<Closure>,
 }
 
 impl StateStore {
@@ -148,7 +159,26 @@ impl StateStore {
             config,
             prompts: HashMap::new(),
             now: Duration::ZERO,
+            closed: Vec::new(),
         }
+    }
+
+    /// Notes that a prompt closed, for the peers that were subscribed to it.
+    fn note_closed(&mut self, prompt: &PromptId, subscribers: Vec<Peer>) {
+        if !subscribers.is_empty() {
+            self.closed.push(Closure {
+                prompt: prompt.clone(),
+                subscribers,
+            });
+        }
+    }
+
+    /// Hands over the prompts that closed since the last call, each with the peers that were
+    /// subscribed to it, and forgets them. A prompt closes when its opener closes it, when its
+    /// opener's connection leaves, when it has had no report for too long, and when its opener
+    /// opens it again (`a_subscriber_is_told_when_the_prompt_closes`).
+    pub fn take_closed(&mut self) -> Vec<Closure> {
+        std::mem::take(&mut self.closed)
     }
 
     /// Moves the store's clock to `now` (a monotonic time, such as the time since the Agent
@@ -159,10 +189,18 @@ impl StateStore {
     pub fn advance(&mut self, now: Duration) -> usize {
         self.now = self.now.max(now);
         let (now, max_idle) = (self.now, self.config.max_idle);
-        let before = self.prompts.len();
-        self.prompts
-            .retain(|_, entry| now.saturating_sub(entry.touched) <= max_idle);
-        before - self.prompts.len()
+        let expired: Vec<_> = self
+            .prompts
+            .iter()
+            .filter(|(_, entry)| now.saturating_sub(entry.touched) > max_idle)
+            .map(|(key, _)| key.clone())
+            .collect();
+        for key in &expired {
+            if let Some(entry) = self.prompts.remove(key) {
+                self.note_closed(&key.1, entry.subscribers);
+            }
+        }
+        expired.len()
     }
 
     /// The key of the prompt with this id that `uid` may read or be told about: its own,
@@ -249,7 +287,7 @@ impl StateStore {
         if owned >= self.config.max_prompts_per_reporter {
             return Err(Error::LimitReached);
         }
-        self.prompts.insert(
+        let old = self.prompts.insert(
             key,
             Entry {
                 subject: subject_uid,
@@ -259,6 +297,10 @@ impl StateStore {
                 subscribers: Vec::new(),
             },
         );
+        // The prompt that was replaced is closed to the peers that followed it.
+        if let Some(old) = old {
+            self.note_closed(prompt, old.subscribers);
+        }
         Ok(())
     }
 
@@ -330,15 +372,29 @@ impl StateStore {
     /// the uid that opened it. A prompt opened with [`StateStore::open`] has no recorded
     /// opener and is never removed. Returns how many prompts it removed.
     pub fn drop_opener(&mut self, opener: &Peer) -> usize {
-        let before = self.prompts.len();
-        self.prompts
-            .retain(|_, entry| entry.opener.as_ref() != Some(opener));
-        before - self.prompts.len()
+        let gone: Vec<_> = self
+            .prompts
+            .iter()
+            .filter(|(_, entry)| entry.opener.as_ref() == Some(opener))
+            .map(|(key, _)| key.clone())
+            .collect();
+        for key in &gone {
+            if let Some(entry) = self.prompts.remove(key) {
+                self.note_closed(&key.1, entry.subscribers);
+            }
+        }
+        gone.len()
     }
 
     /// Removes `peer` from the subscribers of every prompt, keeping the order of the others.
     /// No prompt is closed. Returns how many subscriptions it removed.
     pub fn drop_subscriber(&mut self, peer: &Peer) -> usize {
+        // A peer that left is not told about prompts that closed before it left.
+        for closure in &mut self.closed {
+            closure.subscribers.retain(|subscriber| subscriber != peer);
+        }
+        self.closed
+            .retain(|closure| !closure.subscribers.is_empty());
         let mut removed = 0;
         for entry in self.prompts.values_mut() {
             let before = entry.subscribers.len();
@@ -354,10 +410,31 @@ impl StateStore {
     ///
     /// [`Error::Denied`] unless `reporter_uid` opened the prompt.
     pub fn close(&mut self, reporter_uid: u32, prompt: &PromptId) -> Result<(), Error> {
-        self.prompts
+        let entry = self
+            .prompts
             .remove(&(reporter_uid, prompt.clone()))
-            .map(|_| ())
-            .ok_or(Error::Denied)
+            .ok_or(Error::Denied)?;
+        self.note_closed(prompt, entry.subscribers);
+        Ok(())
+    }
+
+    /// Removes `peer` from the peers told about the prompt, so it receives no more signals for
+    /// it. A peer that was not subscribed is not an error: the prompt must be readable by
+    /// `reader_uid`, as for [`StateStore::subscribe`].
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Denied`] under the same rule as [`StateStore::get`].
+    pub fn unsubscribe(
+        &mut self,
+        reader_uid: u32,
+        peer: &Peer,
+        prompt: &PromptId,
+    ) -> Result<(), Error> {
+        let key = self.readable(reader_uid, prompt).ok_or(Error::Denied)?;
+        let entry = self.prompts.get_mut(&key).ok_or(Error::Denied)?;
+        entry.subscribers.retain(|subscriber| subscriber != peer);
+        Ok(())
     }
 }
 
@@ -480,6 +557,115 @@ mod tests {
         // Closing one makes room.
         assert_eq!(store.close(1000, &pid("p1")), Ok(()));
         assert_eq!(store.open(1000, &pid("p3"), Some(1000)), Ok(()));
+    }
+
+    #[test]
+    fn a_subscriber_is_told_when_the_prompt_closes() {
+        let (a, b) = (pid("a"), pid("b"));
+        let followers = vec![peer(":1.5"), peer(":1.6")];
+        let ready = || {
+            let mut store = StateStore::new(Config::new(vec![]));
+            store
+                .open_named(1000, peer(":1.1"), &a, Some(1000))
+                .unwrap();
+            store
+                .open_named(1000, peer(":1.1"), &b, Some(1000))
+                .unwrap();
+            for follower in &followers {
+                store.subscribe(1000, follower.clone(), &a).unwrap();
+            }
+            store.subscribe(1000, peer(":1.9"), &b).unwrap();
+            store
+        };
+        let only_a = vec![Closure {
+            prompt: a.clone(),
+            subscribers: followers.clone(),
+        }];
+
+        // The opener closes it. The subscribers of the other prompt are not told.
+        let mut store = ready();
+        store.close(1000, &a).unwrap();
+        assert_eq!(store.take_closed(), only_a);
+        assert!(
+            store.take_closed().is_empty(),
+            "each closure is handed over once"
+        );
+
+        // Its opener's connection leaves.
+        let mut store = ready();
+        store.drop_opener(&peer(":1.1"));
+        assert_eq!(store.take_closed().len(), 2);
+
+        // It has had no report for too long.
+        let mut store = ready();
+        assert_eq!(store.advance(Duration::from_secs(301)), 2);
+        assert_eq!(store.take_closed().len(), 2);
+
+        // Its opener opens it again: the old subscribers followed a prompt that is gone.
+        let mut store = ready();
+        store
+            .open_named(1000, peer(":1.1"), &a, Some(1000))
+            .unwrap();
+        assert_eq!(store.take_closed(), only_a);
+
+        // A prompt nobody followed closes without a word.
+        let mut store = StateStore::new(Config::new(vec![]));
+        store.open(1000, &a, Some(1000)).unwrap();
+        store.close(1000, &a).unwrap();
+        assert!(store.take_closed().is_empty());
+
+        // A refused close tells nobody.
+        let mut store = ready();
+        assert_eq!(store.close(1001, &a), Err(Error::Denied));
+        assert!(store.take_closed().is_empty());
+    }
+
+    #[test]
+    fn a_peer_that_left_is_not_told_about_a_prompt_that_closed_before() {
+        let id = pid("a");
+        let mut store = StateStore::new(Config::new(vec![]));
+        store.open(1000, &id, Some(1000)).unwrap();
+        store.subscribe(1000, peer(":1.5"), &id).unwrap();
+        store.subscribe(1000, peer(":1.6"), &id).unwrap();
+        store.close(1000, &id).unwrap();
+        store.drop_subscriber(&peer(":1.5"));
+        assert_eq!(
+            store.take_closed(),
+            vec![Closure {
+                prompt: id,
+                subscribers: vec![peer(":1.6")],
+            }]
+        );
+    }
+
+    #[test]
+    fn unsubscribe_stops_the_signals() {
+        let id = pid("a");
+        let mut store = StateStore::new(Config::new(vec![]));
+        store.open(1000, &id, Some(1000)).unwrap();
+        store.subscribe(1000, peer(":1.5"), &id).unwrap();
+        store.subscribe(1000, peer(":1.6"), &id).unwrap();
+        assert_eq!(store.unsubscribe(1000, &peer(":1.5"), &id), Ok(()));
+        // Only the one that stayed is told about a change, and about the close.
+        let told = store
+            .report(1000, &id, Update::State(PromptState::Scanning))
+            .unwrap();
+        assert_eq!(told, vec![peer(":1.6")]);
+        store.close(1000, &id).unwrap();
+        assert_eq!(store.take_closed()[0].subscribers, vec![peer(":1.6")]);
+        // Unsubscribing twice, or a peer that never subscribed, is not an error.
+        let again = pid("b");
+        store.open(1000, &again, Some(1000)).unwrap();
+        assert_eq!(store.unsubscribe(1000, &peer(":1.7"), &again), Ok(()));
+        // A prompt the caller may not read is refused, whether or not it exists.
+        assert_eq!(
+            store.unsubscribe(1001, &peer(":1.7"), &again),
+            Err(Error::Denied)
+        );
+        assert_eq!(
+            store.unsubscribe(1000, &peer(":1.7"), &pid("nobody")),
+            Err(Error::Denied)
+        );
     }
 
     #[test]
