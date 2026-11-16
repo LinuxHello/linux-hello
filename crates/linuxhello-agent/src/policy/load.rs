@@ -32,9 +32,31 @@ pub enum Policy {
     PinOnly(PinOnly),
 }
 
+/// Which layer a failed load blamed. It is one of three fixed words, so an audit record can name
+/// the fault without any text from a policy file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Fault {
+    /// The admin directory or one of its files, or the admin layers contradict each other.
+    AdminLayer,
+    /// The user's layer could not be read or parsed, or contradicts the admin layers.
+    UserLayer,
+}
+
+impl Fault {
+    /// The fixed word that names the fault in the journal.
+    pub fn word(self) -> &'static str {
+        match self {
+            Self::AdminLayer => "admin_layer",
+            Self::UserLayer => "user_layer",
+        }
+    }
+}
+
 /// The state returned when policy loading fails.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PinOnly {
+    /// Which layer the load blamed (`pin_only_fallback_is_audited_with_its_reason`).
+    pub fault: Fault,
     /// The PIN-only layer: every context allows `pin` only and biometrics are
     /// off. When the admin layers could be read (the user's layer was at fault)
     /// it keeps their PIN rules, factor counts and relying-party classes;
@@ -73,7 +95,9 @@ pub struct PinOnly {
 pub fn load(admin_dir: &Path, user_file: &Path, admin_owner_uid: u32) -> Policy {
     let admin = match admin_layers(admin_dir, admin_owner_uid) {
         Ok(layers) => layers,
-        Err(reason) => return Policy::PinOnly(create_pin_only_state(None, reason)),
+        Err(reason) => {
+            return Policy::PinOnly(create_pin_only_state(None, Fault::AdminLayer, reason))
+        }
     };
 
     let user_layer = match read_optional_layer(user_file) {
@@ -98,7 +122,7 @@ pub fn load(admin_dir: &Path, user_file: &Path, admin_owner_uid: u32) -> Policy 
             if user_layer.is_some() {
                 user_layer_failure(&admin, reason)
             } else {
-                Policy::PinOnly(create_pin_only_state(None, reason))
+                Policy::PinOnly(create_pin_only_state(None, Fault::AdminLayer, reason))
             }
         }
     }
@@ -231,7 +255,11 @@ fn describe(path: &Path, what: &str) -> String {
 /// when they merge on their own, and on the defaults when they do not.
 fn user_layer_failure(admin: &[Layer], reason: String) -> Policy {
     let base = merge(admin, None).ok();
-    Policy::PinOnly(create_pin_only_state(base.as_ref(), reason))
+    Policy::PinOnly(create_pin_only_state(
+        base.as_ref(),
+        Fault::UserLayer,
+        reason,
+    ))
 }
 
 /// The PIN-only state: every context `pin` only, biometrics off, relying parties
@@ -244,7 +272,7 @@ fn user_layer_failure(admin: &[Layer], reason: String) -> Policy {
 /// never weaker than what the admin layers demand
 /// (`pin_only_state_is_never_weaker_than_the_admin_layer`). A context that then
 /// needs two factors is unsatisfiable, not lowered (invariant 3).
-fn create_pin_only_state(base: Option<&Effective>, reason: String) -> PinOnly {
+fn create_pin_only_state(base: Option<&Effective>, fault: Fault, reason: String) -> PinOnly {
     let mut layer = base.map_or_else(default_layer, |effective| effective.layer.clone());
     for context in layer.context.values_mut() {
         context.methods = vec!["pin".to_string()];
@@ -264,6 +292,7 @@ fn create_pin_only_state(base: Option<&Effective>, reason: String) -> PinOnly {
     }
 
     PinOnly {
+        fault,
         layer,
         rp_provider: RpProvider::Tpm,
         rp_prompt: RpPrompt::Reverify,

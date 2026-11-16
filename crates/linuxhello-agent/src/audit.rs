@@ -23,6 +23,7 @@ use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use crate::api::PeerName;
+use crate::policy::load::Fault;
 
 /// The socket the journal reads native records from.
 const JOURNAL_SOCKET: &str = "/run/systemd/journal/socket";
@@ -40,6 +41,9 @@ const ID_INVALID_ARGUMENT: &str = "f7764b2f857d4a7494efd1c62dc8099c";
 const ID_USER_POLICY_SET: &str = "1afc7d18dd5441b4afe6088c4fe45cef";
 /// `MESSAGE_ID` of a removed user policy layer.
 const ID_USER_POLICY_REMOVED: &str = "a30a9a431e9f4e57bfc8dea8aaa2fe91";
+
+/// `MESSAGE_ID` of a policy that fell back to PIN-only.
+const ID_POLICY_PIN_ONLY: &str = "050c3a8220f349669c1a7111fad2fc6d";
 
 /// How many uids the rate limiter remembers at most.
 const MAX_TRACKED_UIDS: usize = 4096;
@@ -63,6 +67,9 @@ enum Kind {
     UserPolicySet,
     /// A user policy layer was removed.
     UserPolicyRemoved,
+    /// A policy could not be loaded and the Agent fell back to PIN-only; the fault says which
+    /// layer was to blame.
+    PolicyPinOnly(Fault),
 }
 
 /// One audit record: a kind and the uid it concerns. It carries no text from a caller.
@@ -123,6 +130,17 @@ impl Event {
         }
     }
 
+    /// The policy of `uid` could not be loaded and the Agent fell back to PIN-only. Only the
+    /// fault (a fixed word) is recorded, never the reason text, which can name a file or a
+    /// class of a policy (`pin_only_fallback_is_audited_with_its_reason`).
+    pub fn policy_pin_only(uid: u32, fault: Fault) -> Self {
+        Self {
+            kind: Kind::PolicyPinOnly(fault),
+            uid: Some(uid),
+            peer: None,
+        }
+    }
+
     /// The same event for the connection `peer`, the unique bus name the bus daemon gave the
     /// caller (see [`PeerName`]: it has no form that could carry a caller's own text, P-13).
     #[must_use]
@@ -164,6 +182,13 @@ impl Event {
                 "done",
                 "user policy layer removed",
             ),
+            Kind::PolicyPinOnly(_) => (
+                "4",
+                ID_POLICY_PIN_ONLY,
+                "policy_pin_only",
+                "fallback",
+                "policy fell back to PIN-only",
+            ),
         };
         let mut fields = vec![
             ("PRIORITY", priority.to_string()),
@@ -176,6 +201,9 @@ impl Event {
         }
         if let Some(peer) = &self.peer {
             fields.push(("LH_PEER", peer.as_str().to_string()));
+        }
+        if let Kind::PolicyPinOnly(fault) = self.kind {
+            fields.push(("LH_FAULT", fault.word().to_string()));
         }
         fields.push(("LH_OUTCOME", outcome.to_string()));
         fields.push(("MESSAGE", message.to_string()));

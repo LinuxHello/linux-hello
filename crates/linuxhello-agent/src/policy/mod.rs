@@ -35,7 +35,7 @@ pub mod user_store;
 pub mod view;
 
 pub use defaults::default_layer;
-pub use load::{load, PinOnly, Policy};
+pub use load::{load, Fault, PinOnly, Policy};
 pub use merge::{merge, Effective};
 pub use query::{MethodRule, RpDecision};
 pub use restrict::{most_restrictive, Contradiction};
