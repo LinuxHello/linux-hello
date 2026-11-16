@@ -194,6 +194,7 @@ fn to_fdo(error: ApiError) -> fdo::Error {
         ApiError::LimitReached => fdo::Error::LimitsExceeded("limit reached".to_string()),
         ApiError::InvalidArgument => fdo::Error::InvalidArgs("invalid argument".to_string()),
         ApiError::Unavailable => fdo::Error::Failed("unavailable".to_string()),
+        ApiError::Damaged => fdo::Error::Failed("the stored policy is damaged".to_string()),
     }
 }
 

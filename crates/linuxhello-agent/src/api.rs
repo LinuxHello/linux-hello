@@ -81,6 +81,8 @@ pub enum ApiError {
     InvalidArgument,
     /// The requested service (e.g. user policy store) is not available.
     Unavailable,
+    /// What the Agent stored for the caller cannot be read: the caller can store a new layer.
+    Damaged,
 }
 
 impl From<StoreError> for ApiError {
@@ -89,7 +91,8 @@ impl From<StoreError> for ApiError {
     fn from(error: StoreError) -> Self {
         match error {
             StoreError::Invalid | StoreError::TooLarge => ApiError::InvalidArgument,
-            StoreError::Unavailable => ApiError::Unavailable,
+            StoreError::Unavailable | StoreError::Unsynced => ApiError::Unavailable,
+            StoreError::Damaged => ApiError::Damaged,
         }
     }
 }
@@ -169,7 +172,7 @@ impl Api {
                 self.audit
                     .record(Event::invalid_argument(caller.uid).with_peer(peer));
             }
-            Err(ApiError::Unavailable) | Ok(_) => {}
+            Err(ApiError::Unavailable | ApiError::Damaged) | Ok(_) => {}
         }
         result
     }
@@ -513,7 +516,11 @@ impl Api {
     fn set_user_policy_unaudited(&mut self, caller: &Caller, text: &str) -> Result<(), ApiError> {
         let uid = caller.uid.ok_or(ApiError::Denied)?;
         let store = self.user_policies.as_ref().ok_or(ApiError::Unavailable)?;
-        store.set(uid, text).map_err(ApiError::from)
+        match store.set(uid, text) {
+            // The layer is in place and reads back; a retry would write the same text.
+            Ok(()) | Err(StoreError::Unsynced) => Ok(()),
+            Err(error) => Err(error.into()),
+        }
     }
 }
 
@@ -956,6 +963,37 @@ mod tests {
         let (api, recorder) = audited_api(Config::new(vec![]));
         assert_eq!(api.policy_of(1000), Err(ApiError::Unavailable));
         assert!(recorder.events().is_empty());
+    }
+
+    #[test]
+    fn a_layer_that_is_stored_but_not_synced_counts_as_stored() {
+        let tmp = TempDir::new().unwrap();
+        let store = UserPolicyStore::new(tmp.path()).with_dir_sync(std::sync::Arc::new(|_| {
+            Err(std::io::Error::other("the disk is gone"))
+        }));
+        let (api, recorder) = audited_api(Config::new(vec![]));
+        let mut api = api.with_user_policy_store(Some(store));
+        let tighter = "[methods]\nbiometrics_allowed = false\n";
+        assert_eq!(api.set_user_policy(USER, tighter), Ok(()));
+        assert_eq!(api.get_user_policy(USER), Ok(tighter.to_string()));
+        assert_eq!(recorder.events(), vec![Event::user_policy_set(1000)]);
+    }
+
+    #[test]
+    fn a_damaged_layer_is_reported_as_damaged_and_can_be_replaced() {
+        let tmp = TempDir::new().unwrap();
+        let store = UserPolicyStore::new(tmp.path());
+        std::fs::create_dir_all(store.path(1000).parent().unwrap()).unwrap();
+        std::fs::write(store.path(1000), [0xff, 0xfe]).unwrap();
+        let (api, recorder) = audited_api(Config::new(vec![]));
+        let mut api = api.with_user_policy_store(Some(store));
+        assert_eq!(api.get_user_policy(USER), Err(ApiError::Damaged));
+        // A damaged store is not a refusal of the caller: nothing is audited as one.
+        assert!(recorder.events().is_empty());
+        assert_eq!(
+            api.set_user_policy(USER, "[methods]\nbiometrics_allowed = false\n"),
+            Ok(())
+        );
     }
 
     #[test]

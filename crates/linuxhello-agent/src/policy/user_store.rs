@@ -10,14 +10,22 @@
 //! leaves a half-written or temporary file, and the files are private to the Agent
 //! (`a_write_leaves_no_temporary_file_and_private_modes`), and the user layer is
 //! available without a home directory (`user_policy_is_available_without_a_home_directory`).
+//! A removal is synced like a write (`removing_a_layer_survives_a_crash`); a directory that cannot
+//! be synced after the change is [`StoreError::Unsynced`], not an untouched layer
+//! (`failed_directory_sync_is_not_reported_as_an_untouched_layer`); an error of the store is never
+//! read as no policy (`store_error_is_not_read_as_an_empty_policy`); a stored file that is too
+//! large or not UTF-8 is reported as damaged, and can be replaced
+//! (`damaged_layer_is_reported_as_damaged`).
 
 use crate::policy::load::{admin_layers, load, Policy};
 use crate::policy::merge::merge;
 use crate::policy::schema::{parse_layer, Layer};
 use std::fs;
-use std::io::Write;
+use std::io::{ErrorKind, Read, Write};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 /// The maximum size in bytes for a user policy file.
 pub const MAX_POLICY_BYTES: usize = 64 * 1024;
@@ -35,11 +43,65 @@ pub enum StoreError {
     TooLarge,
     /// The store could not read or write its files; the previous layer is untouched.
     Unavailable,
+    /// The new layer is in place and can be read back, but the directory could not be synced to
+    /// disk, so it may not survive a crash (`failed_directory_sync_is_not_reported_as_an_untouched_layer`).
+    /// A retry would write the same text; the request layer counts it as stored.
+    Unsynced,
+    /// A layer is stored but cannot be read as one: it is not UTF-8 or it is larger than
+    /// [`MAX_POLICY_BYTES`] (`damaged_layer_is_reported_as_damaged`). Storing a new layer replaces it.
+    Damaged,
+}
+
+/// Makes a change of a directory durable.
+type DirSync = Arc<dyn Fn(&Path) -> std::io::Result<()> + Send + Sync>;
+
+/// Syncs the directory to disk.
+fn sync_directory(path: &Path) -> std::io::Result<()> {
+    fs::File::open(path)?.sync_all()
+}
+
+/// Removes what an earlier write left behind: the fixed name an older version used, and the
+/// temporary files of processes that no longer exist. A temporary file of a live process is
+/// left alone, so two writers never delete each other's work
+/// (`a_write_leaves_no_temporary_file_and_private_modes`, `only_dead_writers_leave_stale_files`).
+fn remove_stale_temporaries(dir: &Path) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        let stale = name == "policy.toml.tmp"
+            || name
+                .strip_prefix("policy.toml.")
+                .and_then(|rest| rest.strip_suffix(".tmp"))
+                .and_then(|rest| rest.split_once('.'))
+                .and_then(|(pid, _)| pid.parse::<u32>().ok())
+                .is_some_and(|pid| {
+                    pid != std::process::id() && !Path::new(&format!("/proc/{pid}")).exists()
+                });
+        if stale {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
+}
+
+/// Gives every temporary file its own name, so two writers never share one
+/// (`temporary_names_are_never_shared`).
+fn temporary_name() -> String {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    format!(
+        "policy.toml.{}.{}.tmp",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    )
 }
 
 /// A store for managing individual user policy layers in the Agent's state directory.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct UserPolicyStore {
+    /// How a directory is made durable; the real sync, except in tests.
+    sync_dir: DirSync,
     /// The root directory where user policy subdirectories are located.
     root: PathBuf,
     /// The admin policy directory and the uid that must own it, when a new layer is
@@ -47,13 +109,29 @@ pub struct UserPolicyStore {
     admin: Option<(PathBuf, u32)>,
 }
 
+impl std::fmt::Debug for UserPolicyStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("UserPolicyStore")
+            .field("root", &self.root)
+            .field("admin", &self.admin)
+            .finish_non_exhaustive()
+    }
+}
+
 impl UserPolicyStore {
     /// Creates a new `UserPolicyStore` with the given root directory.
     pub fn new(root: impl Into<PathBuf>) -> Self {
         Self {
+            sync_dir: Arc::new(sync_directory),
             root: root.into(),
             admin: None,
         }
+    }
+
+    /// The same store with another way to sync a directory, for tests that make it fail or count it.
+    #[cfg(test)]
+    pub(crate) fn with_dir_sync(self, sync_dir: DirSync) -> Self {
+        Self { sync_dir, ..self }
     }
 
     /// The same store, checking every new layer against the admin layers in
@@ -121,18 +199,45 @@ impl UserPolicyStore {
 
     /// Retrieves the stored policy text for the given `uid`.
     ///
-    /// Returns an empty string if no policy is stored.
+    /// Returns an empty string if no policy is stored: only a file that is not there counts as
+    /// none, never a directory or file that cannot be examined
+    /// (`store_error_is_not_read_as_an_empty_policy`).
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError::Unavailable`] when the file cannot be examined or read;
+    /// [`StoreError::Damaged`] when it is larger than [`MAX_POLICY_BYTES`] or not UTF-8
+    /// (`damaged_layer_is_reported_as_damaged`).
     pub fn get(&self, uid: u32) -> Result<String, StoreError> {
-        let path = self.path(uid);
-        if !path.exists() {
-            return Ok(String::new());
+        let file = match fs::File::open(self.path(uid)) {
+            Ok(file) => file,
+            Err(error) if error.kind() == ErrorKind::NotFound => return Ok(String::new()),
+            Err(_) => return Err(StoreError::Unavailable),
+        };
+        let mut bytes = Vec::new();
+        let limit = u64::try_from(MAX_POLICY_BYTES)
+            .unwrap_or(u64::MAX)
+            .saturating_add(1);
+        file.take(limit)
+            .read_to_end(&mut bytes)
+            .map_err(|_| StoreError::Unavailable)?;
+        if bytes.len() > MAX_POLICY_BYTES {
+            return Err(StoreError::Damaged);
         }
-        fs::read_to_string(path).map_err(|_| StoreError::Unavailable)
+        String::from_utf8(bytes).map_err(|_| StoreError::Damaged)
     }
 
     /// Stores the provided text as the policy layer for the given `uid`.
     ///
-    /// If the text is empty, the existing policy file is removed.
+    /// If the text is empty, the existing policy file is removed. Both the new file and the
+    /// removal are made durable by syncing the directory (`removing_a_layer_survives_a_crash`).
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError::Invalid`] and [`StoreError::TooLarge`] for a text that is refused, with the
+    /// previous layer untouched; [`StoreError::Unavailable`] when a file cannot be written, with
+    /// the previous layer untouched; [`StoreError::Unsynced`] when the change is made but the
+    /// directory could not be synced, so the new layer is in place.
     pub fn set(&self, uid: u32, text: &str) -> Result<(), StoreError> {
         if text.len() > MAX_POLICY_BYTES {
             return Err(StoreError::TooLarge);
@@ -145,25 +250,23 @@ impl UserPolicyStore {
 
         let user_dir = self.root.join(uid.to_string());
         let policy_path = user_dir.join("policy.toml");
-        let tmp_path = user_dir.join("policy.toml.tmp");
+        let tmp_path = user_dir.join(temporary_name());
 
-        // Ensure directory exists with 0700
-        if !user_dir.exists() {
-            let mut builder = fs::DirBuilder::new();
-            builder.recursive(true).mode(0o700);
-            builder
-                .create(&user_dir)
-                .map_err(|_| StoreError::Unavailable)?;
-        }
-
-        // Remove any stale tmp file
-        let _ = fs::remove_file(&tmp_path);
+        // The directory, private to the Agent; an existing one is left as it is.
+        let mut builder = fs::DirBuilder::new();
+        builder.recursive(true).mode(0o700);
+        builder
+            .create(&user_dir)
+            .map_err(|_| StoreError::Unavailable)?;
+        remove_stale_temporaries(&user_dir);
 
         if text.is_empty() {
-            if policy_path.exists() {
-                fs::remove_file(&policy_path).map_err(|_| StoreError::Unavailable)?;
+            match fs::remove_file(&policy_path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == ErrorKind::NotFound => return Ok(()),
+                Err(_) => return Err(StoreError::Unavailable),
             }
-            return Ok(());
+            return self.make_durable(&user_dir);
         }
 
         // Atomic write: create tmp, write, sync, rename, sync dir
@@ -178,9 +281,13 @@ impl UserPolicyStore {
             let mut file = options
                 .open(&tmp_path)
                 .map_err(|_| StoreError::Unavailable)?;
-            file.write_all(text.as_bytes())
-                .map_err(|_| StoreError::Unavailable)?;
-            file.sync_all().map_err(|_| StoreError::Unavailable)?;
+            let written = file
+                .write_all(text.as_bytes())
+                .and_then(|()| file.sync_all());
+            if written.is_err() {
+                let _ = fs::remove_file(&tmp_path);
+                return Err(StoreError::Unavailable);
+            }
         }
 
         fs::rename(&tmp_path, &policy_path).map_err(|_| {
@@ -188,11 +295,13 @@ impl UserPolicyStore {
             StoreError::Unavailable
         })?;
 
-        // Sync the directory to ensure the rename is persisted
-        let dir_file = fs::File::open(&user_dir).map_err(|_| StoreError::Unavailable)?;
-        dir_file.sync_all().map_err(|_| StoreError::Unavailable)?;
+        self.make_durable(&user_dir)
+    }
 
-        Ok(())
+    /// Syncs `dir` after a change that is already made. A failure is [`StoreError::Unsynced`],
+    /// not `Unavailable`: the layer is in place whatever the sync says.
+    fn make_durable(&self, dir: &Path) -> Result<(), StoreError> {
+        (self.sync_dir)(dir).map_err(|_| StoreError::Unsynced)
     }
 }
 
@@ -205,6 +314,108 @@ mod tests {
 
     const TIGHTER: &str = "[methods]\nbiometrics_allowed = false\n";
     const EXAMPLE: &str = include_str!("../../../../policy/policy.example.toml");
+
+    /// A directory sync that always fails.
+    fn failing_sync() -> DirSync {
+        Arc::new(|_| Err(std::io::Error::other("the disk is gone")))
+    }
+
+    #[test]
+    fn failed_directory_sync_is_not_reported_as_an_untouched_layer() {
+        let root = tempdir().unwrap();
+        let store = UserPolicyStore::new(root.path()).with_dir_sync(failing_sync());
+        // The new layer is in place, and the error says so instead of "untouched".
+        assert_eq!(store.set(1000, TIGHTER), Err(StoreError::Unsynced));
+        assert_eq!(store.get(1000).unwrap(), TIGHTER);
+        assert_ne!(StoreError::Unsynced, StoreError::Unavailable);
+    }
+
+    #[test]
+    fn removing_a_layer_survives_a_crash() {
+        let root = tempdir().unwrap();
+        let syncs = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = Arc::clone(&syncs);
+        let store = UserPolicyStore::new(root.path()).with_dir_sync(Arc::new(move |path| {
+            counted.fetch_add(1, Ordering::SeqCst);
+            sync_directory(path)
+        }));
+        store.set(1000, TIGHTER).unwrap();
+        assert_eq!(
+            syncs.load(Ordering::SeqCst),
+            1,
+            "a write syncs the directory"
+        );
+        store.set(1000, "").unwrap();
+        assert_eq!(store.get(1000).unwrap(), "");
+        assert_eq!(syncs.load(Ordering::SeqCst), 2, "a removal syncs it too");
+        // Removing what is not there changes nothing and needs no sync.
+        store.set(1000, "").unwrap();
+        assert_eq!(syncs.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn store_error_is_not_read_as_an_empty_policy() {
+        let root = tempdir().unwrap();
+        let store = UserPolicyStore::new(root.path());
+        store.set(1000, TIGHTER).unwrap();
+        let dir = root.path().join("1000");
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o000)).unwrap();
+        let seen = store.get(1000);
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+        // A user that can ignore permissions (root) cannot show the failure; the test is for the rest.
+        if rustix::process::getuid().as_raw() != 0 {
+            assert_eq!(seen, Err(StoreError::Unavailable));
+        }
+        assert_eq!(store.get(1000).unwrap(), TIGHTER);
+    }
+
+    #[test]
+    fn damaged_layer_is_reported_as_damaged() {
+        let root = tempdir().unwrap();
+        let store = UserPolicyStore::new(root.path());
+        let path = store.path(1000);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        // Not UTF-8.
+        fs::write(&path, [0xff, 0xfe, 0x00]).unwrap();
+        assert_eq!(store.get(1000), Err(StoreError::Damaged));
+        // Larger than the limit, and read only up to it.
+        fs::write(&path, vec![b'#'; MAX_POLICY_BYTES + 1]).unwrap();
+        assert_eq!(store.get(1000), Err(StoreError::Damaged));
+        // At the limit it is a layer like any other.
+        fs::write(&path, vec![b'#'; MAX_POLICY_BYTES]).unwrap();
+        assert_eq!(store.get(1000).unwrap().len(), MAX_POLICY_BYTES);
+        // The user can replace a damaged layer.
+        fs::write(&path, [0xff]).unwrap();
+        assert_eq!(store.set(1000, TIGHTER), Ok(()));
+        assert_eq!(store.get(1000).unwrap(), TIGHTER);
+    }
+
+    #[test]
+    fn only_dead_writers_leave_stale_files() {
+        let root = tempdir().unwrap();
+        let store = UserPolicyStore::new(root.path());
+        store.set(1000, TIGHTER).unwrap();
+        let dir = store.path(1000).parent().unwrap().to_path_buf();
+        // A writer that no longer exists left a file; process 1 is alive and its file stays.
+        let dead = dir.join("policy.toml.4294967295.0.tmp");
+        let alive = dir.join("policy.toml.1.0.tmp");
+        fs::write(&dead, "x").unwrap();
+        fs::write(&alive, "x").unwrap();
+        store.set(1000, TIGHTER).unwrap();
+        assert!(!dead.exists());
+        assert!(alive.exists());
+        assert_eq!(store.get(1000).unwrap(), TIGHTER);
+    }
+
+    #[test]
+    fn temporary_names_are_never_shared() {
+        let (a, b) = (temporary_name(), temporary_name());
+        assert_ne!(a, b);
+        for name in [a, b] {
+            assert!(name.starts_with("policy.toml.") && name.ends_with(".tmp"));
+            assert_ne!(name, "policy.toml");
+        }
+    }
 
     #[test]
     fn get_without_a_policy_is_empty() {
