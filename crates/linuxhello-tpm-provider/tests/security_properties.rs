@@ -7,7 +7,7 @@
 
 /// P-03: see `docs/security/properties.md`.
 #[test]
-#[ignore = "placeholder, blocked: the credentialsd provider interface does not exist (ADR-0005)"]
+#[ignore = "placeholder, blocked: the provider interface behind the virtual CTAP authenticator is not built yet (ADR-0005)"]
 fn credential_for_another_relying_party_is_never_returned() {
     unimplemented!("P-03: write this test when it is unblocked");
 }
@@ -35,7 +35,7 @@ fn no_interface_returns_private_key_material() {
 
 /// P-11: see `docs/security/properties.md`.
 #[test]
-#[ignore = "placeholder, blocked: the credentialsd provider interface does not exist (ADR-0005)"]
+#[ignore = "placeholder, blocked: the provider interface behind the virtual CTAP authenticator is not built yet (ADR-0005)"]
 fn signature_without_user_presence_is_refused() {
     unimplemented!("P-11: write this test when it is unblocked");
 }
@@ -63,7 +63,7 @@ fn reset_destroys_root_key_and_every_child_key() {
 
 /// P-22: see `docs/security/properties.md`.
 #[test]
-#[ignore = "placeholder, blocked: the credentialsd provider interface does not exist (ADR-0005)"]
+#[ignore = "placeholder, blocked: the provider interface behind the virtual CTAP authenticator is not built yet (ADR-0005)"]
 fn malformed_ctap_request_is_refused() {
     unimplemented!("P-22: write this test when it is unblocked");
 }

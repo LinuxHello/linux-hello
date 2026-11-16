@@ -7,7 +7,7 @@
 
 /// P-03: see `docs/security/properties.md`.
 #[test]
-#[ignore = "placeholder, blocked: the credentialsd provider interface does not exist (ADR-0005)"]
+#[ignore = "placeholder, blocked: the provider interface behind the virtual CTAP authenticator is not built yet (ADR-0005)"]
 fn kpxc_credential_for_another_relying_party_is_never_returned() {
     unimplemented!("P-03: write this test when it is unblocked");
 }

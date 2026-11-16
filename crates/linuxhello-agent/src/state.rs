@@ -6,7 +6,8 @@
 //! the PAM module of the user being authenticated (root, or the user's own uid) can open a
 //! prompt for that user; only the opener can change or close it; only the opener, and for a
 //! prompt that root opened the subject user and the configured prompt-host users, can read
-//! it or be told about changes; a refusal looks the same whether the prompt exists or not;
+//! it or be told about changes; a refusal about a prompt the caller did not open looks the
+//! same whether the prompt exists or not (`open` tells a caller only about its own prompts);
 //! and no user can fill the store.
 //!
 //! Prompts are kept per opener: the same id opened by two uids is two prompts. An
