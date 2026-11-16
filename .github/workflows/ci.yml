@@ -146,6 +146,44 @@ jobs:
           path: "**/fuzz/artifacts/"
           if-no-files-found: ignore
 
+  # The confinement checks of the Agent on a real system bus, under an enforcing AppArmor profile
+  # and with real users (security/, ADR-0014). Not a gate yet: it is not in quality-gates.txt, so
+  # a failure shows on the pull request without blocking it and the attestation does not claim it.
+  # It runs only when the Agent, its interface, security/ or this check changes, and always
+  # passes otherwise, so listing it as a gate later needs no other change than adding its name.
+  confinement:
+    name: confinement
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2 # on a pull request HEAD is GitHub's merge commit and HEAD^1 is the base
+      - name: Did anything the checks cover change?
+        id: scope
+        run: |
+          set -euo pipefail
+          run=true
+          if [ "$GITHUB_EVENT_NAME" = pull_request ] && paths="$(git diff --name-only --no-renames HEAD^1 HEAD)"; then
+            if ! printf '%s\n' "$paths" | grep -Eq '^(security/|crates/linuxhello-(agent|dbus)/|Cargo\.(lock|toml)$|rust-toolchain\.toml$|scripts/ci/confinement\.sh$|\.github/workflows/ci\.yml$)'; then
+              run=false
+            fi
+          fi
+          echo "run=$run" >> "$GITHUB_OUTPUT"
+          echo "confinement checks needed: $run"
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        if: steps.scope.outputs.run == 'true'
+        with:
+          toolchain: stable
+          targets: x86_64-unknown-linux-musl
+      - name: Build the static Agent
+        if: steps.scope.outputs.run == 'true'
+        run: cargo build --release --target x86_64-unknown-linux-musl -p linuxhello-agent
+      - name: Install the Agent as a package would and check the confinement
+        if: steps.scope.outputs.run == 'true'
+        run: bash scripts/ci/confinement.sh
+
   unsafe-policy:
     name: unsafe-policy
     needs: changes
