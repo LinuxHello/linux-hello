@@ -30,8 +30,11 @@ fn socket() -> (PinSocket, PathBuf, TempDir) {
 /// What a client does: sends `bytes`, closes its writing side, reads the reply.
 fn send(path: &PathBuf, bytes: &[u8]) -> u8 {
     let mut stream = UnixStream::connect(path).unwrap();
-    stream.write_all(bytes).unwrap();
-    stream.shutdown(std::net::Shutdown::Write).unwrap();
+    // The Agent refuses without reading when the caller has no control call, and may have closed
+    // the connection by now: a failed write or shutdown is not an error here, and the reply it
+    // sent first is still there to read.
+    drop(stream.write_all(bytes));
+    drop(stream.shutdown(std::net::Shutdown::Write));
     let mut reply = [9_u8; 1];
     stream.read_exact(&mut reply).unwrap();
     reply[0]
