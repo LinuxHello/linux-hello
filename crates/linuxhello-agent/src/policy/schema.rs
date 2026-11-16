@@ -56,10 +56,12 @@ pub struct PinPolicy {
     /// Days until the PIN must be changed, 1–730. Absent: the PIN never expires.
     pub expiry_days: Option<u32>,
     #[serde(default)]
-    /// Wrong PIN entries before lockout, 1–32.
+    /// Wrong PIN entries before lockout, 1–32. A setting of the Agent's own per-user counter
+    /// (`PinLock`), not a TPM dictionary-attack parameter.
     pub lockout_attempts: Option<u32>,
     #[serde(default)]
-    /// Minutes a lockout lasts, 1–1440.
+    /// Minutes the first lockout lasts, 1–1440. A setting of the Agent's own per-user counter,
+    /// not a TPM dictionary-attack parameter.
     pub lockout_minutes: Option<u32>,
 }
 

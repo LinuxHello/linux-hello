@@ -39,6 +39,8 @@ A policy file is TOML. Every table and key is optional. Any key, table or value 
 | | `factors` | integer, 1–2 |
 | | `require_second_credential` | boolean |
 
+`lockout_attempts` and `lockout_minutes` configure the Agent's own per-user counter (`PinLock`, P-14), not the TPM's dictionary-attack parameters, which Linux Hello never changes: the TPM keeps one counter for the whole machine, so the Agent stops a user's repeated failures before they reach it.
+
 A relying-party pattern is either an exact domain (`bank.example`) or `*.` followed by a domain (`*.bank.example`), which matches every subdomain but not the domain itself. Domains are compared in lower case, without a trailing dot. Any other pattern, including `*` alone, a `*` anywhere else, or an empty label, makes the file unparseable.
 
 ## Built-in defaults
