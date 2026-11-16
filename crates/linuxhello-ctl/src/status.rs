@@ -1,7 +1,7 @@
 //! The administrator's offline commands `status` and `doctor`: what is wrong with the policy files,
 //! in the words the user and the administrator read.
 //!
-//! C4 component: `cliCommands` ([workspace.dsl](https://github.com/LinuxHello/architecture/blob/main/workspace.dsl))
+//! C4 component: `cliCommands` ([workspace.dsl](https://github.com/LinuxHello/linux-hello-architecture/blob/main/workspace.dsl))
 //!
 //! Both commands read the policy files on disk through the Agent's own loader and need no running
 //! Agent. They probe nothing else (no TPM, no service, no bus) and never write

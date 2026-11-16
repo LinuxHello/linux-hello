@@ -1,14 +1,14 @@
 //! D-Bus names shared by every Linux Hello container.
 //!
 //! The well-known names below are a one-way door: clients, AppArmor profiles and
-//! portals hard-code them. These names are decided by [ADR-0012](https://github.com/LinuxHello/architecture/blob/main/adr/0012-dbus-names.md) and change only by a new ADR.
+//! portals hard-code them. These names are decided by [ADR-0012](https://github.com/LinuxHello/linux-hello-architecture/blob/main/adr/0012-dbus-names.md) and change only by a new ADR.
 //!
 //! This crate is not a container of its own: it is the contract of the Agent's
 //! D-Bus API, linked into every container that calls it.
 //!
-//! The state API follows [ADR-0014](https://github.com/LinuxHello/architecture/blob/main/adr/0014-agent-bus.md).
+//! The state API follows [ADR-0014](https://github.com/LinuxHello/linux-hello-architecture/blob/main/adr/0014-agent-bus.md).
 //!
-//! C4 component: `dbusApi` ([workspace.dsl](https://github.com/LinuxHello/architecture/blob/main/workspace.dsl))
+//! C4 component: `dbusApi` ([workspace.dsl](https://github.com/LinuxHello/linux-hello-architecture/blob/main/workspace.dsl))
 
 #![forbid(unsafe_code)]
 

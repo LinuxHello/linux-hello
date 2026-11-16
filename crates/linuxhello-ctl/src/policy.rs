@@ -1,6 +1,6 @@
 //! The administrator's offline commands on a user's policy layer: `policy show` and `policy reset`.
 //!
-//! C4 component: `cliCommands` ([workspace.dsl](https://github.com/LinuxHello/architecture/blob/main/workspace.dsl))
+//! C4 component: `cliCommands` ([workspace.dsl](https://github.com/LinuxHello/linux-hello-architecture/blob/main/workspace.dsl))
 //!
 //! Both commands work on the Agent's state directory directly and need no running Agent, so root
 //! can lift a lockout without it. The command touches only `<state root>/<uid>/policy.toml` for a

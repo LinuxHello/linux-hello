@@ -15,7 +15,7 @@
 //! Security properties: `signals_reach_only_the_subscribed_peer` (P-05, over a real bus) and
 //! `caller_without_peer_credentials_is_refused` (P-02, in the request layer).
 //!
-//! C4 component: `dbusApi` ([workspace.dsl](https://github.com/LinuxHello/architecture/blob/main/workspace.dsl))
+//! C4 component: `dbusApi` ([workspace.dsl](https://github.com/LinuxHello/linux-hello-architecture/blob/main/workspace.dsl))
 
 use futures_lite::StreamExt;
 use linuxhello_dbus::{AGENT_BUS_NAME, AGENT_INTERFACE, AGENT_OBJECT_PATH};

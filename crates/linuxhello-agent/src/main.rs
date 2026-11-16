@@ -6,7 +6,7 @@
 //! TPM and the policy engine are not wired in. Users can store and read their own policy layer
 //! (`GetUserPolicy`, `SetUserPolicy`); the engine does not read it yet.
 //!
-//! C4 container: `agent` ([workspace.dsl](https://github.com/LinuxHello/architecture/blob/main/workspace.dsl))
+//! C4 container: `agent` ([workspace.dsl](https://github.com/LinuxHello/linux-hello-architecture/blob/main/workspace.dsl))
 
 #![forbid(unsafe_code)]
 

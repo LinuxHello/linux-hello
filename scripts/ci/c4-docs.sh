@@ -2,7 +2,7 @@
 # Property: the Rust code names the C4 element it implements (ADR-0008).
 #  1. Every crate root (src/lib.rs, src/main.rs) has one "//! C4 container: `<id>`" or
 #     "//! C4 component: `<id>`" line, and <id> is that kind of element in
-#     architecture/workspace.dsl, the C4 model in the LinuxHello/architecture submodule
+#     architecture/workspace.dsl, the C4 model in the LinuxHello/linux-hello-architecture submodule
 #     (ADR-0011).
 #  2. In a crate whose root names a container, every module the root declares, except
 #     #[cfg(test)] modules, is in its own file whose //! docs have one
@@ -12,7 +12,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 [[ -f architecture/workspace.dsl ]] || {
-  echo "::error::architecture/workspace.dsl not found: the C4 model is the LinuxHello/architecture submodule; run git submodule update --init"
+  echo "::error::architecture/workspace.dsl not found: the C4 model is the LinuxHello/linux-hello-architecture submodule; run git submodule update --init"
   exit 1
 }
 fail=0

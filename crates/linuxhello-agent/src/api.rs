@@ -8,7 +8,7 @@
 //!
 //! Security property: `caller_without_peer_credentials_is_refused` (P-02).
 //!
-//! C4 component: `dbusApi` ([workspace.dsl](https://github.com/LinuxHello/architecture/blob/main/workspace.dsl))
+//! C4 component: `dbusApi` ([workspace.dsl](https://github.com/LinuxHello/linux-hello-architecture/blob/main/workspace.dsl))
 
 use linuxhello_dbus::{AuthMethod, PromptId, PromptResult, PromptState, SIGNALS};
 

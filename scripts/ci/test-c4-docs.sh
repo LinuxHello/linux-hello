@@ -106,7 +106,7 @@ expect 0 modules_inside_functions_are_not_component_modules "$r"
 
 r="$(fixture no_model)"
 rm "$r/architecture/workspace.dsl"
-expect 1 missing_c4_model_submodule_is_refused "$r" "the C4 model is the LinuxHello/architecture submodule"
+expect 1 missing_c4_model_submodule_is_refused "$r" "the C4 model is the LinuxHello/linux-hello-architecture submodule"
 
 echo "$pass passed, $fail failed"
 [[ "$fail" == 0 ]]

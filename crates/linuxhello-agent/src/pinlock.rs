@@ -13,7 +13,7 @@
 //!
 //! Security property: `one_users_failed_pins_cannot_lock_out_another_user` (P-14).
 //!
-//! C4 component: `pinManager` ([workspace.dsl](https://github.com/LinuxHello/architecture/blob/main/workspace.dsl))
+//! C4 component: `pinManager` ([workspace.dsl](https://github.com/LinuxHello/linux-hello-architecture/blob/main/workspace.dsl))
 
 pub mod store;
 
