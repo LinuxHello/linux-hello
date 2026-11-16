@@ -6,14 +6,16 @@
 //! the TPM's dictionary-attack parameters and imports nothing from a TPM crate.
 //!
 //! The counter has no clock and does no I/O: the caller passes the time in whole seconds,
-//! and the state leaves and enters as plain [`Record`]s (the file that holds them is a later
-//! step). Only [`PinLock::record_pin_success`] resets a counter; a face or fingerprint
+//! and the state leaves and enters as plain [`Record`]s (the file that holds them is in
+//! [`store`]). Only [`PinLock::record_pin_success`] resets a counter; a face or fingerprint
 //! success never does, so someone at the keyboard cannot guess PINs between the owner's
 //! biometric unlocks.
 //!
 //! Security property: `one_users_failed_pins_cannot_lock_out_another_user` (P-14).
 //!
 //! C4 component: `pinManager` ([workspace.dsl](https://github.com/LinuxHello/architecture/blob/main/workspace.dsl))
+
+pub mod store;
 
 use std::collections::BTreeMap;
 
