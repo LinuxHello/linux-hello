@@ -9,6 +9,11 @@ on:
 permissions:
   contents: read
 
+# A newer push to the same pull request cancels the older run. A push to main is never cancelled.
+concurrency:
+  group: sonar-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   sonar:
     name: sonar
@@ -22,15 +27,42 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0 # Sonar needs history for new-code detection and blame
+      # Same rule as the CI gates (ADR-0006): a change of documentation paths only skips the build.
+      # The job still runs and passes, so a required check is never left missing. Fail-closed:
+      # anything unclear counts as code.
+      - name: Classify the changed paths
+        id: classify
+        run: |
+          set -euo pipefail
+          if paths="$(git diff --name-only --no-renames HEAD^1 HEAD 2>/dev/null)"; then
+            result="$(printf '%s\n' "$paths" | bash scripts/ci/classify-changes.sh)" || result="rust=true"
+          else
+            result="rust=true"
+          fi
+          echo "$result"
+          echo "$result" >> "$GITHUB_OUTPUT"
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        if: steps.classify.outputs.rust == 'true'
         with:
           toolchain: stable
           components: clippy, llvm-tools-preview
+      # Building cargo-llvm-cov from source took about a minute on every run; the version is
+      # pinned in the key, so a bump of the version below builds it once and caches it.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: steps.classify.outputs.rust == 'true'
+        id: llvm-cov-cache
+        with:
+          path: ~/.cargo/bin/cargo-llvm-cov
+          key: cargo-llvm-cov-0.9.1-${{ runner.os }}
       - run: cargo install cargo-llvm-cov --version 0.9.1 --locked
+        if: steps.classify.outputs.rust == 'true' && steps.llvm-cov-cache.outputs.cache-hit != 'true'
       - name: Clippy report for Sonar
+        if: steps.classify.outputs.rust == 'true'
         run: cargo clippy --workspace --all-targets --message-format=json > clippy-report.json
       - name: Coverage
+        if: steps.classify.outputs.rust == 'true'
         run: cargo llvm-cov --workspace --lcov --output-path lcov.info
       - uses: SonarSource/sonarqube-scan-action@59202af334b4ba7b5db01b701b8e79f8b3bef0f4 # v8.5.0
+        if: steps.classify.outputs.rust == 'true'
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
