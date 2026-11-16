@@ -176,7 +176,10 @@ jobs:
         if: steps.scope.outputs.run == 'true'
         with:
           toolchain: stable
-          targets: x86_64-unknown-linux-musl
+      # The build uses the toolchain pinned in rust-toolchain.toml, so the target goes there.
+      - name: The musl target for the pinned toolchain
+        if: steps.scope.outputs.run == 'true'
+        run: rustup target add --toolchain "$(grep '^channel' rust-toolchain.toml | cut -d'"' -f2)" x86_64-unknown-linux-musl
       - name: Build the static Agent
         if: steps.scope.outputs.run == 'true'
         run: cargo build --release --target x86_64-unknown-linux-musl -p linuxhello-agent
