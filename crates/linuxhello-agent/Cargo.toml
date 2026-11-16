@@ -11,9 +11,11 @@ publish.workspace = true
 [dependencies]
 futures-lite = "2"
 linuxhello-dbus = { path = "../linuxhello-dbus" }
+rustix = { version = "1", default-features = false, features = ["std", "net"] }
 serde = { version = "1", features = ["derive"] }
 toml = "1.1"
 zbus = "6.2"
+zeroize = "1"
 
 [dev-dependencies]
 async-io = "2"
