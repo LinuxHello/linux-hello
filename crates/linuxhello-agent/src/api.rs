@@ -135,6 +135,13 @@ impl Api {
         }
     }
 
+    /// Gives the request layer the time (a monotonic time, such as the time since the Agent
+    /// started) and closes the prompts that have had no report for longer than the store's
+    /// `max_idle`. Returns how many it closed. Not a request of a caller, so not audited.
+    pub fn advance(&mut self, now: std::time::Duration) -> usize {
+        self.store.advance(now)
+    }
+
     /// Opens a prompt owned by the caller.
     ///
     /// # Errors

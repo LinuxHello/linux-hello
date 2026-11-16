@@ -18,6 +18,8 @@
 //! C4 component: `dbusApi` ([workspace.dsl](https://github.com/LinuxHello/architecture/blob/main/workspace.dsl))
 
 use linuxhello_dbus::{AGENT_BUS_NAME, AGENT_INTERFACE, AGENT_OBJECT_PATH};
+use std::time::Instant;
+
 use zbus::fdo;
 use zbus::message::Header;
 use zbus::names::{BusName, UniqueName};
@@ -34,6 +36,8 @@ pub mod credentials;
 pub struct AgentService {
     /// The request layer that decides every call.
     api: Api,
+    /// When the service was made: the origin of the time the store's prompts are aged by.
+    started: Instant,
 }
 
 impl AgentService {
@@ -41,7 +45,13 @@ impl AgentService {
     pub fn new(config: Config) -> Self {
         Self {
             api: Api::new(config),
+            started: Instant::now(),
         }
+    }
+
+    /// Closes the prompts that have had no report for too long, before a call changes state.
+    fn tick(&mut self) {
+        self.api.advance(self.started.elapsed());
     }
 
     /// A service with a user policy store.
@@ -60,6 +70,7 @@ impl AgentService {
             api: Api::new(config)
                 .with_user_policy_store(user_policies)
                 .with_audit(audit),
+            started: Instant::now(),
         }
     }
 }
@@ -169,6 +180,7 @@ impl AgentService {
         #[zbus(header)] header: Header<'_>,
         #[zbus(connection)] connection: &Connection,
     ) -> fdo::Result<()> {
+        self.tick();
         let subject = match subject_uid {
             -1 => None,
             uid => Some(u32::try_from(uid).map_err(|_| to_fdo(ApiError::InvalidArgument))?),
@@ -189,6 +201,7 @@ impl AgentService {
         #[zbus(header)] header: Header<'_>,
         #[zbus(connection)] connection: &Connection,
     ) -> fdo::Result<()> {
+        self.tick();
         let caller = caller_of(connection, header.sender()).await;
         let values: Vec<&str> = values.iter().map(String::as_str).collect();
         let notes = self
@@ -226,6 +239,7 @@ impl AgentService {
         #[zbus(header)] header: Header<'_>,
         #[zbus(connection)] connection: &Connection,
     ) -> fdo::Result<()> {
+        self.tick();
         let caller = caller_of(connection, header.sender()).await;
         let sender = header
             .sender()
@@ -244,6 +258,7 @@ impl AgentService {
         #[zbus(header)] header: Header<'_>,
         #[zbus(connection)] connection: &Connection,
     ) -> fdo::Result<()> {
+        self.tick();
         let caller = caller_of(connection, header.sender()).await;
         self.api.close_prompt(caller, prompt_id).map_err(to_fdo)
     }
