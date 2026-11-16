@@ -355,3 +355,75 @@ fn a_prompt_is_removed_when_its_opener_leaves_the_bus() {
         assert!(removed, "the prompt of a connection that left must be gone");
     });
 }
+
+/// P-31: the PIN is not a message body on the bus. The Agent's introspected interface has no
+/// method, signal or property whose name or argument names a PIN or another secret, so there is
+/// nowhere on the bus to put one; the PIN has its own socket (ADR-0021, `pinsocket`).
+#[test]
+fn pin_is_never_a_dbus_message_body() {
+    let daemon = Daemon::start();
+    run(async {
+        let _service = serve(
+            Builder::address(daemon.address.as_str()),
+            Config::new(vec![]),
+        )
+        .await
+        .expect("serve the Agent");
+        let client = connect(&daemon).await;
+        let reply = client
+            .call_method(
+                Some(AGENT_BUS_NAME),
+                AGENT_OBJECT_PATH,
+                Some("org.freedesktop.DBus.Introspectable"),
+                "Introspect",
+                &(),
+            )
+            .await
+            .expect("introspect the Agent");
+        let xml: String = reply.body().deserialize().expect("the XML");
+        // The interface must be there, or the test would pass on nothing.
+        assert!(xml.contains(AGENT_INTERFACE));
+        assert!(xml.contains("OpenPrompt"));
+        for name in xml.split(['"', '\'']).skip(1).step_by(2) {
+            for word in words_of(name) {
+                assert!(
+                    !["pin", "secret", "password", "passphrase", "credential"]
+                        .contains(&word.as_str()),
+                    "the bus interface names `{name}`: a secret has no place on the bus"
+                );
+            }
+        }
+    });
+}
+
+/// The words of a name in camel case or with separators, in lower case: `SetPin` is `set` and
+/// `pin`, `Ping` is the one word `ping`, `PIN` is `pin`.
+fn words_of(name: &str) -> Vec<String> {
+    let chars: Vec<char> = name.chars().collect();
+    let mut words = Vec::new();
+    let mut word = String::new();
+    for (i, &c) in chars.iter().enumerate() {
+        let starts_word = c.is_uppercase()
+            && i > 0
+            && (!chars[i - 1].is_uppercase() || chars.get(i + 1).is_some_and(|n| n.is_lowercase()));
+        if (!c.is_alphanumeric() || starts_word) && !word.is_empty() {
+            words.push(std::mem::take(&mut word).to_lowercase());
+        }
+        if c.is_alphanumeric() {
+            word.push(c);
+        }
+    }
+    if !word.is_empty() {
+        words.push(word.to_lowercase());
+    }
+    words
+}
+
+#[test]
+fn names_are_split_into_words() {
+    assert_eq!(words_of("SetPin"), ["set", "pin"]);
+    assert_eq!(words_of("Ping"), ["ping"]);
+    assert_eq!(words_of("PIN"), ["pin"]);
+    assert_eq!(words_of("user_pin_code"), ["user", "pin", "code"]);
+    assert_eq!(words_of("GetPINState"), ["get", "pin", "state"]);
+}

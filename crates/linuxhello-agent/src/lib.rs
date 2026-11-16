@@ -9,5 +9,6 @@ pub mod api;
 pub mod audit;
 pub mod bus;
 pub mod pinlock;
+pub mod pinsocket;
 pub mod policy;
 pub mod state;
