@@ -4,7 +4,8 @@
 //! bus policy decides who may own the name, so a start by any user but the Agent's own fails.
 //! It reads no configuration yet: the prompt hosts that may read any prompt are none, and the
 //! TPM and the policy engine are not wired in. Users can store and read their own policy layer
-//! (`GetUserPolicy`, `SetUserPolicy`); the engine does not read it yet.
+//! (`GetUserPolicy`, `SetUserPolicy`). `Api::policy_of` loads the admin layers and the user's layer
+//! and audits a fall back to PIN-only; no method of the API answers from it yet.
 //!
 //! C4 container: `agent` ([workspace.dsl](https://github.com/LinuxHello/linux-hello-architecture/blob/main/workspace.dsl))
 

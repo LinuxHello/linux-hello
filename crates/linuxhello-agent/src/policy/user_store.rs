@@ -11,7 +11,7 @@
 //! (`a_write_leaves_no_temporary_file_and_private_modes`), and the user layer is
 //! available without a home directory (`user_policy_is_available_without_a_home_directory`).
 
-use crate::policy::load::{admin_layers, Policy};
+use crate::policy::load::{admin_layers, load, Policy};
 use crate::policy::merge::merge;
 use crate::policy::schema::{parse_layer, Layer};
 use std::fs;
@@ -21,6 +21,9 @@ use std::path::PathBuf;
 
 /// The maximum size in bytes for a user policy file.
 pub const MAX_POLICY_BYTES: usize = 64 * 1024;
+
+/// A directory that does not exist: a store without an admin layer reads the defaults only.
+const NO_ADMIN_DIR: &str = "/nonexistent/linuxhello/policy.d";
 
 /// Errors that can occur when interacting with the user policy store.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -99,6 +102,16 @@ impl UserPolicyStore {
             }
         }
         Ok(())
+    }
+
+    /// The effective policy for `uid`: the admin layers (when the store has them), then the
+    /// user's file. It fails closed like [`load`]: a fault gives the PIN-only state.
+    pub fn policy_of(&self, uid: u32) -> Policy {
+        let (admin_dir, owner) = self.admin.as_ref().map_or_else(
+            || (PathBuf::from(NO_ADMIN_DIR), 0),
+            |(dir, owner)| (dir.clone(), *owner),
+        );
+        load(&admin_dir, &self.path(uid), owner)
     }
 
     /// Returns the path to the policy file for the given `uid`.

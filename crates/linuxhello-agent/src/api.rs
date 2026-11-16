@@ -13,6 +13,7 @@
 use linuxhello_dbus::{AuthMethod, PromptId, PromptResult, PromptState, SIGNALS};
 
 use crate::audit::{Audit, Event};
+use crate::policy::load::Policy;
 use crate::policy::user_store::{StoreError, UserPolicyStore};
 use crate::state::{Config, Error as StateError, Peer, StateStore, Update};
 
@@ -171,6 +172,25 @@ impl Api {
             Err(ApiError::Unavailable) | Ok(_) => {}
         }
         result
+    }
+
+    /// The effective policy of `uid`, read from the admin layers and the user's layer now. A
+    /// policy that falls back to PIN-only is audited, with the uid and which layer was to blame,
+    /// and is returned as the PIN-only state: the caller decides from it exactly as from a
+    /// sound one (`pin_only_fallback_is_audited_with_its_reason`). The policy is read on every
+    /// call; caching it is #151.
+    ///
+    /// # Errors
+    ///
+    /// [`ApiError::Unavailable`] when the Agent has no policy store.
+    pub fn policy_of(&self, uid: u32) -> Result<Policy, ApiError> {
+        let store = self.user_policies.as_ref().ok_or(ApiError::Unavailable)?;
+        let policy = store.policy_of(uid);
+        if let Policy::PinOnly(pin_only) = &policy {
+            self.audit
+                .record(Event::policy_pin_only(uid, pin_only.fault));
+        }
+        Ok(policy)
     }
 
     /// An API with a user policy store.
@@ -806,6 +826,80 @@ mod tests {
         let recorder = Recorder::default();
         let api = Api::new(config).with_audit(Audit::new(Box::new(recorder.clone())));
         (api, recorder)
+    }
+
+    /// A store with an admin directory, in a temporary folder owned by the test's user.
+    fn store_with_admin(tmp: &TempDir) -> (UserPolicyStore, std::path::PathBuf) {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let admin = tmp.path().join("policy.d");
+        std::fs::create_dir(&admin).unwrap();
+        std::fs::set_permissions(&admin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let owner = std::fs::metadata(&admin).unwrap().uid();
+        let store = UserPolicyStore::new(tmp.path().join("users")).with_admin_layer(&admin, owner);
+        (store, admin)
+    }
+
+    #[test]
+    fn pin_only_fallback_is_audited_with_its_reason() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = TempDir::new().unwrap();
+        let (store, admin) = store_with_admin(&tmp);
+        let (api, recorder) = audited_api(Config::new(vec![]));
+        let api = api.with_user_policy_store(Some(store));
+
+        // A damaged admin file: PIN-only, blamed on the admin layer, one record.
+        let file = admin.join("broken-secret-name.toml");
+        std::fs::write(&file, "this is not a policy").unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let Ok(Policy::PinOnly(pin_only)) = api.policy_of(1000) else {
+            panic!("a damaged admin file must give the PIN-only state");
+        };
+        assert_eq!(pin_only.fault, crate::policy::Fault::AdminLayer);
+        assert_eq!(
+            recorder.events(),
+            vec![Event::policy_pin_only(
+                1000,
+                crate::policy::Fault::AdminLayer
+            )]
+        );
+        // The record carries the uid and a fixed word, never the file name or the reason text.
+        let fields = recorder.events()[0].fields();
+        assert!(fields.contains(&("LH_UID", "1000".to_string())));
+        assert!(fields.contains(&("LH_FAULT", "admin_layer".to_string())));
+        assert!(fields
+            .iter()
+            .all(|(_, v)| !v.contains("broken-secret-name")));
+
+        // A damaged user layer with sound admin layers: blamed on the user layer.
+        std::fs::remove_file(&file).unwrap();
+        let user_dir = tmp.path().join("users").join("1000");
+        std::fs::create_dir_all(&user_dir).unwrap();
+        std::fs::write(user_dir.join("policy.toml"), "also not a policy").unwrap();
+        let Ok(Policy::PinOnly(pin_only)) = api.policy_of(1000) else {
+            panic!("a damaged user layer must give the PIN-only state");
+        };
+        assert_eq!(pin_only.fault, crate::policy::Fault::UserLayer);
+        assert_eq!(recorder.events().len(), 2);
+        assert!(recorder.events()[1]
+            .fields()
+            .contains(&("LH_FAULT", "user_layer".to_string())));
+    }
+
+    #[test]
+    fn a_sound_policy_is_not_audited() {
+        let tmp = TempDir::new().unwrap();
+        let (store, _admin) = store_with_admin(&tmp);
+        let (api, recorder) = audited_api(Config::new(vec![]));
+        let api = api.with_user_policy_store(Some(store));
+        assert!(matches!(api.policy_of(1000), Ok(Policy::Effective(_))));
+        assert!(recorder.events().is_empty());
+    }
+
+    #[test]
+    fn the_policy_is_unavailable_without_a_store() {
+        let (api, recorder) = audited_api(Config::new(vec![]));
+        assert_eq!(api.policy_of(1000), Err(ApiError::Unavailable));
+        assert!(recorder.events().is_empty());
     }
 
     #[test]
