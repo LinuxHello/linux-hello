@@ -13,6 +13,13 @@ on:
 permissions:
   contents: read
 
+# A newer push to the same pull request cancels the older run. A push to main is never
+# cancelled, and each has its own group, so a quick second merge cannot replace its queued run:
+# the quality-gate attestation comes from that run.
+concurrency:
+  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   # Decides whether the gate jobs run. Fail-closed: anything but a docs-only pull request runs them.
   changes:

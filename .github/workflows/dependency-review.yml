@@ -6,6 +6,13 @@ on:
 permissions:
   contents: read
 
+# A newer push to the same pull request cancels the older run. A push to main is never
+# cancelled and has its own group, so a quick second merge cannot replace its queued run:
+# the quality-gate attestation comes from that run.
+concurrency:
+  group: dependency-review-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   dependency-review:
     name: dependency-review
