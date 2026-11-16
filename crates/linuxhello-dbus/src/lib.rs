@@ -12,6 +12,8 @@
 
 #![forbid(unsafe_code)]
 
+pub mod restart;
+
 /// Well-known bus name of the Agent.
 pub const AGENT_BUS_NAME: &str = "io.github.LinuxHello.Agent1";
 /// Object path of the Agent.
