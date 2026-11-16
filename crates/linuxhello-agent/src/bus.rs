@@ -50,7 +50,16 @@ impl AgentService {
         }
     }
 
-    /// Closes the prompts that have had no report for too long, before a call changes state.
+    /// Sends the `Closed` signal for every prompt that closed since the last call, to the peers
+    /// that were subscribed to it and to nobody else.
+    async fn flush(&mut self, connection: &Connection) {
+        for note in self.api.take_closures() {
+            send(connection, &note).await;
+        }
+    }
+
+    /// Moves the Agent's clock forward and closes the prompts that have had no report for too
+    /// long, before a call changes state.
     fn tick(&mut self) {
         self.api.advance(self.started.elapsed());
     }
@@ -138,7 +147,14 @@ async fn watch_departures(connection: &Connection) -> zbus::Result<()> {
                             .interface::<_, AgentService>(AGENT_OBJECT_PATH)
                             .await
                         {
-                            service.get_mut().await.api.peer_left(name);
+                            let notes = {
+                                let mut service = service.get_mut().await;
+                                service.api.peer_left(name);
+                                service.api.take_closures()
+                            };
+                            for note in &notes {
+                                send(&connection, note).await;
+                            }
                         }
                     }
                 }
@@ -186,7 +202,17 @@ fn to_fdo(error: ApiError) -> fdo::Error {
 async fn send(connection: &Connection, note: &Notification) {
     let peer = Some(note.peer.0.as_str());
     let prompt = note.prompt_id.as_str();
-    let sent = if note.signal == "MethodsAvailable" {
+    let sent = if note.signal == "Closed" {
+        connection
+            .emit_signal(
+                peer,
+                AGENT_OBJECT_PATH,
+                AGENT_INTERFACE,
+                note.signal,
+                &(prompt,),
+            )
+            .await
+    } else if note.signal == "MethodsAvailable" {
         connection
             .emit_signal(
                 peer,
@@ -233,9 +259,11 @@ impl AgentService {
             .ok_or_else(|| to_fdo(ApiError::Denied))?
             .as_str()
             .to_string();
-        self.api
-            .open_prompt_from(caller, &opener, prompt_id, subject)
-            .map_err(to_fdo)
+        let result = self
+            .api
+            .open_prompt_from(caller, &opener, prompt_id, subject);
+        self.flush(connection).await;
+        result.map_err(to_fdo)
     }
 
     /// Changes one part of a prompt's state and signals the subscribed peers. `signal` is one
@@ -251,11 +279,9 @@ impl AgentService {
         self.tick();
         let caller = caller_of(connection, header.sender()).await;
         let values: Vec<&str> = values.iter().map(String::as_str).collect();
-        let notes = self
-            .api
-            .report_state(caller, prompt_id, signal, &values)
-            .map_err(to_fdo)?;
-        for note in &notes {
+        let result = self.api.report_state(caller, prompt_id, signal, &values);
+        self.flush(connection).await;
+        for note in &result.map_err(to_fdo)? {
             send(connection, note).await;
         }
         Ok(())
@@ -293,9 +319,28 @@ impl AgentService {
             .ok_or_else(|| to_fdo(ApiError::Denied))?
             .as_str()
             .to_string();
-        self.api
-            .subscribe(caller, &sender, prompt_id)
-            .map_err(to_fdo)
+        let result = self.api.subscribe(caller, &sender, prompt_id);
+        self.flush(connection).await;
+        result.map_err(to_fdo)
+    }
+
+    /// Stops the signals of the prompt to the calling connection.
+    async fn unsubscribe(
+        &mut self,
+        prompt_id: &str,
+        #[zbus(header)] header: Header<'_>,
+        #[zbus(connection)] connection: &Connection,
+    ) -> fdo::Result<()> {
+        self.tick();
+        let caller = caller_of(connection, header.sender()).await;
+        let sender = header
+            .sender()
+            .ok_or_else(|| to_fdo(ApiError::Denied))?
+            .as_str()
+            .to_string();
+        let result = self.api.unsubscribe(caller, &sender, prompt_id);
+        self.flush(connection).await;
+        result.map_err(to_fdo)
     }
 
     /// Closes a prompt opened by the caller.
@@ -307,7 +352,9 @@ impl AgentService {
     ) -> fdo::Result<()> {
         self.tick();
         let caller = caller_of(connection, header.sender()).await;
-        self.api.close_prompt(caller, prompt_id).map_err(to_fdo)
+        let result = self.api.close_prompt(caller, prompt_id);
+        self.flush(connection).await;
+        result.map_err(to_fdo)
     }
 
     /// Returns the caller's user policy as TOML text.
