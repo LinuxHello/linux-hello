@@ -2,11 +2,11 @@
 //!
 //! A prompt is one authentication attempt shown by one host (a login manager, the lock
 //! screen, a `sudo` conversation). The PAM module opens it and reports the live state; the
-//! prompt component reads it. The store decides who may do what, as ADR-0014 requires: only
-//! the PAM module of the user being authenticated (root, or the user's own uid) can open a
-//! prompt for that user; only the opener can change or close it; only the opener, and for a
-//! prompt that root opened the subject user and the configured prompt-host users, can read
-//! it or be told about changes; a refusal about a prompt the caller did not open looks the
+//! prompt component reads it. The store decides who may do what, as ADR-0014 and its
+//! amendment of 2026-11-16 require: only root or the user being authenticated can open a
+//! prompt for that user; a prompt belongs to the uid that opened it, and only that uid can
+//! change or close it; only that uid, and for a prompt that root opened the subject user
+//! and the configured prompt-host users, can read it or be told about changes; a refusal about a prompt the caller did not open looks the
 //! same whether the prompt exists or not (`open` tells a caller only about its own prompts);
 //! and no user can fill the store.
 //!
@@ -16,7 +16,10 @@
 //! whether it exists (`user_cannot_block_roots_prompt_by_opening_its_id_first`,
 //! `prompt_host_never_reads_state_published_by_an_unprivileged_squatter`,
 //! `open_does_not_reveal_whether_a_prompt_exists`). Every process of one uid is the same
-//! caller to the store: it cannot tell the PAM module from another process of that user.
+//! caller to the store: it cannot tell the PAM module from another process of that user, and
+//! by decision (ADR-0014, amendment 2026-11-16) it is not meant to. A process of the user can
+//! report on, close or subscribe to the user's prompts, so the state a prompt shows is an
+//! indicator and carries no authority; the authentication itself is decided by the Agent.
 //!
 //! The store takes the caller's uid as an argument. The D-Bus layer reads it from the bus
 //! peer credentials; the store never trusts a uid that came inside a message. It sends
