@@ -25,7 +25,7 @@ use zbus::message::Header;
 use zbus::names::{BusName, UniqueName};
 use zbus::{connection, interface, Connection};
 
-use crate::api::{Api, ApiError, Caller, Notification};
+use crate::api::{Api, ApiError, Caller, Notification, PeerName};
 use crate::audit::Audit;
 use crate::policy::user_store::UserPolicyStore;
 use crate::state::Config;
@@ -113,19 +113,25 @@ pub async fn serve_with_audit(
 }
 
 /// The caller as the bus describes it: the uid of the sender's connection, or none when there is
-/// no sender or the bus does not answer.
+/// no sender or the bus does not answer, and the sender's unique bus name from the message header
+/// (the bus daemon sets it; the caller cannot).
 async fn caller_of(connection: &Connection, sender: Option<&UniqueName<'_>>) -> Caller {
     let Some(sender) = sender else {
-        return Caller { uid: None };
+        return Caller {
+            uid: None,
+            peer: None,
+        };
     };
+    let peer = PeerName::new(sender.as_str());
     let Ok(bus) = fdo::DBusProxy::new(connection).await else {
-        return Caller { uid: None };
+        return Caller { uid: None, peer };
     };
     let credentials = bus
         .get_connection_credentials(BusName::from(sender.clone()))
         .await;
     Caller {
         uid: credentials.ok().and_then(|c| c.unix_user_id()),
+        peer,
     }
 }
 

@@ -46,7 +46,10 @@ fuzz_target!(|data: &[u8]| {
     for record in data.chunks_exact(3) {
         let (b0, b1, b2) = (record[0], record[1], record[2]);
         let who = CALLERS[usize::from(b0 % 6)];
-        let caller = Caller { uid: who };
+        let caller = Caller {
+            uid: who,
+            peer: None,
+        };
         let id = format!("{b2:064x}");
         let peer = format!(":1.{}", b2 % 20);
         let subject = match b2 % 3 {
