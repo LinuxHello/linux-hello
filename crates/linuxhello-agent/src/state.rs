@@ -26,7 +26,7 @@
 //! Security properties: `unprivileged_process_cannot_publish_method_state_for_another_user`
 //! (P-04) and `method_state_is_not_broadcast_to_other_users` (P-05).
 //!
-//! C4 component: `authState` ([workspace.dsl](https://github.com/LinuxHello/architecture/blob/main/workspace.dsl))
+//! C4 component: `authState` ([workspace.dsl](https://github.com/LinuxHello/linux-hello-architecture/blob/main/workspace.dsl))
 
 use std::collections::HashMap;
 use std::time::Duration;

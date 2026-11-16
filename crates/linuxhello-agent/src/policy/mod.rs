@@ -2,7 +2,7 @@
 //! answers which methods, providers and prompts apply. It fails closed: a policy it
 //! cannot parse allows the PIN only. Semantics: `docs/architecture/policy-semantics.md`.
 //!
-//! C4 component: `policyEngine` ([workspace.dsl](https://github.com/LinuxHello/architecture/blob/main/workspace.dsl))
+//! C4 component: `policyEngine` ([workspace.dsl](https://github.com/LinuxHello/linux-hello-architecture/blob/main/workspace.dsl))
 
 /// The built-in default policy layer (`default_layer`).
 pub mod defaults;

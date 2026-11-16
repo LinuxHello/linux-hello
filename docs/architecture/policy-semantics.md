@@ -6,13 +6,13 @@ status: draft
 owner: "@atterdag"
 concepts: [policy, fail-closed, routing-policy]
 tags: [architecture, policy]
-sources: ["https://github.com/LinuxHello/architecture/blob/main/arc42/08-crosscutting-concepts.md", "../../policy/policy.example.toml"]
+sources: ["https://github.com/LinuxHello/linux-hello-architecture/blob/main/arc42/08-crosscutting-concepts.md", "../../policy/policy.example.toml"]
 date: 2026-11-01
 ---
 
 # Policy semantics
 
-This note makes the [Policy concept in Arc42 section 8](https://github.com/LinuxHello/architecture/blob/main/arc42/08-crosscutting-concepts.md#policy) precise enough to implement and test. The Routing Policy Engine lives in the Agent (`crates/linuxhello-agent`, module `policy`). Every rule below has a security property and a named test in [docs/security/](../security/README.md).
+This note makes the [Policy concept in Arc42 section 8](https://github.com/LinuxHello/linux-hello-architecture/blob/main/arc42/08-crosscutting-concepts.md#policy) precise enough to implement and test. The Routing Policy Engine lives in the Agent (`crates/linuxhello-agent`, module `policy`). Every rule below has a security property and a named test in [docs/security/](../security/README.md).
 
 ## Schema
 
@@ -79,7 +79,7 @@ Merging uses "most restrictive" per key:
 ## Layering
 
 1. Merge all admin files (`/etc/linuxhello/policy.d/*.toml`, in name order) into one admin layer, most restrictive per key.
-2. For each key outside `[rp_class.*]`: if the admin layer sets it, the admin value is effective and the key is **managed**. Otherwise the effective value is the most restrictive of the default and the user value (the user's layer, kept by the Agent in `/var/lib/linuxhello/users/<uid>/policy.toml` and set over D-Bus, [ADR-0018](https://github.com/LinuxHello/architecture/blob/main/adr/0018-user-policy-layer.md)). The user can tighten the defaults, never loosen them; only an admin can loosen a default.
+2. For each key outside `[rp_class.*]`: if the admin layer sets it, the admin value is effective and the key is **managed**. Otherwise the effective value is the most restrictive of the default and the user value (the user's layer, kept by the Agent in `/var/lib/linuxhello/users/<uid>/policy.toml` and set over D-Bus, [ADR-0018](https://github.com/LinuxHello/linux-hello-architecture/blob/main/adr/0018-user-policy-layer.md)). The user can tighten the defaults, never loosen them; only an admin can loosen a default.
 3. The user's `[rp_class.*]` tables are kept apart from the admin's, also when they have the same name: a user's patterns never join an admin class. For a relying party, the admin's classes give a decision as under *Queries*; if a user class matches too, the answer is the stricter of the two, key by key. A user class therefore cannot lower a default (`prompt = "none"` stays `presence`) or an admin class, even with a more specific pattern.
 4. Then apply the invariants below.
 

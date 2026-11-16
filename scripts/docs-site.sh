@@ -96,10 +96,10 @@ code { font-size: .95em; }
 <a href="https://github.com/LinuxHello/linux-hello/commit/$commit"><code>${commit:0:7}</code></a>.
 Everything here is generated from that commit: rustdoc with private items, and for every crate target a dependency graph
 (modules, types and traits; solid edges "owns", dashed "uses") and a structure tree, made with cargo-modules $cargo_modules_version
-(<a href="https://github.com/LinuxHello/architecture/blob/main/adr/0008-code-documentation-mapped-to-c4.md">ADR-0008</a>).</p>
+(<a href="https://github.com/LinuxHello/linux-hello-architecture/blob/main/adr/0008-code-documentation-mapped-to-c4.md">ADR-0008</a>).</p>
 <p>Levels 1 to 3 (system context, containers, components) are in the C4 model,
-<a href="https://github.com/LinuxHello/architecture/blob/main/workspace.dsl">workspace.dsl</a>, and the
-<a href="https://github.com/LinuxHello/architecture/blob/main/arc42/README.md">Arc42 sections</a>.</p>
+<a href="https://github.com/LinuxHello/linux-hello-architecture/blob/main/workspace.dsl">workspace.dsl</a>, and the
+<a href="https://github.com/LinuxHello/linux-hello-architecture/blob/main/arc42/README.md">Arc42 sections</a>.</p>
 <table>
 <thead><tr><th>C4 element</th><th>Crate target / module</th><th colspan="3">Code level</th></tr></thead>
 <tbody>

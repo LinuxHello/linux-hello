@@ -14,7 +14,7 @@
 //! (P-13, partly: the events that exist so far). P-27 is covered by
 //! `every_unlock_signature_pin_change_and_reset_is_audited` for the same events only.
 //!
-//! C4 component: `auditLog` ([workspace.dsl](https://github.com/LinuxHello/architecture/blob/main/workspace.dsl))
+//! C4 component: `auditLog` ([workspace.dsl](https://github.com/LinuxHello/linux-hello-architecture/blob/main/workspace.dsl))
 
 use std::collections::{HashMap, VecDeque};
 use std::os::unix::net::UnixDatagram;

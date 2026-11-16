@@ -52,7 +52,7 @@ Semantics: [policy-semantics.md](../architecture/policy-semantics.md). Tests liv
 
 ### Method state (Agent)
 
-[ADR-0014](https://github.com/LinuxHello/architecture/blob/main/adr/0014-agent-bus.md). Tests live in `crates/linuxhello-agent/` (`src/state.rs`, `src/api.rs`, `tests/`). The system-bus policy and the Agent as a system service are not shipped yet, so these hold for the code, not yet for a deployment.
+[ADR-0014](https://github.com/LinuxHello/linux-hello-architecture/blob/main/adr/0014-agent-bus.md). Tests live in `crates/linuxhello-agent/` (`src/state.rs`, `src/api.rs`, `tests/`). The system-bus policy and the Agent as a system service are not shipped yet, so these hold for the code, not yet for a deployment.
 
 | Property | Test |
 | :-- | :-- |
@@ -67,7 +67,7 @@ Semantics: [policy-semantics.md](../architecture/policy-semantics.md). Tests liv
 
 ### User policy layer (Agent)
 
-[ADR-0018](https://github.com/LinuxHello/architecture/blob/main/adr/0018-user-policy-layer.md). Tests are in `crates/linuxhello-agent/src/policy/user_store.rs` (the store) and `src/api.rs`, `tests/bus.rs` (the D-Bus methods). The names `unparseable_user_policy_is_refused_on_write` and `oversized_user_policy_is_refused_on_write` exist at both levels.
+[ADR-0018](https://github.com/LinuxHello/linux-hello-architecture/blob/main/adr/0018-user-policy-layer.md). Tests are in `crates/linuxhello-agent/src/policy/user_store.rs` (the store) and `src/api.rs`, `tests/bus.rs` (the D-Bus methods). The names `unparseable_user_policy_is_refused_on_write` and `oversized_user_policy_is_refused_on_write` exist at both levels.
 
 | Property | Test |
 | :-- | :-- |

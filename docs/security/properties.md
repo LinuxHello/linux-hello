@@ -6,7 +6,7 @@ status: draft
 owner: "@atterdag"
 concepts: [security-properties, tests, threat-model]
 tags: [security, properties, tests]
-sources: ["threat-model.md", "README.md", "../../SECURITY.md", "https://github.com/LinuxHello/architecture/blob/main/workspace.dsl"]
+sources: ["threat-model.md", "README.md", "../../SECURITY.md", "https://github.com/LinuxHello/linux-hello-architecture/blob/main/workspace.dsl"]
 date: 2026-11-08
 ---
 
@@ -19,7 +19,7 @@ Properties that already have a passing test are in the [README](README.md#proper
 How to read the table:
 
 - **Test**: the function name in the owner's `tests/security_properties.rs`. A name with a *CI job* mark is not a Rust test and has no placeholder yet.
-- **Owner**: the container id in [workspace.dsl](https://github.com/LinuxHello/architecture/blob/main/workspace.dsl) and its crate.
+- **Owner**: the container id in [workspace.dsl](https://github.com/LinuxHello/linux-hello-architecture/blob/main/workspace.dsl) and its crate.
 - **Blocked by**: what has to be decided or built before the test can be written for real.
 
 ## Callers and the D-Bus API
@@ -27,8 +27,8 @@ How to read the table:
 | Id | Property | Test | Owner | Blocked by |
 | :-- | :-- | :-- | :-- | :-- |
 | P-01 | A caller whose claimed origin differs from the identity the portal or bus verified is refused | `caller_from_other_origin_is_refused` | `agent`, crate `linuxhello-agent` | Origin verification ([threat model, open question 4](threat-model.md#open-questions)); the Agent's D-Bus API |
-| P-02 | A caller whose peer credentials cannot be read is refused | `caller_without_peer_credentials_is_refused` | `agent` | **Tested** at the request layer (`api.rs`, `tests/security_properties.rs`); remaining: the Agent running as a system service that supplies the uid ([ADR-0014](https://github.com/LinuxHello/architecture/blob/main/adr/0014-agent-bus.md)) |
-| P-03 | A request for one relying party is never answered with another relying party's credential | `credential_for_another_relying_party_is_never_returned` (TPM), `kpxc_credential_for_another_relying_party_is_never_returned` (KeePassXC) | `tpmProvider`, crate `linuxhello-tpm-provider`; `kpxcBridge`, crate `linuxhello-kpxc-bridge` | Provider interface ([ADR-0005](https://github.com/LinuxHello/architecture/blob/main/adr/0005-provider-path.md)) |
+| P-02 | A caller whose peer credentials cannot be read is refused | `caller_without_peer_credentials_is_refused` | `agent` | **Tested** at the request layer (`api.rs`, `tests/security_properties.rs`); remaining: the Agent running as a system service that supplies the uid ([ADR-0014](https://github.com/LinuxHello/linux-hello-architecture/blob/main/adr/0014-agent-bus.md)) |
+| P-03 | A request for one relying party is never answered with another relying party's credential | `credential_for_another_relying_party_is_never_returned` (TPM), `kpxc_credential_for_another_relying_party_is_never_returned` (KeePassXC) | `tpmProvider`, crate `linuxhello-tpm-provider`; `kpxcBridge`, crate `linuxhello-kpxc-bridge` | Provider interface ([ADR-0005](https://github.com/LinuxHello/linux-hello-architecture/blob/main/adr/0005-provider-path.md)) |
 | P-04 | A process other than the PAM module of the user being authenticated cannot publish method state for that user | `unprivileged_process_cannot_publish_method_state_for_another_user` | `agent` | **Tested** at the store layer (`state.rs`); remaining: the system-bus policy that lets only the Agent's user own the name ([open question 3](threat-model.md#open-questions)) |
 | P-05 | Method state is delivered to the user who is authenticating and to nobody else | `method_state_is_not_broadcast_to_other_users` | `agent` | **Tested** at the store layer, and as `signals_reach_only_the_subscribed_peer` over a private bus (`tests/bus.rs`); remaining: the same bus policy |
 
@@ -53,7 +53,7 @@ How to read the table:
 
 | Id | Property | Test | Owner | Blocked by |
 | :-- | :-- | :-- | :-- | :-- |
-| P-17 | The account password never unlocks a key | `account_password_never_unlocks_a_key` | `agent` | Reset coordinator ([ADR-0003](https://github.com/LinuxHello/architecture/blob/main/adr/0003-destructive-reset.md)) |
+| P-17 | The account password never unlocks a key | `account_password_never_unlocks_a_key` | `agent` | Reset coordinator ([ADR-0003](https://github.com/LinuxHello/linux-hello-architecture/blob/main/adr/0003-destructive-reset.md)) |
 | P-18 | A reset destroys the root key and every child key | `reset_destroys_root_key_and_every_child_key` | `tpmProvider` | Same; TPM key service |
 | P-19 | A reset without the account or admin authentication is refused | `reset_without_account_authentication_is_refused` | `agent` | Reset coordinator |
 
@@ -78,7 +78,7 @@ Each parser also gets a cargo-fuzz target, as [AGENTS.md](../../AGENTS.md#gates)
 | Id | Property | Test | Owner | Blocked by |
 | :-- | :-- | :-- | :-- | :-- |
 | P-24 | A daemon whose AppArmor profile is not loaded in enforce mode refuses to start | `agent_refuses_to_start_without_enforced_apparmor_profile`, `tpm_provider_refuses_to_start_without_enforced_apparmor_profile`, `kpxc_bridge_refuses_to_start_without_enforced_apparmor_profile` | `agent`, `tpmProvider`, `kpxcBridge` | The daemons' start-up code |
-| P-25 | Only the Agent and the TPM provider may open the TPM device, and no process may trace them | *CI job:* `apparmor_only_agent_and_tpm_provider_open_tpm_device`, `apparmor_denies_ptrace_of_agent_and_providers` | `secProfiles`, directory `security/apparmor` | The CI job that loads the profiles ([Arc42 section 8](https://github.com/LinuxHello/architecture/blob/main/arc42/08-crosscutting-concepts.md#runtime-confinement-and-detection)) |
+| P-25 | Only the Agent and the TPM provider may open the TPM device, and no process may trace them | *CI job:* `apparmor_only_agent_and_tpm_provider_open_tpm_device`, `apparmor_denies_ptrace_of_agent_and_providers` | `secProfiles`, directory `security/apparmor` | The CI job that loads the profiles ([Arc42 section 8](https://github.com/LinuxHello/linux-hello-architecture/blob/main/arc42/08-crosscutting-concepts.md#runtime-confinement-and-detection)) |
 | P-26 | No Linux Hello process may open an internet socket | *CI job:* `apparmor_denies_inet_sockets_to_every_daemon` | `secProfiles` | Same |
 | P-27 | Every unlock, signature, PIN change and reset is audited | `every_unlock_signature_pin_change_and_reset_is_audited` | `agent` | Audit logger (the five events that exist are tested; the rest wait for their components) |
 | P-28 | A status condition is computed only from the policy files on disk through the Agent's own loader; no command probes the TPM, a service or the bus; every condition has one stable code, a severity and one fixed sentence; `status` never prints a file name or a path; `doctor` names the file; neither command writes | `status_prints_one_line_per_condition_with_code_severity_and_sentence`, `status_never_prints_a_file_name`, `doctor_exits_nonzero_and_names_the_file_for_a_policy_that_does_not_parse`, `status_and_doctor_never_write` | `cli` | **Tested** in `crates/linuxhello-ctl/src/status/tests.rs` (the container's own tests, not `tests/security_properties.rs`) |
