@@ -17,6 +17,7 @@
 //!
 //! C4 component: `dbusApi` ([workspace.dsl](https://github.com/LinuxHello/architecture/blob/main/workspace.dsl))
 
+use futures_lite::StreamExt;
 use linuxhello_dbus::{AGENT_BUS_NAME, AGENT_INTERFACE, AGENT_OBJECT_PATH};
 use std::time::Instant;
 
@@ -102,14 +103,49 @@ pub async fn serve_with_audit(
     user_policies: Option<UserPolicyStore>,
     audit: Audit,
 ) -> zbus::Result<Connection> {
-    builder
+    let connection = builder
         .name(AGENT_BUS_NAME)
         .serve_at(
             AGENT_OBJECT_PATH,
             AgentService::with_audit(config, user_policies, audit),
         )
         .build()
-        .await
+        .await?;
+    watch_departures(&connection).await?;
+    Ok(connection)
+}
+
+/// Asks the bus for `NameOwnerChanged` and, for every unique name that loses its owner, removes
+/// the prompts that connection opened and its subscriptions
+/// (`a_prompt_is_removed_when_its_opener_leaves_the_bus`). The leaving connection is the first
+/// argument of the signal; the sender of the signal is the bus itself.
+async fn watch_departures(connection: &Connection) -> zbus::Result<()> {
+    let bus = fdo::DBusProxy::new(connection).await?;
+    let mut changes = bus.receive_name_owner_changed().await?;
+    let connection = connection.clone();
+    // The bus connection drives its own I/O; this thread only waits for the signal. It ends
+    // when the signal stream ends, that is when the connection is closed.
+    std::thread::Builder::new()
+        .name("linuxhello-agent-watch-departures".to_string())
+        .spawn(move || {
+            futures_lite::future::block_on(async move {
+                while let Some(change) = changes.next().await {
+                    let Ok(args) = change.args() else { continue };
+                    let name = args.name().as_str();
+                    if name.starts_with(':') && args.new_owner().is_none() {
+                        if let Ok(service) = connection
+                            .object_server()
+                            .interface::<_, AgentService>(AGENT_OBJECT_PATH)
+                            .await
+                        {
+                            service.get_mut().await.api.peer_left(name);
+                        }
+                    }
+                }
+            });
+        })
+        .map_err(|e| zbus::Error::Failure(e.to_string()))?;
+    Ok(())
 }
 
 /// The caller as the bus describes it: the uid of the sender's connection, or none when there is
@@ -192,8 +228,13 @@ impl AgentService {
             uid => Some(u32::try_from(uid).map_err(|_| to_fdo(ApiError::InvalidArgument))?),
         };
         let caller = caller_of(connection, header.sender()).await;
+        let opener = header
+            .sender()
+            .ok_or_else(|| to_fdo(ApiError::Denied))?
+            .as_str()
+            .to_string();
         self.api
-            .open_prompt(caller, prompt_id, subject)
+            .open_prompt_from(caller, &opener, prompt_id, subject)
             .map_err(to_fdo)
     }
 

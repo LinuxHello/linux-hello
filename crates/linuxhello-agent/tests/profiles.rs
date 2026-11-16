@@ -237,6 +237,30 @@ fn agent_profile_denies_home_directories_and_names_the_registered_bus_name() {
         .any(|r| r.starts_with("dbus bind") && r.contains(&name)));
 }
 
+/// The statements of the AppArmor profile that begin with `prefix`, with their continuation
+/// lines joined by one space.
+fn statements(prefix: &str) -> Vec<String> {
+    profile_rules()
+        .join(" ")
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| s.starts_with(prefix))
+        .collect()
+}
+
+#[test]
+fn agent_profile_receives_only_name_owner_changed_from_the_bus_itself() {
+    let received = statements("dbus receive");
+    assert_eq!(received.len(), 1, "one receive rule: {received:?}");
+    let rule = &received[0];
+    assert!(rule.contains("path=/org/freedesktop/DBus"), "{rule}");
+    assert!(rule.contains("interface=org.freedesktop.DBus"), "{rule}");
+    assert!(rule.contains("member=NameOwnerChanged"), "{rule}");
+    assert!(rule.contains("peer=(name=org.freedesktop.DBus)"), "{rule}");
+    // No wildcard member: the rule names the one signal.
+    assert!(!rule.contains('{') && !rule.contains('*'), "{rule}");
+}
+
 #[test]
 fn agent_profile_parses() {
     let profile = Path::new(SECURITY).join("apparmor/linuxhello-agent");

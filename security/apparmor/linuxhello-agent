@@ -23,6 +23,11 @@ profile linuxhello-agent /usr/libexec/linuxhello/linuxhello-agent flags=(attach_
   dbus send bus=system path=/org/freedesktop/DBus interface=org.freedesktop.DBus
        member={Hello,RequestName,ReleaseName,GetConnectionCredentials,AddMatch,RemoveMatch}
        peer=(name=org.freedesktop.DBus),
+  # The bus tells the Agent when a connection leaves, so that the prompts it opened and its
+  # subscriptions are removed (NameOwnerChanged, from the bus itself and nothing else).
+  dbus receive bus=system path=/org/freedesktop/DBus interface=org.freedesktop.DBus
+       member=NameOwnerChanged
+       peer=(name=org.freedesktop.DBus),
 
   # The only device: the TPM resource manager.
   /dev/tpmrm0 rw,

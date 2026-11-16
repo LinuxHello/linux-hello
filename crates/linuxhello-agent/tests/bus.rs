@@ -321,3 +321,37 @@ fn a_refusal_over_the_bus_is_audited_with_the_callers_unique_name() {
         assert_eq!(peer, Some(name));
     });
 }
+
+#[test]
+fn a_prompt_is_removed_when_its_opener_leaves_the_bus() {
+    let daemon = Daemon::start();
+    run(async {
+        let _service = serve(
+            Builder::address(daemon.address.as_str()),
+            Config::new(vec![]),
+        )
+        .await
+        .expect("serve the Agent");
+        let (opener, reader) = (connect(&daemon).await, connect(&daemon).await);
+        let id = pid("p1");
+        call(&opener, "OpenPrompt", &(id.as_str(), i64::from(my_uid())))
+            .await
+            .expect("open the prompt");
+        // While the opener is on the bus, another connection of the same user reads the prompt.
+        call(&reader, "GetState", &(id.as_str(),))
+            .await
+            .expect("the prompt exists");
+        opener.graceful_shutdown().await;
+        // The bus tells the Agent asynchronously, so look for a while.
+        let mut removed = false;
+        for _ in 0..40 {
+            let seen = call(&reader, "GetState", &(id.as_str(),)).await;
+            if is_error(&seen, "org.freedesktop.DBus.Error.AccessDenied") {
+                removed = true;
+                break;
+            }
+            async_io::Timer::after(std::time::Duration::from_millis(100)).await;
+        }
+        assert!(removed, "the prompt of a connection that left must be gone");
+    });
+}
