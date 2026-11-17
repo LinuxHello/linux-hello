@@ -73,7 +73,20 @@ for a in ["vmtest","tty2","s9"]:
     d.update(len(a).to_bytes(8,"big"));d.update(a.encode())
 print(d.hexdigest())')
 LHUID=$(id -u lh)
-check "a_user_opens_a_prompt_for_itself" 'call lh $N $P $N OpenPrompt sx $ID $LHUID; [ $? -eq 0 ]'
+# A prompt lives as long as the connection that opened it (the Agent drops it when that connection
+# leaves the bus), so the opener is a process that keeps its connection while the checks run.
+cat > /tmp/opener.py <<'PY'
+import sys, time, dbus
+N, P = "io.github.LinuxHello.Agent1", "/io/github/LinuxHello/Agent1"
+dbus.Interface(dbus.SystemBus().get_object(N, P), N).OpenPrompt(sys.argv[1], dbus.Int64(int(sys.argv[2])))
+print("OPENED", flush=True)
+time.sleep(int(sys.argv[3]))
+PY
+chmod 644 /tmp/opener.py
+sudo -u lh python3 /tmp/opener.py $ID $LHUID 90 > /tmp/opener.out 2>&1 &
+OPENER=$!
+for _ in 1 2 3 4 5 6 7 8 9 10; do grep -q OPENED /tmp/opener.out && break; sleep 1; done
+check "a_user_opens_a_prompt_for_itself" 'grep -q OPENED /tmp/opener.out'
 check "the_user_reads_its_own_prompt" 'call lh $N $P $N GetState s $ID | grep -q idle'
 for op in "GetState s $ID" "Subscribe s $ID" "ReportState ssas $ID State 1 scanning"; do
   check "another_user_is_refused_(${op%% *})" 'call nobody $N $P $N $op | grep -q "Access denied"'
@@ -116,6 +129,11 @@ wait
 check "a_subscriber_hears_the_agents_signal" 'grep -c "HEARD State .*scanning" /tmp/sub.out | grep -qx 1'
 check "forged_signals_reach_nobody" '! grep -q forged /tmp/sub.out /tmp/by.out'
 check "a_bystander_hears_nothing" '! grep -q HEARD /tmp/by.out'
+
+# The prompt goes with the connection that opened it (linux-hello#201).
+sudo pkill -f "/tmp/opener.py" ; wait $OPENER 2>/dev/null
+sleep 2
+check "a_prompt_is_removed_when_its_opener_leaves_the_bus" 'call lh $N $P $N GetState s $ID | grep -q "Access denied"'
 
 # Fail closed: the unit must refuse to start unless the profile is loaded and enforcing.
 sudo systemctl stop linuxhello-agent; sudo systemctl reset-failed linuxhello-agent 2>/dev/null
