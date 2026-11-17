@@ -17,7 +17,7 @@
 set -uo pipefail
 cd "$(dirname "$0")/../.."
 
-if [ "${GITHUB_ACTIONS:-}" != true ] && [ "${LH_CONFINEMENT_INSTALL:-}" != yes ]; then
+if [[ "${GITHUB_ACTIONS:-}" != true && "${LH_CONFINEMENT_INSTALL:-}" != yes ]]; then
   echo "refusing to install the Agent on this machine: this script is for a CI runner or a throwaway VM." >&2
   echo "Set LH_CONFINEMENT_INSTALL=yes only in a VM you can delete." >&2
   exit 2
@@ -28,7 +28,7 @@ sec=$root/security
 bin=$root/target/x86_64-unknown-linux-musl/release/linuxhello-agent
 for f in "$bin" "$sec/dbus/io.github.LinuxHello.Agent1.conf" "$sec/systemd/linuxhello-agent.service" \
          "$sec/systemd/linuxhello.sysusers" "$sec/apparmor/linuxhello-agent"; do
-  [ -f "$f" ] || { echo "$f not found" >&2; exit 2; }
+  [[ -f "$f" ]] || { echo "$f not found" >&2; exit 2; }
 done
 
 # The test users of the checks below: lh is an ordinary user, nobody exists already.
@@ -36,8 +36,9 @@ id lh >/dev/null 2>&1 || sudo useradd --create-home --shell /usr/sbin/nologin lh
 
 set +e
 N=io.github.LinuxHello.Agent1; P=/io/github/LinuxHello/Agent1; fail=0
-check() { # name, command that succeeds when the property holds
-  if eval "$2" >/dev/null 2>&1; then echo "PASS $1"; else echo "FAIL $1"; fail=$((fail + 1)); fi
+check() { # name, command that succeeds when the property holds; a failure shows what the command said
+  local out
+  if out=$(eval "$2" 2>&1); then echo "PASS $1"; else echo "FAIL $1"; fail=$((fail + 1)); printf '     %s\n' "$(printf '%s' "$out" | head -3)"; fi
 }
 call() { sudo -u "$1" busctl --system call "${@:2}" 2>&1; }
 
@@ -137,9 +138,9 @@ RC=$?
 check "the_profile_really_denies_what_it_does_not_grant" '[ "$RC" -ne 0 ] && sudo journalctl -k --no-pager --since "-30sec" | grep "apparmor=\"DENIED\"" | grep -q "linuxhello-agent"'
 SC=$(systemd-analyze security linuxhello-agent --no-pager 2>&1 | tail -1)
 echo "INFO $SC"
-[ "$fail" -eq 0 ] && echo "ALL PASSED" || echo "$fail FAILED"
+[[ "$fail" -eq 0 ]] && echo "ALL PASSED" || echo "$fail FAILED"
 
-if [ "$fail" -ne 0 ]; then
+if [[ "$fail" -ne 0 ]]; then
   echo "---- journal of the unit"; sudo journalctl -u linuxhello-agent --no-pager | tail -40
   echo "---- AppArmor denials"; sudo journalctl -k --no-pager | grep 'apparmor="DENIED"' | tail -20
 fi

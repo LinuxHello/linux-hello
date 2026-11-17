@@ -182,7 +182,7 @@ jobs:
         run: rustup target add --toolchain "$(grep '^channel' rust-toolchain.toml | cut -d'"' -f2)" x86_64-unknown-linux-musl
       - name: Build the static Agent
         if: steps.scope.outputs.run == 'true'
-        run: cargo build --release --target x86_64-unknown-linux-musl -p linuxhello-agent
+        run: cargo build --locked --release --target x86_64-unknown-linux-musl -p linuxhello-agent
       - name: Install the Agent as a package would and check the confinement
         if: steps.scope.outputs.run == 'true'
         run: bash scripts/ci/confinement.sh
