@@ -21,7 +21,7 @@
 //! Not here yet: the control call on the bus, the PIN verifier that consumes a [`Submission`],
 //! the AppArmor rule and the unit settings for the socket, and the client in the PAM module.
 //! Nothing starts this socket in the Agent until the PIN path exists. Memory hygiene beyond
-//! [`Zeroizing`] (no `Debug` on secrets elsewhere, core dumps) is #189.
+//! [`Zeroizing`] is #189: the buffers and the missing `Debug` are tested here; core dumps are off in the unit (`LimitCORE=0`).
 //!
 //! Security property: `pin_is_never_a_dbus_message_body` (P-31) and the tests of this module.
 //!

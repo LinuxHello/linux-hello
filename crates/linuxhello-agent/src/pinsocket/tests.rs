@@ -254,3 +254,33 @@ fn a_silent_client_is_dropped() {
     });
     assert!(got.is_empty());
 }
+
+/// Whether `T` implements `Debug`, decided at compile time. The inherent constant wins when the
+/// bound holds; otherwise the trait's default `false` is used.
+trait NotDebug {
+    const IMPLEMENTS_DEBUG: bool = false;
+}
+impl<T> NotDebug for T {}
+struct Probe<T>(std::marker::PhantomData<T>);
+impl<T: std::fmt::Debug> Probe<T> {
+    const IMPLEMENTS_DEBUG: bool = true;
+}
+
+#[test]
+fn pin_buffers_are_cleared_after_use() {
+    // The PIN is held in a buffer that overwrites itself, and the type that carries it cannot be
+    // printed, so no log line can leak it.
+    let held: Zeroizing<Vec<u8>> = Submission {
+        subject: 1,
+        from: me(),
+        pin: Zeroizing::new(b"123456".to_vec()),
+    }
+    .pin;
+    assert_eq!(&held[..], b"123456");
+    let mut pin = held;
+    zeroize::Zeroize::zeroize(&mut *pin);
+    assert!(pin.iter().all(|byte| *byte == 0), "the buffer is wiped");
+    // The probe itself works: a type with Debug is seen, and a Submission is not.
+    const { assert!(Probe::<u8>::IMPLEMENTS_DEBUG) };
+    const { assert!(!Probe::<Submission>::IMPLEMENTS_DEBUG) };
+}
