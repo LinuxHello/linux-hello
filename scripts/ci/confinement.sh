@@ -130,6 +130,10 @@ check "a_subscriber_hears_the_agents_signal" 'grep -c "HEARD State .*scanning" /
 check "forged_signals_reach_nobody" '! grep -q forged /tmp/sub.out /tmp/by.out'
 check "a_bystander_hears_nothing" '! grep -q HEARD /tmp/by.out'
 
+# The watchdog (linux-hello#191): the unit has one, and the Agent has fed it since it started.
+check "the_unit_has_a_watchdog" '[[ "$(systemctl show linuxhello-agent -p WatchdogUSec --value)" == 30s ]]'
+check "the_agent_has_pinged_the_watchdog" '[[ "$(systemctl show linuxhello-agent -p WatchdogTimestampMonotonic --value)" != 0 ]]'
+
 # The prompt goes with the connection that opened it (linux-hello#201).
 sudo pkill -f "/tmp/opener.py" ; wait $OPENER 2>/dev/null
 sleep 2
