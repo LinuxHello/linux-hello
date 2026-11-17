@@ -199,6 +199,39 @@ The code level is published from `main` at <https://linuxhello.github.io/linux-h
 - Diagrams in Mermaid; C4 in Structurizr DSL (`workspace.dsl` in `LinuxHello/linux-hello-architecture`).
 - ADRs: Title, Status, Context, Decision, Consequences (what becomes easier and what becomes harder).
 - No preamble, closing offers or unfalsifiable superlatives ("bulletproof", "fully secure").
+- Write for a reader who is new to the subject; the next section says how.
+
+## Write for a reader who is new to the subject
+
+The maintainer's rule: a person with no earlier knowledge of the subject must be able to read a document and understand what is going on.
+
+**Where it applies.** Every note in `docs/` and in `LinuxHello/linux-hello-architecture` (the Arc42 sections, the ADRs, the spikes), every README and every guide. It does not apply to implementation briefs, doc comments, commit messages or pull request descriptions, which have their own rules above.
+
+**The reader to write for.** Someone who uses Linux and has programmed, but has never worked with passkeys, a TPM, PAM, D-Bus or the inside of KDE, and has not read any other page of the project. They arrive on this page from a link or a search and read it once, from the top.
+
+1. **Start with what and why.** The first paragraph of a note says in everyday words what the note is about, which problem it deals with and what the reader knows after reading it. It comes before any table, diagram or identifier.
+2. **Explain a term where it first appears in the note.** Give one clause or one sentence, and link the [glossary](https://github.com/LinuxHello/linux-hello-architecture/blob/main/arc42/12-glossary.md). Spell an abbreviation out the first time: "the Trusted Platform Module (TPM), a chip that keeps keys so that no software can copy them". Do this in every note, because the reader may start on any page.
+3. **Say what an outside program or standard is, and what Linux Hello uses it for,** the first time the note names it: "fprintd, the Linux service that reads fingerprint sensors".
+4. **Give every identifier its meaning in words.** Never write a bare `P-12`, `M2`, `UX3`, `L1`, `#139`, "spike 0120", "ADR-0020" or "option B" as if it explained itself. Say what it states, then give the identifier as the reference: "a malicious program running as the same user (actor M2 in the threat model)".
+5. **Give the reason and an example.** For every rule and decision say why it exists and what goes wrong without it. Show each new idea once with a concrete case: a real site, a real command, a real prompt.
+6. **Write full sentences.** Use a table for things the reader compares or looks up, and prose for reasoning. No fragments, no arrows (`→`) in place of verbs, and no brackets holding three references in a row.
+7. **Introduce every diagram.** One sentence before it says what it shows and how to read it; one sentence after it says what to notice. A diagram never stands alone under a heading.
+8. **Say what exists today.** Mark each part as built and tested, decided but not built, or still open. A newcomer cannot tell a design from a working program unless the text says so.
+9. **Describe the present design first.** What an earlier design was, and why it changed, belongs in the ADR or in one short paragraph at the end of the section, not inside the description.
+10. **Stay exact.** Plain does not mean vague. Keep the names, paths, commands and numbers, and put them after the explanation. Never drop a fact to make a text simpler; add the sentence that makes the fact understandable.
+11. **A new term goes into the glossary** in the same pull request.
+
+An example of the change this asks for.
+
+Before:
+
+> UV=1 only for a verification of this request or within a window of at most 60 s (ADR-0020).
+
+After:
+
+> A website can ask for *user verification*: proof that the person was checked just now, with a fingerprint, the face or the PIN, and is not merely sitting at the machine. Linux Hello answers "verified" (the UV flag of the CTAP protocol, the language a browser speaks to a security key) only when that check was made for this request, or at most 60 seconds before it. Without the limit a website would be told "verified" hours after the user last proved who they are ([ADR-0020](https://github.com/LinuxHello/linux-hello-architecture/blob/main/adr/0020-presence-and-verification.md)).
+
+**Before you call a document done,** read it as that reader. For every term, identifier and name, ask: is it explained on this page, or one link away? If a paragraph can only be understood by someone who took part in the work that led to it, rewrite the paragraph.
 
 ## Communication
 
