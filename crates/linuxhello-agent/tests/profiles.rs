@@ -193,7 +193,13 @@ fn agent_profile_grants_no_network_but_the_unix_socket() {
     assert!(rules.contains(&"deny network inet,".to_string()));
     assert!(rules.contains(&"deny network inet6,".to_string()));
     let allowed: Vec<&String> = rules.iter().filter(|r| r.starts_with("network")).collect();
-    assert_eq!(allowed, ["network unix stream,"], "no other network rule");
+    // The stream socket is the bus; the datagram socket is the watchdog's one message to the
+    // service manager (`agent_profile_allows_the_notify_socket_and_no_other_datagram_path`).
+    assert_eq!(
+        allowed,
+        ["network unix stream,", "network unix dgram,"],
+        "no other network rule"
+    );
 }
 
 /// Found by running the unit in the test VM: under systemd's mount namespace AppArmor sees the
@@ -313,4 +319,30 @@ fn agent_unit_restarts_after_a_pause_and_has_no_start_limit() {
         !s_keys.contains(&"StartLimitIntervalSec".to_string()),
         "StartLimitIntervalSec should not be in [Service]"
     );
+}
+
+#[test]
+fn agent_unit_has_a_watchdog_that_only_the_main_process_may_feed() {
+    let s = service_settings();
+    assert_eq!(only(&s, "WatchdogSec"), "30s");
+    assert_eq!(only(&s, "NotifyAccess"), "main");
+}
+
+#[test]
+fn agent_profile_allows_the_notify_socket_and_no_other_datagram_path() {
+    let profile = read("apparmor/linuxhello-agent");
+    let rules: Vec<&str> = profile
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.starts_with('#'))
+        .collect();
+    assert!(rules.contains(&"/run/systemd/notify w,"));
+    assert!(rules.contains(&"network unix dgram,"));
+    // Nothing else under /run is writable, and no other socket family is granted.
+    let writes_to_run: Vec<&&str> = rules
+        .iter()
+        .filter(|l| l.starts_with("/run/") && l.ends_with(" w,"))
+        .collect();
+    assert_eq!(writes_to_run, [&"/run/systemd/notify w,"]);
+    assert!(!rules.iter().any(|l| l.starts_with("network inet")));
 }
