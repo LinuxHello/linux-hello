@@ -120,6 +120,15 @@ pub async fn next_within(stream: &mut MessageStream, millis: u64) -> Option<Mess
     .await
 }
 
+/// The text a failed call carries, whatever the error's name.
+pub fn error_text(result: &zbus::Result<Message>) -> Option<String> {
+    match result {
+        Err(zbus::Error::MethodError(_, text, _)) => text.clone(),
+        Err(zbus::Error::FDO(e)) => Some(e.to_string()),
+        _ => None,
+    }
+}
+
 /// Whether a failed call is the D-Bus error with this name. `zbus` returns the standard errors
 /// as `Error::FDO` and any other as `Error::MethodError`.
 pub fn is_error(result: &zbus::Result<Message>, name: &str) -> bool {

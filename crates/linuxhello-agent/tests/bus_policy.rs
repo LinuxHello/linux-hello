@@ -162,9 +162,12 @@ fn any_user_can_call_the_agents_methods_but_not_its_other_interfaces() {
             .await;
         assert!(introspect.is_ok(), "introspection is allowed");
 
-        // A bad id reaches the Agent, which answers InvalidArgs: the bus let the call through.
+        // A bad id reaches the Agent, which answers InvalidArgument: the bus let the call through.
         let reached = call(&client, "GetState", &("not-a-prompt-id",)).await;
-        assert!(is_error(&reached, "org.freedesktop.DBus.Error.InvalidArgs"));
+        assert!(is_error(
+            &reached,
+            "io.github.LinuxHello.Error.InvalidArgument"
+        ));
 
         // Another interface of the same object is denied by the bus itself.
         let properties = client

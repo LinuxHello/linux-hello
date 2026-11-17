@@ -7,6 +7,7 @@
 
 use linuxhello_agent::api::{Api, ApiError, Caller};
 use linuxhello_agent::pinlock::PinLock;
+use linuxhello_agent::policy::user_store::UserPolicyStore;
 use linuxhello_agent::state::{Config, Error, Peer, StateStore, Update};
 use linuxhello_dbus::{PromptId, PromptState};
 
@@ -338,4 +339,31 @@ fn every_unlock_signature_pin_change_and_reset_is_audited() {
         .fields()
         .iter()
         .all(|(n, _)| *n != "LH_UID"));
+}
+
+/// P-04 and P-05: the text of an `InvalidPolicy` error is the parser's message about the caller's
+/// own text. It carries nothing of another user's layer, and no user number.
+#[test]
+fn an_invalid_policy_text_carries_nothing_of_other_users() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let mut api = Api::new(Config::new(vec![]))
+        .with_user_policy_store(Some(UserPolicyStore::new(tmp.path())));
+    let user = |uid| Caller {
+        uid: Some(uid),
+        peer: None,
+    };
+    let valid = "[context.sudo]\nmethods = [\"pin\", \"fingerprint\"]\nfactors = 2\nreverify_after = \"1h\"\n";
+    assert_eq!(api.set_user_policy(user(1000), valid), Ok(()));
+
+    let refused = api.set_user_policy(user(1001), "[methods]\nbiometrics_alowed = false\n");
+    let Err(ApiError::InvalidPolicy(text)) = refused else {
+        panic!("expected InvalidPolicy, got {refused:?}");
+    };
+    assert!(text.contains("biometrics_alowed"), "{text}");
+    for other in ["1000", "sudo", "fingerprint"] {
+        assert!(
+            !text.contains(other),
+            "the error text of user 1001 mentions {other:?}: {text}"
+        );
+    }
 }

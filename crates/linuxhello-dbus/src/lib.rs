@@ -21,6 +21,21 @@ pub const AGENT_OBJECT_PATH: &str = "/io/github/LinuxHello/Agent1";
 /// Interface of the Agent.
 pub const AGENT_INTERFACE: &str = "io.github.LinuxHello.Agent1";
 
+/// The prefix of every error name the Agent answers with (ADR-0014, amendment 2026-11-17).
+pub const ERROR_PREFIX: &str = "io.github.LinuxHello.Error";
+
+/// The closed set of error names after [`ERROR_PREFIX`]. A client matches the name, never the
+/// text; the text of every error is fixed except `InvalidPolicy`'s, which is the parser's message
+/// about the caller's own policy text.
+pub const ERRORS: &[&str] = &[
+    "Denied",
+    "LimitReached",
+    "InvalidArgument",
+    "InvalidPolicy",
+    "Unavailable",
+    "Damaged",
+];
+
 /// Method to report the current state.
 pub const METHOD_REPORT_STATE: &str = "ReportState";
 /// Method to retrieve the current state.
@@ -223,6 +238,15 @@ pub const SIGNALS: &[SignalSpec] = &[
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn error_names_are_a_closed_set_without_duplicates() {
+        let mut names: Vec<&str> = ERRORS.to_vec();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(names.len(), ERRORS.len());
+        assert_eq!(ERRORS.len(), 6);
+    }
+
     use super::*;
 
     #[test]

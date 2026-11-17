@@ -16,7 +16,7 @@ A prompt that has ended is not reopened. A `Closed` signal, or the client closin
 
 ## Order and retries
 
-The opener reopens first. A follower that subscribes before the prompt is back is refused (`AccessDenied`, the same answer as for a prompt that never existed), so it retries after 250 ms, doubling up to five seconds, until the subscription is accepted or the client gives up (`retry_delay`).
+The opener reopens first. A follower that subscribes before the prompt is back is refused (`Denied`, the same answer as for a prompt that never existed), so it retries after 250 ms, doubling up to five seconds, until the subscription is accepted or the client gives up (`retry_delay`).
 
 ## What does not survive
 
