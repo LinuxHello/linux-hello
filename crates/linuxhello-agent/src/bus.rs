@@ -124,6 +124,30 @@ pub async fn serve_with_audit(
     Ok(connection)
 }
 
+/// Whether the Agent's bus loop answers: a `Peer.Ping` to its own name goes through the bus daemon
+/// and back into the object server, and must be answered within `within`. The watchdog pings the
+/// service manager only after this returns true, so a hung loop is a missed ping
+/// (`a_bus_loop_that_answers_is_alive_and_an_absent_one_is_not`).
+pub async fn bus_alive(connection: &Connection, within: std::time::Duration) -> bool {
+    let ping = async {
+        connection
+            .call_method(
+                Some(AGENT_BUS_NAME),
+                AGENT_OBJECT_PATH,
+                Some("org.freedesktop.DBus.Peer"),
+                "Ping",
+                &(),
+            )
+            .await
+            .is_ok()
+    };
+    let timeout = async {
+        async_io::Timer::after(within).await;
+        false
+    };
+    futures_lite::future::or(ping, timeout).await
+}
+
 /// Asks the bus for `NameOwnerChanged` and, for every unique name that loses its owner, removes
 /// the prompts that connection opened and its subscriptions
 /// (`a_prompt_is_removed_when_its_opener_leaves_the_bus`). The leaving connection is the first

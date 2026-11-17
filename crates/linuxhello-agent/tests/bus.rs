@@ -510,3 +510,26 @@ fn a_subscriber_is_told_when_the_opener_leaves_the_bus() {
         assert_eq!(prompt, id.as_str());
     });
 }
+
+/// The watchdog pings the service manager only when the Agent's own bus loop answers
+/// (`bus_alive`): a bus where nobody owns the name is not alive, and a served Agent is.
+#[test]
+fn a_bus_loop_that_answers_is_alive_and_an_absent_one_is_not() {
+    use linuxhello_agent::bus::bus_alive;
+    use std::time::Duration;
+    let daemon = Daemon::start();
+    run(async {
+        let observer = connect(&daemon).await;
+        assert!(
+            !bus_alive(&observer, Duration::from_secs(2)).await,
+            "nobody owns the name yet"
+        );
+        let service = serve(
+            Builder::address(daemon.address.as_str()),
+            Config::new(vec![]),
+        )
+        .await
+        .expect("serve the Agent");
+        assert!(bus_alive(&service, Duration::from_secs(5)).await);
+    });
+}
