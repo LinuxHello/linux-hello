@@ -61,6 +61,10 @@ check "unit_starts_with_the_profile_enforcing" '[ "$(systemctl is-active linuxhe
 # "linuxhello-agent//&unconfined (enforce)", which is the profile's restrictions and no more.
 check "agent_process_runs_confined_in_enforce_mode" 'sudo cat /proc/$PID/attr/current | grep -Eq "^linuxhello-agent(//&[a-z]+)? \(enforce\)$"'
 check "name_is_owned_by_the_agents_user" 'busctl --system list --no-pager | grep -q "$N .*linuxhello .*linuxhello-agent.service"'
+echo "DEBUG GetState bad as lh: $(call lh $N $P $N GetState s bad)"
+echo "DEBUG GetAll as lh: $(call lh $N $P org.freedesktop.DBus.Properties GetAll s $N)"
+echo "DEBUG RequestName as nobody: $(call nobody org.freedesktop.DBus /org/freedesktop/DBus org.freedesktop.DBus RequestName su $N 0)"
+echo "DEBUG busctl version: $(busctl --version | head -1)"
 for u in lh nobody; do
   check "any_user_reaches_the_agents_methods_($u)" 'call $u $N $P $N GetState s bad | grep -q "invalid argument"'
   check "properties_are_denied_($u)" 'call $u $N $P org.freedesktop.DBus.Properties GetAll s $N | grep -q "Access denied"'
