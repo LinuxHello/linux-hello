@@ -14,7 +14,8 @@
 use std::process::ExitCode;
 
 use linuxhello_agent::audit::Audit;
-use linuxhello_agent::bus::serve_with_audit;
+use linuxhello_agent::bus::{bus_alive, serve_with_audit};
+use linuxhello_agent::notify::{watchdog_interval, Notifier};
 use linuxhello_agent::policy::user_store::UserPolicyStore;
 use linuxhello_agent::state::Config;
 use zbus::connection::Builder;
@@ -32,14 +33,28 @@ const ADMIN_POLICY_DIR: &str = "/etc/linuxhello/policy.d";
 /// Any error of connecting to the bus or claiming the name, such as the bus policy refusing it.
 async fn run() -> zbus::Result<()> {
     let store = UserPolicyStore::new(USER_POLICY_ROOT).with_admin_layer(ADMIN_POLICY_DIR, 0);
-    let _connection = serve_with_audit(
+    let connection = serve_with_audit(
         Builder::system(),
         Config::new(Vec::new()),
         Some(store),
         Audit::journal(),
     )
     .await?;
-    std::future::pending::<()>().await;
+    // Under a watchdog (WatchdogSec= in the unit) the Agent tells the service manager it is alive,
+    // but only after its own bus loop has answered; without one it just serves.
+    match (Notifier::from_env(), watchdog_interval()) {
+        (Some(notifier), Some(interval)) => loop {
+            if bus_alive(&connection, interval).await {
+                if let Err(error) = notifier.watchdog() {
+                    eprintln!("linuxhello-agent: the watchdog ping failed: {error}");
+                }
+            } else {
+                eprintln!("linuxhello-agent: the bus loop did not answer; no watchdog ping");
+            }
+            async_io::Timer::after(interval).await;
+        },
+        _ => std::future::pending::<()>().await,
+    }
     Ok(())
 }
 
