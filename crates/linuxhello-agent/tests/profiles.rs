@@ -281,7 +281,7 @@ fn agent_profile_parses() {
 
 #[test]
 fn agent_unit_is_dbus_activatable() {
-    let s = settings_of("dbus/io.github.LinuxHello.Agent1.service", "D-Bus Service");
+    let s = settings_of("dbus/io.github.LinuxHello.Agent1.service", "D-BUS Service");
     assert_eq!(only(&s, "Name"), AGENT_BUS_NAME);
     assert_eq!(only(&s, "SystemdService"), "linuxhello-agent.service");
     assert_eq!(only(&s, "Exec"), "/bin/false");
@@ -291,7 +291,7 @@ fn agent_unit_is_dbus_activatable() {
 #[test]
 fn activation_file_and_unit_name_the_same_bus_name() {
     let dbus_name = only(
-        &settings_of("dbus/io.github.LinuxHello.Agent1.service", "D-Bus Service"),
+        &settings_of("dbus/io.github.LinuxHello.Agent1.service", "D-BUS Service"),
         "Name",
     );
     let unit_bus_name = only(&service_settings(), "BusName");

@@ -1,5 +1,6 @@
 # D-Bus activation service for the Linux Hello Agent.
-[D-Bus Service]
+# The group name is case-sensitive: dbus-daemon silently ignores a file whose group is not exactly "D-BUS Service".
+[D-BUS Service]
 Name=io.github.LinuxHello.Agent1
 Exec=/bin/false
 User=root
