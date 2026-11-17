@@ -90,9 +90,9 @@ for _ in 1 2 3 4 5 6 7 8 9 10; do grep -q OPENED /tmp/opener.out && break; sleep
 check "a_user_opens_a_prompt_for_itself" 'grep -q OPENED /tmp/opener.out'
 check "the_user_reads_its_own_prompt" 'call lh $N $P $N GetState s $ID | grep -q idle'
 for op in "GetState s $ID" "Subscribe s $ID" "ReportState ssas $ID State 1 scanning"; do
-  check "another_user_is_refused_(${op%% *})" 'call nobody $N $P $N $op | grep -q "Access denied"'
+  check "another_user_is_refused_(${op%% *})" 'call nobody $N $P $N $op | grep -q "not allowed"'
 done
-check "another_user_cannot_open_a_prompt_for_someone_else" 'call nobody $N $P $N OpenPrompt sx $(echo $ID | tr 0-9a-f 1-9a-f0) $LHUID | grep -q "Access denied"'
+check "another_user_cannot_open_a_prompt_for_someone_else" 'call nobody $N $P $N OpenPrompt sx $(echo $ID | tr 0-9a-f 1-9a-f0) $LHUID | grep -q "not allowed"'
 check "another_user_cannot_take_the_name" 'call nobody org.freedesktop.DBus /org/freedesktop/DBus org.freedesktop.DBus RequestName su $N 0 | grep -q "Access denied"'
 
 # The user policy layer (ADR-0018): kept by the Agent under its state directory, set over the bus.
@@ -101,7 +101,7 @@ biometrics_allowed = false'
 check "a_user_sets_its_own_policy_layer" 'call lh $N $P $N SetUserPolicy s "$POLICY"; [ $? -eq 0 ]'
 check "the_user_reads_its_own_policy_layer" 'call lh $N $P $N GetUserPolicy | grep -q "biometrics_allowed = false"'
 check "another_user_sees_only_its_own_empty_layer" 'call nobody $N $P $N GetUserPolicy | grep -qx "s \"\""'
-check "a_policy_the_schema_rejects_is_refused" 'call lh $N $P $N SetUserPolicy s "invalid = toml" | grep -q "invalid argument"'
+check "a_policy_the_schema_rejects_is_refused" 'call lh $N $P $N SetUserPolicy s "invalid = toml" | grep -q "TOML parse error"'
 check "the_refused_policy_left_the_stored_layer_alone" 'call lh $N $P $N GetUserPolicy | grep -q "biometrics_allowed = false"'
 check "the_layer_is_a_private_file_of_the_agents_user" '[ "$(sudo stat -c "%U %a" /var/lib/linuxhello/users/$LHUID/policy.toml)" = "linuxhello 600" ]'
 
@@ -138,7 +138,7 @@ check "the_agent_has_pinged_the_watchdog" '[[ "$(systemctl show linuxhello-agent
 # The prompt goes with the connection that opened it (linux-hello#201).
 sudo pkill -f "/tmp/opener.py" ; wait $OPENER 2>/dev/null
 sleep 2
-check "a_prompt_is_removed_when_its_opener_leaves_the_bus" 'call lh $N $P $N GetState s $ID | grep -q "Access denied"'
+check "a_prompt_is_removed_when_its_opener_leaves_the_bus" 'call lh $N $P $N GetState s $ID | grep -q "not allowed"'
 
 # Availability (linux-hello#194): a call to a stopped Agent starts it, a killed Agent is back within
 # two seconds, and a call to an Agent that cannot start fails at once instead of holding the caller.
