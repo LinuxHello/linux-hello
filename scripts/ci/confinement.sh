@@ -26,7 +26,7 @@ fi
 root=$PWD
 sec=$root/security
 bin=$root/target/x86_64-unknown-linux-musl/release/linuxhello-agent
-for f in "$bin" "$sec/dbus/io.github.LinuxHello.Agent1.conf" "$sec/systemd/linuxhello-agent.service" \
+for f in "$bin" "$sec/dbus/io.github.LinuxHello.Agent1.conf" "$sec/dbus/io.github.LinuxHello.Agent1.service" "$sec/systemd/linuxhello-agent.service" \
          "$sec/systemd/linuxhello.sysusers" "$sec/apparmor/linuxhello-agent"; do
   [[ -f "$f" ]] || { echo "$f not found" >&2; exit 2; }
 done
@@ -47,6 +47,7 @@ call() { sudo -u "$1" busctl --system call "${@:2}" 2>&1; }
 sudo systemd-sysusers $sec/systemd/linuxhello.sysusers
 sudo install -D -m755 $bin /usr/libexec/linuxhello/linuxhello-agent
 sudo install -D -m644 $sec/dbus/io.github.LinuxHello.Agent1.conf /usr/share/dbus-1/system.d/io.github.LinuxHello.Agent1.conf
+sudo install -D -m644 $sec/dbus/io.github.LinuxHello.Agent1.service /usr/share/dbus-1/system-services/io.github.LinuxHello.Agent1.service
 sudo install -m644 $sec/apparmor/linuxhello-agent /etc/apparmor.d/linuxhello-agent
 sudo install -m644 $sec/systemd/linuxhello-agent.service /usr/lib/systemd/system/linuxhello-agent.service
 sudo apparmor_parser -r /etc/apparmor.d/linuxhello-agent
@@ -138,6 +139,28 @@ check "the_agent_has_pinged_the_watchdog" '[[ "$(systemctl show linuxhello-agent
 sudo pkill -f "/tmp/opener.py" ; wait $OPENER 2>/dev/null
 sleep 2
 check "a_prompt_is_removed_when_its_opener_leaves_the_bus" 'call lh $N $P $N GetState s $ID | grep -q "Access denied"'
+
+# Availability (linux-hello#194): a call to a stopped Agent starts it, a killed Agent is back within
+# two seconds, and a call to an Agent that cannot start fails at once instead of holding the caller.
+name_is_up() { busctl --system list --no-pager 2>/dev/null | grep -q "^$N "; }
+wait_for_name() { # seconds to wait at most; prints the seconds it took
+  local start=$EPOCHREALTIME i
+  for ((i = 0; i < $1 * 10; i++)); do name_is_up && break; sleep 0.1; done
+  awk -v a="$start" -v b="$EPOCHREALTIME" 'BEGIN { printf "%.1f", b - a }'
+}
+sudo systemctl stop linuxhello-agent; sleep 1
+call lh $N $P $N GetState s none >/dev/null
+check "a_call_to_a_stopped_agent_starts_it" '[ "$(systemctl is-active linuxhello-agent)" = active ] && name_is_up'
+sudo systemctl kill -s KILL linuxhello-agent
+TOOK=$(wait_for_name 5)
+check "a_killed_agent_is_back_within_two_seconds" 'awk -v t="$TOOK" "BEGIN { exit !(t < 2) }"'
+sudo systemctl stop linuxhello-agent; sudo systemctl mask linuxhello-agent >/dev/null 2>&1; sleep 1
+START=$EPOCHREALTIME
+timeout 10 sudo -u lh busctl --system call $N $P $N GetState s none >/dev/null 2>&1; RC=$?
+WAITED=$(awk -v a="$START" -v b="$EPOCHREALTIME" 'BEGIN { printf "%.1f", b - a }')
+check "a_call_to_an_agent_that_cannot_start_fails_at_once" '[ "$RC" -ne 0 ] && [ "$RC" -ne 124 ] && awk -v t="$WAITED" "BEGIN { exit !(t < 2) }"'
+sudo systemctl unmask linuxhello-agent >/dev/null 2>&1; sudo systemctl reset-failed linuxhello-agent 2>/dev/null
+sudo systemctl start linuxhello-agent; wait_for_name 5 >/dev/null
 
 # Fail closed: the unit must refuse to start unless the profile is loaded and enforcing.
 sudo systemctl stop linuxhello-agent; sudo systemctl reset-failed linuxhello-agent 2>/dev/null
