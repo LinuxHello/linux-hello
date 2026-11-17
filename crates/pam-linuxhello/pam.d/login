@@ -1,0 +1,7 @@
+# Linux Hello for login: the auth lines the package includes in the stack of the service.
+# ADR-0023, decision 2: when Linux Hello is unavailable the module returns PAM_AUTHINFO_UNAVAIL,
+# and pam_unix after it keeps the account password working. A success of Linux Hello ends the
+# stack; "unavailable" is ignored so the password is asked; any other answer (a wrong PIN, a
+# refused face) fails the attempt at once and never falls through to the password.
+auth [success=done authinfo_unavail=ignore default=die] pam_linuxhello.so
+auth required pam_unix.so try_first_pass
