@@ -21,5 +21,10 @@ zeroize = "1"
 [dev-dependencies]
 tempfile = "3.27.0"
 
+[[bench]]
+name = "latency"
+path = "benches/latency/main.rs"
+harness = false
+
 [lints]
 workspace = true

@@ -1,6 +1,6 @@
 # Local entry points for the CI gates (AGENTS.md, Gates). Agents and humans run
 # `make fix` after writing code and `make gates` before opening a pull request.
-.PHONY: help fmt fix gates fmt-check clippy test deny audit unsafe-policy fuzz docs docs-site hooks verify-gate next backlog backlog-check
+.PHONY: help fmt fix gates fmt-check clippy test deny audit unsafe-policy fuzz bench docs docs-site hooks verify-gate next backlog backlog-check
 
 FUZZ_SECONDS ?= 60
 
@@ -11,6 +11,7 @@ help:
 	@echo
 	@echo "make fix          format and apply clippy's machine-applicable fixes"
 	@echo "make gates        run every CI gate locally (fuzz: FUZZ_SECONDS=$(FUZZ_SECONDS) per target)"
+	@echo "make bench        time the Agent's method calls (budget L1, not a gate; LH_ENFORCE_BUDGET=1 fails above 5 ms)"
 	@echo "make docs         build every item's documentation and check the C4 tags (ADR-0008)"
 	@echo "make docs-site    rustdoc plus generated code diagrams in target/docs-site (needs cargo-modules, Graphviz)"
 	@echo "make hooks        install the pre-commit hook (cargo fmt --check)"
@@ -48,6 +49,9 @@ unsafe-policy:
 
 fuzz:
 	scripts/ci/fuzz.sh $(FUZZ_SECONDS)
+
+bench:
+	cargo bench -p linuxhello-agent --bench latency
 
 docs:
 	RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --document-private-items
