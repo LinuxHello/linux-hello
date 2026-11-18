@@ -14,7 +14,8 @@ use linuxhello_dbus::{AuthMethod, PromptId, PromptResult, PromptState, SIGNALS};
 
 use crate::audit::{Audit, Event};
 use crate::policy::load::Policy;
-use crate::policy::user_store::{StoreError, UserPolicyStore};
+use crate::policy::schema::parse_layer;
+use crate::policy::user_store::{StoreError, UserPolicyStore, MAX_POLICY_BYTES};
 use crate::state::{Config, Error as StateError, Peer, StateStore, Update};
 
 /// The longest D-Bus bus name, in bytes.
@@ -71,7 +72,7 @@ impl PeerName {
 }
 
 /// Why the request layer refused a request.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ApiError {
     /// The caller may not do this, has no readable credentials, or the prompt is unknown.
     Denied,
@@ -79,6 +80,10 @@ pub enum ApiError {
     LimitReached,
     /// An argument is not valid: a prompt id, signal name, value or peer name.
     InvalidArgument,
+    /// The caller's own policy text does not follow the schema. The text is the parser's message
+    /// about that text (the offending key or line and what is wrong with it); it is built from the
+    /// caller's text alone, never from an admin layer or another user's layer.
+    InvalidPolicy(String),
     /// The requested service (e.g. user policy store) is not available.
     Unavailable,
     /// What the Agent stored for the caller cannot be read: the caller can store a new layer.
@@ -168,7 +173,7 @@ impl Api {
             Err(ApiError::LimitReached) => self
                 .audit
                 .record(Event::limit_reached(caller.uid).with_peer(peer)),
-            Err(ApiError::InvalidArgument) => {
+            Err(ApiError::InvalidArgument | ApiError::InvalidPolicy(_)) => {
                 self.audit
                     .record(Event::invalid_argument(caller.uid).with_peer(peer));
             }
@@ -499,7 +504,8 @@ impl Api {
     ///
     /// [`ApiError::Denied`] without a caller uid;
     /// [`ApiError::Unavailable`] if the user policy store is not configured;
-    /// [`ApiError::InvalidArgument`] if the text is invalid or too large.
+    /// [`ApiError::InvalidPolicy`] with the parser's message if the text does not follow the
+    /// schema; [`ApiError::InvalidArgument`] if it is too large or contradicts the admin layers.
     pub fn set_user_policy(&mut self, caller: Caller, text: &str) -> Result<(), ApiError> {
         let result = self.set_user_policy_unaudited(&caller, text);
         if let (Ok(()), Some(uid)) = (&result, caller.uid) {
@@ -516,6 +522,12 @@ impl Api {
     fn set_user_policy_unaudited(&mut self, caller: &Caller, text: &str) -> Result<(), ApiError> {
         let uid = caller.uid.ok_or(ApiError::Denied)?;
         let store = self.user_policies.as_ref().ok_or(ApiError::Unavailable)?;
+        // A text the schema rejects is told apart from one the store refuses for another reason
+        // (too large, contradicts the admin layers), so that the caller can see its own mistake.
+        // The store parses the text again; both calls are the same function.
+        if !text.is_empty() && text.len() <= MAX_POLICY_BYTES {
+            parse_layer(text).map_err(ApiError::InvalidPolicy)?;
+        }
         match store.set(uid, text) {
             // The layer is in place and reads back; a retry would write the same text.
             Ok(()) | Err(StoreError::Unsynced) => Ok(()),
@@ -812,10 +824,10 @@ mod tests {
         };
 
         api.set_user_policy(uid, tighter).unwrap();
-        assert_eq!(
+        assert!(matches!(
             api.set_user_policy(uid, "invalid = toml"),
-            Err(ApiError::InvalidArgument)
-        );
+            Err(ApiError::InvalidPolicy(_))
+        ));
         assert_eq!(api.get_user_policy(uid).unwrap(), tighter);
     }
 
@@ -1153,10 +1165,10 @@ mod tests {
             ]
         );
 
-        assert_eq!(
+        assert!(matches!(
             api.set_user_policy(USER, "invalid = toml"),
-            Err(ApiError::InvalidArgument)
-        );
+            Err(ApiError::InvalidPolicy(_))
+        ));
         assert_eq!(
             recorder.events().last(),
             Some(&Event::invalid_argument(Some(1000)))

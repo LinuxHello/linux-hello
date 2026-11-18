@@ -9,8 +9,9 @@
 //!
 //! The members are the Rust method names in PascalCase: `OpenPrompt`, `ReportState`, `GetState`,
 //! `Subscribe`, `ClosePrompt`, and the signals `MethodsAvailable`, `ActiveMethod`, `State` and
-//! `Result` of `linuxhello_dbus::SIGNALS`. A refusal is a D-Bus error: `AccessDenied`,
-//! `LimitsExceeded` or `InvalidArgs`.
+//! `Result` of `linuxhello_dbus::SIGNALS`. A refusal is a D-Bus error of the closed set
+//! `linuxhello_dbus::ERRORS` under `io.github.LinuxHello.Error` ([`AgentError`]): `Denied`,
+//! `LimitReached`, `InvalidArgument`, `InvalidPolicy`, `Unavailable` or `Damaged`.
 //!
 //! Security properties: `signals_reach_only_the_subscribed_peer` (P-05, over a real bus) and
 //! `caller_without_peer_credentials_is_refused` (P-02, in the request layer).
@@ -211,14 +212,39 @@ async fn caller_of(connection: &Connection, sender: Option<&UniqueName<'_>>) -> 
     }
 }
 
+/// The errors of the Agent's interface, under `io.github.LinuxHello.Error` (ADR-0014, amendment
+/// 2026-11-17; the closed set is `linuxhello_dbus::ERRORS`). A client matches the name. The text
+/// is fixed for every error except `InvalidPolicy`, whose text is the parser's message about the
+/// caller's own policy text.
+#[derive(Debug, zbus::DBusError)]
+#[zbus(prefix = "io.github.LinuxHello.Error")]
+pub enum AgentError {
+    /// An error of the bus connection itself, such as a failed reply.
+    #[zbus(error)]
+    ZBus(zbus::Error),
+    /// The caller may not do this.
+    Denied(String),
+    /// A limit of the state store is reached.
+    LimitReached(String),
+    /// An argument is not valid.
+    InvalidArgument(String),
+    /// The caller's own policy text does not follow the schema.
+    InvalidPolicy(String),
+    /// A service the request needs is not available.
+    Unavailable(String),
+    /// What the Agent stored for the caller cannot be read.
+    Damaged(String),
+}
+
 /// The D-Bus error for a refusal of the request layer.
-fn to_fdo(error: ApiError) -> fdo::Error {
+fn to_bus(error: ApiError) -> AgentError {
     match error {
-        ApiError::Denied => fdo::Error::AccessDenied("not allowed".to_string()),
-        ApiError::LimitReached => fdo::Error::LimitsExceeded("limit reached".to_string()),
-        ApiError::InvalidArgument => fdo::Error::InvalidArgs("invalid argument".to_string()),
-        ApiError::Unavailable => fdo::Error::Failed("unavailable".to_string()),
-        ApiError::Damaged => fdo::Error::Failed("the stored policy is damaged".to_string()),
+        ApiError::Denied => AgentError::Denied("not allowed".to_string()),
+        ApiError::LimitReached => AgentError::LimitReached("limit reached".to_string()),
+        ApiError::InvalidArgument => AgentError::InvalidArgument("invalid argument".to_string()),
+        ApiError::InvalidPolicy(message) => AgentError::InvalidPolicy(message),
+        ApiError::Unavailable => AgentError::Unavailable("unavailable".to_string()),
+        ApiError::Damaged => AgentError::Damaged("the stored policy is damaged".to_string()),
     }
 }
 
@@ -272,23 +298,23 @@ impl AgentService {
         subject_uid: i64,
         #[zbus(header)] header: Header<'_>,
         #[zbus(connection)] connection: &Connection,
-    ) -> fdo::Result<()> {
+    ) -> Result<(), AgentError> {
         self.tick();
         let subject = match subject_uid {
             -1 => None,
-            uid => Some(u32::try_from(uid).map_err(|_| to_fdo(ApiError::InvalidArgument))?),
+            uid => Some(u32::try_from(uid).map_err(|_| to_bus(ApiError::InvalidArgument))?),
         };
         let caller = caller_of(connection, header.sender()).await;
         let opener = header
             .sender()
-            .ok_or_else(|| to_fdo(ApiError::Denied))?
+            .ok_or_else(|| to_bus(ApiError::Denied))?
             .as_str()
             .to_string();
         let result = self
             .api
             .open_prompt_from(caller, &opener, prompt_id, subject);
         self.flush(connection).await;
-        result.map_err(to_fdo)
+        result.map_err(to_bus)
     }
 
     /// Changes one part of a prompt's state and signals the subscribed peers. `signal` is one
@@ -300,13 +326,13 @@ impl AgentService {
         values: Vec<String>,
         #[zbus(header)] header: Header<'_>,
         #[zbus(connection)] connection: &Connection,
-    ) -> fdo::Result<()> {
+    ) -> Result<(), AgentError> {
         self.tick();
         let caller = caller_of(connection, header.sender()).await;
         let values: Vec<&str> = values.iter().map(String::as_str).collect();
         let result = self.api.report_state(caller, prompt_id, signal, &values);
         self.flush(connection).await;
-        for note in &result.map_err(to_fdo)? {
+        for note in &result.map_err(to_bus)? {
             send(connection, note).await;
         }
         Ok(())
@@ -319,9 +345,9 @@ impl AgentService {
         prompt_id: &str,
         #[zbus(header)] header: Header<'_>,
         #[zbus(connection)] connection: &Connection,
-    ) -> fdo::Result<(Vec<String>, String, String, String)> {
+    ) -> Result<(Vec<String>, String, String, String), AgentError> {
         let caller = caller_of(connection, header.sender()).await;
-        let reply = self.api.get_state(caller, prompt_id).map_err(to_fdo)?;
+        let reply = self.api.get_state(caller, prompt_id).map_err(to_bus)?;
         Ok((
             reply.methods,
             reply.active.unwrap_or_default(),
@@ -336,17 +362,17 @@ impl AgentService {
         prompt_id: &str,
         #[zbus(header)] header: Header<'_>,
         #[zbus(connection)] connection: &Connection,
-    ) -> fdo::Result<()> {
+    ) -> Result<(), AgentError> {
         self.tick();
         let caller = caller_of(connection, header.sender()).await;
         let sender = header
             .sender()
-            .ok_or_else(|| to_fdo(ApiError::Denied))?
+            .ok_or_else(|| to_bus(ApiError::Denied))?
             .as_str()
             .to_string();
         let result = self.api.subscribe(caller, &sender, prompt_id);
         self.flush(connection).await;
-        result.map_err(to_fdo)
+        result.map_err(to_bus)
     }
 
     /// Stops the signals of the prompt to the calling connection.
@@ -355,17 +381,17 @@ impl AgentService {
         prompt_id: &str,
         #[zbus(header)] header: Header<'_>,
         #[zbus(connection)] connection: &Connection,
-    ) -> fdo::Result<()> {
+    ) -> Result<(), AgentError> {
         self.tick();
         let caller = caller_of(connection, header.sender()).await;
         let sender = header
             .sender()
-            .ok_or_else(|| to_fdo(ApiError::Denied))?
+            .ok_or_else(|| to_bus(ApiError::Denied))?
             .as_str()
             .to_string();
         let result = self.api.unsubscribe(caller, &sender, prompt_id);
         self.flush(connection).await;
-        result.map_err(to_fdo)
+        result.map_err(to_bus)
     }
 
     /// Closes a prompt opened by the caller.
@@ -374,12 +400,12 @@ impl AgentService {
         prompt_id: &str,
         #[zbus(header)] header: Header<'_>,
         #[zbus(connection)] connection: &Connection,
-    ) -> fdo::Result<()> {
+    ) -> Result<(), AgentError> {
         self.tick();
         let caller = caller_of(connection, header.sender()).await;
         let result = self.api.close_prompt(caller, prompt_id);
         self.flush(connection).await;
-        result.map_err(to_fdo)
+        result.map_err(to_bus)
     }
 
     /// Returns the caller's user policy as TOML text.
@@ -387,9 +413,9 @@ impl AgentService {
         &self,
         #[zbus(header)] header: Header<'_>,
         #[zbus(connection)] connection: &Connection,
-    ) -> fdo::Result<String> {
+    ) -> Result<String, AgentError> {
         let caller = caller_of(connection, header.sender()).await;
-        self.api.get_user_policy(caller).map_err(to_fdo)
+        self.api.get_user_policy(caller).map_err(to_bus)
     }
 
     /// Replaces the caller's user policy with the provided TOML text.
@@ -398,8 +424,8 @@ impl AgentService {
         text: &str,
         #[zbus(header)] header: Header<'_>,
         #[zbus(connection)] connection: &Connection,
-    ) -> fdo::Result<()> {
+    ) -> Result<(), AgentError> {
         let caller = caller_of(connection, header.sender()).await;
-        self.api.set_user_policy(caller, text).map_err(to_fdo)
+        self.api.set_user_policy(caller, text).map_err(to_bus)
     }
 }

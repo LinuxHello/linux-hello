@@ -3,7 +3,7 @@
 
 mod common;
 
-use common::{call, connect, is_error, my_uid, next_within, pid, run, signals, Daemon};
+use common::{call, connect, error_text, is_error, my_uid, next_within, pid, run, signals, Daemon};
 use linuxhello_agent::audit::{Audit, AuditSink, Event};
 use linuxhello_agent::bus::{serve, serve_with, serve_with_audit};
 use linuxhello_agent::policy::user_store::UserPolicyStore;
@@ -78,10 +78,7 @@ fn a_prompt_for_another_user_is_refused_with_access_denied() {
             // Root may open a prompt for any user (the PAM module of a login does).
             assert!(refused.is_ok());
         } else {
-            assert!(is_error(
-                &refused,
-                "org.freedesktop.DBus.Error.AccessDenied"
-            ));
+            assert!(is_error(&refused, "io.github.LinuxHello.Error.Denied"));
         }
     });
 }
@@ -103,16 +100,19 @@ fn malformed_requests_get_invalid_args_errors() {
             .expect("open the prompt");
 
         let bad_id = call(&client, "GetState", &("p1",)).await;
-        assert!(is_error(&bad_id, "org.freedesktop.DBus.Error.InvalidArgs"));
+        assert!(is_error(
+            &bad_id,
+            "io.github.LinuxHello.Error.InvalidArgument"
+        ));
         let bad_signal = call(&client, "ReportState", &(id.as_str(), "Bogus", vec!["x"])).await;
         assert!(is_error(
             &bad_signal,
-            "org.freedesktop.DBus.Error.InvalidArgs"
+            "io.github.LinuxHello.Error.InvalidArgument"
         ));
         let bad_subject = call(&client, "OpenPrompt", &(pid("p2").as_str(), -7_i64)).await;
         assert!(is_error(
             &bad_subject,
-            "org.freedesktop.DBus.Error.InvalidArgs"
+            "io.github.LinuxHello.Error.InvalidArgument"
         ));
     });
 }
@@ -232,7 +232,7 @@ fn user_policy_is_set_and_read_over_the_bus() {
         assert_eq!(policy, tighter);
 
         let bad = call(&client, "SetUserPolicy", &"invalid = toml".to_string()).await;
-        assert!(is_error(&bad, "org.freedesktop.DBus.Error.InvalidArgs"));
+        assert!(is_error(&bad, "io.github.LinuxHello.Error.InvalidPolicy"));
         let policy_msg = call(&client, "GetUserPolicy", &())
             .await
             .expect("get policy");
@@ -274,7 +274,7 @@ fn a_prompt_without_reports_is_closed_by_the_next_call() {
         .await
         .expect("open another prompt");
         let seen = call(&client, "GetState", &(stale.as_str(),)).await;
-        assert!(is_error(&seen, "org.freedesktop.DBus.Error.AccessDenied"));
+        assert!(is_error(&seen, "io.github.LinuxHello.Error.Denied"));
         call(&client, "GetState", &(fresh.as_str(),))
             .await
             .expect("the new prompt is open");
@@ -306,10 +306,7 @@ fn a_refusal_over_the_bus_is_audited_with_the_callers_unique_name() {
         .expect("serve the Agent");
         let client = connect(&daemon).await;
         let refused = call(&client, "GetState", &(pid("unknown").as_str(),)).await;
-        assert!(is_error(
-            &refused,
-            "org.freedesktop.DBus.Error.AccessDenied"
-        ));
+        assert!(is_error(&refused, "io.github.LinuxHello.Error.Denied"));
         let events = recorder.0.lock().unwrap().clone();
         assert_eq!(events.len(), 1);
         let name = client.unique_name().expect("a unique name").to_string();
@@ -346,7 +343,7 @@ fn a_prompt_is_removed_when_its_opener_leaves_the_bus() {
         let mut removed = false;
         for _ in 0..40 {
             let seen = call(&reader, "GetState", &(id.as_str(),)).await;
-            if is_error(&seen, "org.freedesktop.DBus.Error.AccessDenied") {
+            if is_error(&seen, "io.github.LinuxHello.Error.Denied") {
                 removed = true;
                 break;
             }
@@ -531,5 +528,122 @@ fn a_bus_loop_that_answers_is_alive_and_an_absent_one_is_not() {
         .await
         .expect("serve the Agent");
         assert!(bus_alive(&service, Duration::from_secs(5)).await);
+    });
+}
+
+const ERROR_PREFIX: &str = "io.github.LinuxHello.Error.";
+
+#[test]
+fn every_error_has_a_fixed_name_and_text() {
+    let daemon = Daemon::start();
+    let tmp = tempfile::TempDir::new().unwrap();
+    // A layer the store cannot read: not UTF-8. Same file layout as the store's own tests.
+    let damaged = tmp.path().join(my_uid().to_string());
+    std::fs::create_dir_all(&damaged).unwrap();
+    std::fs::write(damaged.join("policy.toml"), [0xff, 0xfe, 0xfd]).unwrap();
+    run(async {
+        let mut config = Config::new(vec![]);
+        config.max_prompts_per_reporter = 1;
+        let _with_store = serve_with(
+            Builder::address(daemon.address.as_str()),
+            config,
+            Some(UserPolicyStore::new(tmp.path())),
+        )
+        .await
+        .expect("serve the Agent");
+        let client = connect(&daemon).await;
+        let one = |name: &str| format!("{ERROR_PREFIX}{name}");
+
+        let id = pid("p1");
+        call(&client, "OpenPrompt", &(id.as_str(), i64::from(my_uid())))
+            .await
+            .expect("open the prompt");
+
+        // LimitReached: a second prompt of the same opener.
+        let limit = call(
+            &client,
+            "OpenPrompt",
+            &(pid("p2").as_str(), i64::from(my_uid())),
+        )
+        .await;
+        assert!(is_error(&limit, &one("LimitReached")), "{limit:?}");
+        assert_eq!(error_text(&limit).as_deref(), Some("limit reached"));
+
+        // InvalidArgument: a prompt id that is not one.
+        let bad_id = call(&client, "GetState", &("p1",)).await;
+        assert!(is_error(&bad_id, &one("InvalidArgument")), "{bad_id:?}");
+        assert_eq!(error_text(&bad_id).as_deref(), Some("invalid argument"));
+
+        // Damaged: the caller's stored layer cannot be read.
+        let damaged = call(&client, "GetUserPolicy", &()).await;
+        assert!(is_error(&damaged, &one("Damaged")), "{damaged:?}");
+        assert_eq!(
+            error_text(&damaged).as_deref(),
+            Some("the stored policy is damaged")
+        );
+
+        // Denied: a prompt for another user (root may open one for anybody).
+        if my_uid() != 0 {
+            let other = i64::from(my_uid()) + 1;
+            let denied = call(&client, "OpenPrompt", &(pid("p3").as_str(), other)).await;
+            assert!(is_error(&denied, &one("Denied")), "{denied:?}");
+            assert_eq!(error_text(&denied).as_deref(), Some("not allowed"));
+        }
+    });
+    run(async {
+        // Unavailable: no user policy store is configured.
+        let _without_store = serve(
+            Builder::address(daemon.address.as_str()),
+            Config::new(vec![]),
+        )
+        .await
+        .expect("serve the Agent");
+        let client = connect(&daemon).await;
+        let unavailable = call(&client, "GetUserPolicy", &()).await;
+        assert!(
+            is_error(&unavailable, &format!("{ERROR_PREFIX}Unavailable")),
+            "{unavailable:?}"
+        );
+        assert_eq!(error_text(&unavailable).as_deref(), Some("unavailable"));
+    });
+}
+
+#[test]
+fn invalid_user_policy_names_the_offending_key() {
+    let daemon = Daemon::start();
+    let tmp = tempfile::TempDir::new().unwrap();
+    run(async {
+        let _service = serve_with(
+            Builder::address(daemon.address.as_str()),
+            Config::new(vec![]),
+            Some(UserPolicyStore::new(tmp.path())),
+        )
+        .await
+        .expect("serve the Agent");
+        let client = connect(&daemon).await;
+        let tighter = "[methods]\nbiometrics_allowed = false\n";
+        call(&client, "SetUserPolicy", &tighter.to_string())
+            .await
+            .expect("set policy");
+
+        let typo = "[methods]\nbiometrics_alowed = false\n";
+        let refused = call(&client, "SetUserPolicy", &typo.to_string()).await;
+        assert!(
+            is_error(&refused, &format!("{ERROR_PREFIX}InvalidPolicy")),
+            "{refused:?}"
+        );
+        let text = error_text(&refused).expect("the error carries a text");
+        assert!(text.contains("biometrics_alowed"), "{text}");
+
+        let kept: String = call(&client, "GetUserPolicy", &())
+            .await
+            .expect("get policy")
+            .body()
+            .deserialize()
+            .expect("the policy");
+        assert_eq!(kept, tighter, "the refused text changed the stored layer");
+        call(&client, "SetUserPolicy", &tighter.to_string())
+            .await
+            .expect("valid text is accepted afterwards");
     });
 }

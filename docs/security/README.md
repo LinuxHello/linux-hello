@@ -79,7 +79,7 @@ Semantics: [policy-semantics.md](../architecture/policy-semantics.md). Tests liv
 | A write never leaves a half-written or temporary file, and the files are private to the Agent | `a_write_leaves_no_temporary_file_and_private_modes` |
 | The user layer is available without a home directory | `user_policy_is_available_without_a_home_directory` |
 | A caller can read and change only its own user policy layer | `user_cannot_set_another_users_policy`, `user_policy_is_set_and_read_over_the_bus` |
-| A user policy that does not parse, or is over 64 KiB, is refused over D-Bus with InvalidArgs and the stored layer stays | `unparseable_user_policy_is_refused_on_write`, `oversized_user_policy_is_refused_on_write` (`api.rs`), `user_policy_is_set_and_read_over_the_bus` |
+| A user policy that does not parse, or is over 64 KiB, is refused over D-Bus, with `InvalidPolicy` and the parser's message when it does not parse, and with `InvalidArgument` when it is over 64 KiB, and the stored layer stays | `unparseable_user_policy_is_refused_on_write`, `oversized_user_policy_is_refused_on_write` (`api.rs`), `user_policy_is_set_and_read_over_the_bus` |
 | A caller whose peer credentials cannot be read cannot read or set a user policy | `user_policy_without_peer_credentials_is_refused` |
 
 ### Confinement of the Agent
