@@ -223,6 +223,16 @@ check "the_unit_starts_again_once_the_profile_is_enforcing" '[ "$(systemctl is-a
 # a restart drops every prompt.
 sudo systemctl restart linuxhello-agent; sleep 2
 check "the_pin_socket_survives_a_restart" '[ "$(systemctl is-active linuxhello-agent)" = active ] && [ -S /run/linuxhello/pin.sock ] && [ "$(pin_client lh)" = 1 ]'
+# The PIN lock (#180): a lockout file that cannot be trusted (here: readable by others and not TOML)
+# is reported to every user and left as it is, never replaced by an empty counter.
+sudo systemctl stop linuxhello-agent
+sudo -u linuxhello sh -c 'printf broken > /var/lib/linuxhello/pinlock.toml; chmod 644 /var/lib/linuxhello/pinlock.toml'
+sudo systemctl start linuxhello-agent; sleep 2
+check "a_damaged_lock_file_is_reported_to_every_user" 'call lh $N $P $N GetStatus | grep -q pin-lock-damaged && call nobody $N $P $N GetStatus | grep -q pin-lock-damaged'
+check "a_damaged_lock_file_is_not_replaced" '[ "$(sudo cat /var/lib/linuxhello/pinlock.toml)" = broken ]'
+sudo systemctl stop linuxhello-agent; sudo rm -f /var/lib/linuxhello/pinlock.toml
+sudo systemctl start linuxhello-agent; sleep 2
+check "a_sound_start_reports_no_pin_lock" '! call lh $N $P $N GetStatus | grep -q pin-lock'
 
 # No AppArmor denial except the probes of this test (the Properties calls that the policy refuses).
 D=$(sudo journalctl -k --no-pager --since "@$T0" | grep "apparmor=\"DENIED\"" | grep "linuxhello-agent" | grep -vc "interface=\"org.freedesktop.DBus.Properties\"")

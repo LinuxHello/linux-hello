@@ -13,6 +13,7 @@
 use linuxhello_dbus::{AuthMethod, PromptId, PromptReason, PromptResult, PromptState, SIGNALS};
 
 use crate::audit::{Audit, Event};
+use crate::pinlock::service::{LockStatus, PinLockService};
 use crate::pinsocket::{PinSocket, Process};
 use crate::policy::load::Policy;
 use crate::policy::schema::parse_layer;
@@ -155,6 +156,13 @@ struct StatusItem {
     detail: Option<String>,
 }
 
+/// The wall clock in whole seconds since the Unix epoch; zero if the clock is before it.
+fn wall_clock_seconds() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
 /// The PIN rules a client shows in its dialog, as wire values.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PinRulesReply {
@@ -176,6 +184,10 @@ pub struct Api {
     user_policies: Option<UserPolicyStore>,
     /// The audit trail of refusals and policy changes.
     audit: Audit,
+    /// The PIN lock, when the Agent has one.
+    pin_lock: Option<PinLockService>,
+    /// The time in seconds since the Unix epoch; the wall clock, replaced in tests.
+    clock: fn() -> u64,
 }
 
 impl Api {
@@ -185,7 +197,22 @@ impl Api {
             store: StateStore::new(config),
             user_policies: None,
             audit: Audit::none(),
+            pin_lock: None,
+            clock: wall_clock_seconds,
         }
+    }
+
+    /// An API with the Agent's PIN lock, which `GetStatus` reads.
+    #[must_use]
+    pub fn with_pin_lock(self, pin_lock: Option<PinLockService>) -> Self {
+        Self { pin_lock, ..self }
+    }
+
+    /// An API that reads the time from `clock` (seconds since the Unix epoch) instead of the wall
+    /// clock, for tests.
+    #[must_use]
+    pub fn with_clock(self, clock: fn() -> u64) -> Self {
+        Self { clock, ..self }
     }
 
     /// An API that records its refusals and policy changes in `audit`.
@@ -635,7 +662,8 @@ impl Api {
     /// The work of [`Api::get_status`], with the detail kept.
     fn status_unaudited(&self, caller: &Caller) -> Result<Vec<StatusItem>, ApiError> {
         use linuxhello_dbus::status::{
-            context_unsatisfiable_on_the_bus, Severity, POLICY_PIN_ONLY, POLICY_PIN_ONLY_SENTENCE,
+            context_unsatisfiable_on_the_bus, pin_locked_sentence, Severity, PIN_LOCKED,
+            PIN_LOCK_DAMAGED, PIN_LOCK_DAMAGED_SENTENCE, POLICY_PIN_ONLY, POLICY_PIN_ONLY_SENTENCE,
         };
         let uid = caller.uid.ok_or(ApiError::Denied)?;
         let policy = self.policy_of(uid)?;
@@ -663,6 +691,23 @@ impl Api {
                     sentence,
                     detail: Some(format!("the context {context}")),
                 });
+            }
+        }
+        if let Some(lock) = &self.pin_lock {
+            match lock.status_of(uid, (self.clock)()) {
+                LockStatus::Unlocked => {}
+                LockStatus::LockedFor(seconds) => items.push(StatusItem {
+                    code: PIN_LOCKED.to_string(),
+                    severity: Severity::Warning,
+                    sentence: pin_locked_sentence(seconds),
+                    detail: None,
+                }),
+                LockStatus::Untrusted => items.push(StatusItem {
+                    code: PIN_LOCK_DAMAGED.to_string(),
+                    severity: Severity::Severe,
+                    sentence: PIN_LOCK_DAMAGED_SENTENCE.to_string(),
+                    detail: Some("the lockout file cannot be trusted".to_string()),
+                }),
             }
         }
         Ok(items)
@@ -1374,6 +1419,81 @@ mod tests {
 
     /// An admin file that makes a context unsatisfiable: two factors, one method.
     const TOO_STRICT: &str = "[context.sudo]\nmethods = [\"pin\"]\nfactors = 2\n";
+
+    /// The time of the status tests: seconds since the Unix epoch.
+    fn at_1000() -> u64 {
+        1_000
+    }
+
+    #[test]
+    fn status_tells_a_locked_user_the_minutes_left() {
+        use crate::pinlock::service::{Limits, PinLockService};
+        use crate::pinlock::store::PinLockFile;
+        let tmp = TempDir::new().unwrap();
+        let (store, _admin) = store_with_admin(&tmp);
+        let uid = rustix::process::getuid().as_raw();
+        // One wrong PIN starts a lockout of 7 minutes 10 seconds.
+        let limits = Limits {
+            max_attempts: 1,
+            lockout_secs: 430,
+            max_lockout_secs: 86_400,
+        };
+        let lock = PinLockService::start(
+            PinLockFile::new(tmp.path().join("pinlock.toml"), uid),
+            limits,
+        );
+        lock.record_failure(1000, 1_000).unwrap();
+        let api = Api::new(Config::new(vec![]))
+            .with_user_policy_store(Some(store))
+            .with_pin_lock(Some(lock))
+            .with_clock(at_1000);
+
+        let locked = api.get_status(status_caller(1000)).unwrap();
+        assert_eq!(
+            locked,
+            vec![(
+                "pin-locked".to_string(),
+                "warning".to_string(),
+                "Your PIN is locked for 8 more minutes.".to_string()
+            )]
+        );
+        // Another user sees nothing of it, and no number of seconds or user appears.
+        assert_eq!(api.get_status(status_caller(1001)).unwrap(), vec![]);
+        let all = format!("{locked:?}");
+        for hidden in ["430", "1000"] {
+            assert!(!all.contains(hidden), "the status shows {hidden}: {all}");
+        }
+    }
+
+    #[test]
+    fn status_reports_a_damaged_lock_file_to_everyone() {
+        use crate::pinlock::service::{Limits, PinLockService};
+        use crate::pinlock::store::PinLockFile;
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = TempDir::new().unwrap();
+        let (store, _admin) = store_with_admin(&tmp);
+        let uid = rustix::process::getuid().as_raw();
+        let file = tmp.path().join("pinlock.toml");
+        std::fs::write(&file, "broken").unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let limits = Limits {
+            max_attempts: 5,
+            lockout_secs: 900,
+            max_lockout_secs: 86_400,
+        };
+        let lock = PinLockService::start(PinLockFile::new(&file, uid), limits);
+        let api = Api::new(Config::new(vec![]))
+            .with_user_policy_store(Some(store))
+            .with_pin_lock(Some(lock))
+            .with_clock(at_1000);
+        for user in [1000, 1001] {
+            let status = api.get_status(status_caller(user)).unwrap();
+            assert_eq!(status.len(), 1, "{status:?}");
+            assert_eq!(status[0].0, "pin-lock-damaged");
+            assert_eq!(status[0].1, "severe");
+            assert!(!format!("{status:?}").contains("pinlock"), "no file name");
+        }
+    }
 
     #[test]
     fn status_is_scoped_to_the_caller() {

@@ -16,9 +16,12 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 use linuxhello_agent::audit::Audit;
-use linuxhello_agent::bus::{bus_alive, serve_with_pin_socket};
+use linuxhello_agent::bus::{bus_alive, serve_with_pin_lock};
 use linuxhello_agent::notify::{watchdog_interval, Notifier};
+use linuxhello_agent::pinlock::service::{Limits, PinLockService};
+use linuxhello_agent::pinlock::store::PinLockFile;
 use linuxhello_agent::pinsocket::PinSocket;
+use linuxhello_agent::policy::load;
 use linuxhello_agent::policy::user_store::UserPolicyStore;
 use linuxhello_agent::state::Config;
 use zbus::connection::Builder;
@@ -31,6 +34,24 @@ const ADMIN_POLICY_DIR: &str = "/etc/linuxhello/policy.d";
 
 /// The PIN socket (ADR-0021), in the runtime directory the unit creates for the Agent's user.
 const PIN_SOCKET: &str = "/run/linuxhello/pin.sock";
+
+/// The file that keeps the PIN lockout records across a restart, in the state directory.
+const PIN_LOCK_FILE: &str = "/var/lib/linuxhello/pinlock.toml";
+
+/// A path that cannot exist, so that loading "the admin layers alone" finds no user layer.
+const NO_USER_LAYER: &str = "/nonexistent/linuxhello/policy.toml";
+
+/// The Agent's PIN lock: the limits of the admin layers and the defaults (one set for the whole
+/// machine; a stricter limit in a user's own layer is not honoured yet), and the records of the
+/// lockout file. The policy is read once, here: a change applies at the next start.
+fn pin_lock() -> PinLockService {
+    let owner = rustix::process::getuid().as_raw();
+    let policy = load(Path::new(ADMIN_POLICY_DIR), Path::new(NO_USER_LAYER), 0);
+    PinLockService::start(
+        PinLockFile::new(PIN_LOCK_FILE, owner),
+        Limits::from_policy(&policy),
+    )
+}
 
 /// Binds the PIN socket and serves it on a thread, and returns it so that `ExpectPin` can announce
 /// PINs to it. A PIN is not used anywhere yet, so a socket that cannot be bound is reported on
@@ -59,12 +80,13 @@ fn serve_pin_socket() -> Option<Arc<PinSocket>> {
 async fn run() -> zbus::Result<()> {
     let pin_socket = serve_pin_socket();
     let store = UserPolicyStore::new(USER_POLICY_ROOT).with_admin_layer(ADMIN_POLICY_DIR, 0);
-    let connection = serve_with_pin_socket(
+    let connection = serve_with_pin_lock(
         Builder::system(),
         Config::new(Vec::new()),
         Some(store),
         Audit::journal(),
         pin_socket,
+        Some(pin_lock()),
     )
     .await?;
     // Under a watchdog (WatchdogSec= in the unit) the Agent tells the service manager it is alive,

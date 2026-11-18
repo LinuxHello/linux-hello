@@ -15,6 +15,7 @@
 //!
 //! C4 component: `pinManager` ([workspace.dsl](https://github.com/LinuxHello/linux-hello-architecture/blob/main/workspace.dsl))
 
+pub mod service;
 pub mod store;
 
 use std::collections::BTreeMap;
