@@ -711,6 +711,45 @@ fn the_policy_readers_answer_over_the_bus() {
 }
 
 #[test]
+fn a_user_and_root_get_their_status_over_the_bus() {
+    let daemon = Daemon::start();
+    let tmp = tempfile::TempDir::new().unwrap();
+    let store = UserPolicyStore::new(tmp.path());
+    run(async {
+        let _service = serve_with(
+            Builder::address(daemon.address.as_str()),
+            Config::new(vec![]),
+            Some(store),
+        )
+        .await
+        .expect("serve the Agent");
+        let client = connect(&daemon).await;
+
+        let reply = call(&client, "GetStatus", &()).await.expect("status");
+        let status: Vec<(String, String, String)> = reply.body().deserialize().expect("the reply");
+        assert!(status.is_empty(), "nothing is wrong: {status:?}");
+
+        // The test's user is not root: the details are refused with the Agent's own error.
+        if !is_root() {
+            let refused = call(&client, "GetStatusDetails", &()).await;
+            assert!(is_error(&refused, "io.github.LinuxHello.Error.Denied"));
+        }
+    });
+}
+
+/// Whether the test runs as root, whose uid the bus gives the Agent.
+fn is_root() -> bool {
+    std::fs::read_to_string("/proc/self/status")
+        .ok()
+        .and_then(|s| {
+            s.lines()
+                .find(|l| l.starts_with("Uid:"))
+                .and_then(|l| l.split_whitespace().nth(1).map(|u| u == "0"))
+        })
+        .unwrap_or(false)
+}
+
+#[test]
 fn capabilities_name_the_version() {
     let daemon = Daemon::start();
     run(async {

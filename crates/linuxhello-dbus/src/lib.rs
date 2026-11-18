@@ -49,10 +49,87 @@ pub const CAPABILITIES: &[&str] = &[
     "GetCapabilities",
     "GetEffectivePolicy",
     "GetPinRules",
+    "GetStatus",
+    "GetStatusDetails",
     "GetUserPolicy",
     "SetUserPolicy",
     "Unsubscribe",
 ];
+
+/// What `GetStatus` reports (ADR-0024): conditions with a code from a closed set, a severity and
+/// one fixed sentence. The offline `linuxhello-ctl` prints the same codes and sentences, so this
+/// module is the one table for both.
+pub mod status {
+    /// How serious a condition is, as `GetStatus` names it on the wire.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum Severity {
+        /// Something to know that needs no action.
+        Info,
+        /// Something that reduces what works.
+        Warning,
+        /// A method or context is lost, or a fact could not be established.
+        Severe,
+    }
+
+    impl Severity {
+        /// Every severity.
+        pub const ALL: [Self; 3] = [Self::Info, Self::Warning, Self::Severe];
+
+        /// The word on the wire and in `linuxhello-ctl`.
+        #[must_use]
+        pub const fn as_wire(self) -> &'static str {
+            match self {
+                Self::Info => "info",
+                Self::Warning => "warning",
+                Self::Severe => "severe",
+            }
+        }
+    }
+
+    /// The code of a policy that failed to load and fell back to PIN-only.
+    pub const POLICY_PIN_ONLY: &str = "policy-pin-only";
+    /// The sentence of [`POLICY_PIN_ONLY`].
+    pub const POLICY_PIN_ONLY_SENTENCE: &str =
+        "Biometric sign-in is off because a policy file failed to load.";
+
+    /// The base of the code of a context that no method set can satisfy; the code is this word,
+    /// then `: ` and the context.
+    pub const CONTEXT_UNSATISFIABLE: &str = "context-unsatisfiable";
+
+    /// The contexts a code may name on the bus. A context of any other name is reported as
+    /// [`OTHER_CONTEXT`], so that no word from a policy file reaches a client.
+    pub const CONTEXTS: &[&str] = &["login", "session", "sudo", "unlock"];
+    /// The parameter for a context that is not in [`CONTEXTS`].
+    pub const OTHER_CONTEXT: &str = "other";
+
+    /// The base codes `GetStatus` may return, a closed set. A code is never renamed; a new one is
+    /// an additive change (ADR-0024, point 3).
+    pub const CODES: &[&str] = &[POLICY_PIN_ONLY, CONTEXT_UNSATISFIABLE];
+
+    /// The sentence for an unsatisfiable `context`.
+    #[must_use]
+    pub fn context_unsatisfiable_sentence(context: &str) -> String {
+        format!("{context} cannot be unlocked with the configured methods.")
+    }
+
+    /// The code and the sentence for an unsatisfiable `context` as a client of the bus sees
+    /// them: the context's own name if it is in [`CONTEXTS`], the parameter `other` and a
+    /// sentence without a name if not.
+    #[must_use]
+    pub fn context_unsatisfiable_on_the_bus(context: &str) -> (String, String) {
+        if CONTEXTS.contains(&context) {
+            (
+                format!("{CONTEXT_UNSATISFIABLE}: {context}"),
+                context_unsatisfiable_sentence(context),
+            )
+        } else {
+            (
+                format!("{CONTEXT_UNSATISFIABLE}: {OTHER_CONTEXT}"),
+                "A context cannot be unlocked with the configured methods.".to_string(),
+            )
+        }
+    }
+}
 
 /// Method that returns the interface version and the optional members the Agent supports.
 pub const METHOD_GET_CAPABILITIES: &str = "GetCapabilities";
@@ -454,6 +531,19 @@ mod tests {
         }
         assert_eq!(PromptReason::from_wire("TOO-DARK"), None);
         assert_eq!(PromptReason::from_wire("locked"), None);
+    }
+
+    #[test]
+    fn a_context_outside_the_closed_set_is_named_other() {
+        use super::status::{context_unsatisfiable_on_the_bus, CODES, CONTEXTS};
+        let (code, sentence) = context_unsatisfiable_on_the_bus("weirdname");
+        assert_eq!(code, "context-unsatisfiable: other");
+        assert!(!sentence.contains("weirdname"));
+        for context in CONTEXTS {
+            let (code, _) = context_unsatisfiable_on_the_bus(context);
+            assert!(CODES.contains(&code.split(": ").next().unwrap()));
+            assert!(code.ends_with(context));
+        }
     }
 
     #[test]

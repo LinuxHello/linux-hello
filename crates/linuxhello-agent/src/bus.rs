@@ -8,7 +8,7 @@
 //! names; the Agent emits no broadcast signal.
 //!
 //! The members are the Rust method names in PascalCase: `OpenPrompt`, `ReportState`, `GetState`,
-//! `Subscribe`, `ClosePrompt`, `GetCapabilities`, `GetEffectivePolicy`, `GetPinRules`, and the signals `MethodsAvailable`, `ActiveMethods`, `State` and
+//! `Subscribe`, `ClosePrompt`, `GetCapabilities`, `GetEffectivePolicy`, `GetPinRules`, `GetStatus`, `GetStatusDetails`, and the signals `MethodsAvailable`, `ActiveMethods`, `State` and
 //! `Result` of `linuxhello_dbus::SIGNALS`. A refusal is a D-Bus error of the closed set
 //! `linuxhello_dbus::ERRORS` under `io.github.LinuxHello.Error` ([`AgentError`]): `Denied`,
 //! `LimitReached`, `InvalidArgument`, `InvalidPolicy`, `Unavailable` or `Damaged`.
@@ -445,6 +445,26 @@ impl AgentService {
     ) -> Result<String, AgentError> {
         let caller = caller_of(connection, header.sender()).await;
         self.api.get_user_policy(caller).map_err(to_bus)
+    }
+
+    /// Returns the conditions that affect the caller, each as code, severity and sentence.
+    async fn get_status(
+        &self,
+        #[zbus(header)] header: Header<'_>,
+        #[zbus(connection)] connection: &Connection,
+    ) -> Result<Vec<(String, String, String)>, AgentError> {
+        let caller = caller_of(connection, header.sender()).await;
+        self.api.get_status(caller).map_err(to_bus)
+    }
+
+    /// Returns the same conditions with the loader's detail; only root may call it.
+    async fn get_status_details(
+        &self,
+        #[zbus(header)] header: Header<'_>,
+        #[zbus(connection)] connection: &Connection,
+    ) -> Result<Vec<(String, String, String, String)>, AgentError> {
+        let caller = caller_of(connection, header.sender()).await;
+        self.api.get_status_details(caller).map_err(to_bus)
     }
 
     /// Returns the policy that applies to the caller as TOML text, and the paths an

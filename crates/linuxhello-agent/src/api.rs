@@ -142,6 +142,18 @@ pub struct StateReply {
     pub retry_after: u32,
 }
 
+/// One condition of `GetStatus`, with the detail only root sees.
+struct StatusItem {
+    /// The code, from the closed set of `linuxhello_dbus::status`.
+    code: String,
+    /// How serious it is.
+    severity: linuxhello_dbus::status::Severity,
+    /// The fixed sentence for the code.
+    sentence: String,
+    /// What the loader says, which names a file; for root only.
+    detail: Option<String>,
+}
+
 /// The PIN rules a client shows in its dialog, as wire values.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PinRulesReply {
@@ -521,6 +533,92 @@ impl Api {
         let uid = caller.uid.ok_or(ApiError::Denied)?;
         let store = self.user_policies.as_ref().ok_or(ApiError::Unavailable)?;
         store.get(uid).map_err(ApiError::from)
+    }
+
+    /// The conditions that affect the caller, each as `(code, severity, sentence)`: its own
+    /// policy layer and the faults of the machine that change what it can do. A fault is a
+    /// condition, never an error. The list names no file, no path and no other user
+    /// (`status_never_carries_a_file_name`, `status_is_scoped_to_the_caller`); ADR-0024.
+    ///
+    /// # Errors
+    ///
+    /// [`ApiError::Denied`] without a caller uid;
+    /// [`ApiError::Unavailable`] if the user policy store is not configured.
+    pub fn get_status(&self, caller: Caller) -> Result<Vec<(String, String, String)>, ApiError> {
+        let result = self.status_unaudited(&caller).map(|conditions| {
+            conditions
+                .into_iter()
+                .map(|c| (c.code, c.severity.as_wire().to_string(), c.sentence))
+                .collect()
+        });
+        self.audited(&caller, result)
+    }
+
+    /// The same conditions with the detail the loader gives, which names a file. Only root may
+    /// ask; anyone else is refused as for any request that is not theirs (ADR-0024, point 6).
+    ///
+    /// # Errors
+    ///
+    /// [`ApiError::Denied`] unless the caller's uid is 0;
+    /// [`ApiError::Unavailable`] if the user policy store is not configured.
+    pub fn get_status_details(
+        &self,
+        caller: Caller,
+    ) -> Result<Vec<(String, String, String, String)>, ApiError> {
+        let result = if caller.uid == Some(0) {
+            self.status_unaudited(&caller).map(|conditions| {
+                conditions
+                    .into_iter()
+                    .map(|c| {
+                        (
+                            c.code,
+                            c.severity.as_wire().to_string(),
+                            c.sentence,
+                            c.detail.unwrap_or_default(),
+                        )
+                    })
+                    .collect()
+            })
+        } else {
+            Err(ApiError::Denied)
+        };
+        self.audited(&caller, result)
+    }
+
+    /// The work of [`Api::get_status`], with the detail kept.
+    fn status_unaudited(&self, caller: &Caller) -> Result<Vec<StatusItem>, ApiError> {
+        use linuxhello_dbus::status::{
+            context_unsatisfiable_on_the_bus, Severity, POLICY_PIN_ONLY, POLICY_PIN_ONLY_SENTENCE,
+        };
+        let uid = caller.uid.ok_or(ApiError::Denied)?;
+        let policy = self.policy_of(uid)?;
+        let (layer, reason) = match &policy {
+            Policy::Effective(effective) => (&effective.layer, None),
+            Policy::PinOnly(pin) => (&pin.layer, Some(pin.reason.clone())),
+        };
+        let mut items = Vec::new();
+        if let Some(reason) = reason {
+            items.push(StatusItem {
+                code: POLICY_PIN_ONLY.to_string(),
+                severity: Severity::Severe,
+                sentence: POLICY_PIN_ONLY_SENTENCE.to_string(),
+                detail: Some(reason),
+            });
+        }
+        let mut contexts: Vec<&String> = layer.context.keys().collect();
+        contexts.sort();
+        for context in contexts {
+            if policy.methods_for(context).unsatisfiable {
+                let (code, sentence) = context_unsatisfiable_on_the_bus(context);
+                items.push(StatusItem {
+                    code,
+                    severity: Severity::Severe,
+                    sentence,
+                    detail: Some(format!("the context {context}")),
+                });
+            }
+        }
+        Ok(items)
     }
 
     /// The policy that applies to the caller, as TOML text with one `path = value` line per key,
@@ -1217,6 +1315,113 @@ mod tests {
         let bare = Api::new(Config::new(vec![]));
         assert_eq!(bare.get_effective_policy(known), Err(ApiError::Unavailable));
         assert_eq!(bare.get_pin_rules(known), Err(ApiError::Unavailable));
+    }
+
+    /// A caller of user `uid`, as the bus gives it.
+    fn status_caller(uid: u32) -> Caller {
+        Caller {
+            uid: Some(uid),
+            peer: None,
+        }
+    }
+
+    /// An admin file that makes a context unsatisfiable: two factors, one method.
+    const TOO_STRICT: &str = "[context.sudo]\nmethods = [\"pin\"]\nfactors = 2\n";
+
+    #[test]
+    fn status_is_scoped_to_the_caller() {
+        let tmp = TempDir::new().unwrap();
+        let (store, admin) = store_with_admin(&tmp);
+        std::fs::write(admin.join("strict.toml"), TOO_STRICT).unwrap();
+        // User 1001's own layer is damaged; user 1000's is fine.
+        let damaged = store.path(1001);
+        std::fs::create_dir_all(damaged.parent().unwrap()).unwrap();
+        std::fs::write(&damaged, "not a policy").unwrap();
+        let api = Api::new(Config::new(vec![])).with_user_policy_store(Some(store));
+
+        let codes = |uid| -> Vec<String> {
+            api.get_status(status_caller(uid))
+                .unwrap()
+                .into_iter()
+                .map(|(code, _, _)| code)
+                .collect()
+        };
+        assert_eq!(codes(1000), ["context-unsatisfiable: sudo"]);
+        let theirs = codes(1001);
+        assert!(
+            theirs.contains(&"policy-pin-only".to_string()),
+            "{theirs:?}"
+        );
+        assert!(!codes(1000).contains(&"policy-pin-only".to_string()));
+        assert!(codes(1002).iter().all(|c| c != "policy-pin-only"));
+    }
+
+    #[test]
+    fn status_never_carries_a_file_name() {
+        let tmp = TempDir::new().unwrap();
+        let (store, admin) = store_with_admin(&tmp);
+        std::fs::write(admin.join("broken-file.toml"), "this is not a policy").unwrap();
+        let api = Api::new(Config::new(vec![])).with_user_policy_store(Some(store));
+        let status = api.get_status(status_caller(1000)).unwrap();
+        assert!(status.iter().any(|(code, _, _)| code == "policy-pin-only"));
+        let all = format!("{status:?}");
+        for name in ["broken-file", "policy.d", ".toml", "/"] {
+            assert!(!all.contains(name), "the status names {name:?}: {all}");
+        }
+    }
+
+    #[test]
+    fn status_details_are_for_root_only() {
+        let tmp = TempDir::new().unwrap();
+        let (store, admin) = store_with_admin(&tmp);
+        std::fs::write(admin.join("broken-file.toml"), "this is not a policy").unwrap();
+        let api = Api::new(Config::new(vec![])).with_user_policy_store(Some(store));
+
+        let details = api.get_status_details(status_caller(0)).unwrap();
+        assert!(
+            details
+                .iter()
+                .any(|(_, _, _, detail)| detail.contains("broken-file")),
+            "{details:?}"
+        );
+        assert_eq!(
+            api.get_status_details(status_caller(1000)),
+            Err(ApiError::Denied)
+        );
+        let anonymous = Caller {
+            uid: None,
+            peer: None,
+        };
+        assert_eq!(api.get_status_details(anonymous), Err(ApiError::Denied));
+    }
+
+    #[test]
+    fn status_codes_are_a_closed_set() {
+        use linuxhello_dbus::status::{Severity, CODES, CONTEXTS, OTHER_CONTEXT};
+        let tmp = TempDir::new().unwrap();
+        let (store, admin) = store_with_admin(&tmp);
+        // The schema accepts only the four contexts of `CONTEXTS`, so a name from a file cannot
+        // reach a client (`linuxhello_dbus::status` keeps `other` for one that ever could).
+        std::fs::write(admin.join("odd.toml"), TOO_STRICT).unwrap();
+        let api = Api::new(Config::new(vec![])).with_user_policy_store(Some(store));
+        let status = api.get_status(status_caller(1000)).unwrap();
+        assert!(!status.is_empty(), "{status:?}");
+        for (code, severity, _sentence) in &status {
+            let (base, parameter) = code
+                .split_once(": ")
+                .map_or((code.as_str(), None), |(b, p)| (b, Some(p)));
+            assert!(CODES.contains(&base), "unknown code {code}");
+            if let Some(parameter) = parameter {
+                assert!(
+                    CONTEXTS.contains(&parameter) || parameter == OTHER_CONTEXT,
+                    "unknown parameter {code}"
+                );
+            }
+            assert!(Severity::ALL.iter().any(|s| s.as_wire() == severity));
+        }
+        assert!(status
+            .iter()
+            .any(|(code, _, _)| code == "context-unsatisfiable: sudo"));
     }
 
     #[test]
