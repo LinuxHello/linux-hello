@@ -4,6 +4,7 @@
 
 #![forbid(unsafe_code)]
 
+mod ask;
 mod policy;
 mod probe;
 mod status;
