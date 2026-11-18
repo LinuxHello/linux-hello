@@ -23,6 +23,7 @@ use std::path::Path;
 
 use crate::probe::Host;
 use linuxhello_agent::policy::{load, Policy, UserPolicyStore};
+use linuxhello_dbus::status;
 
 /// The usage line printed on every usage error.
 const USAGE: &str = "usage: linuxhello-ctl status --user <name|uid> | doctor";
@@ -81,9 +82,9 @@ pub struct Condition {
 /// The condition for a policy that failed to load.
 fn pin_only(reason: &str) -> Condition {
     Condition {
-        code: "policy-pin-only".to_string(),
+        code: status::POLICY_PIN_ONLY.to_string(),
         severity: Severity::Severe,
-        sentence: "Biometric sign-in is off because a policy file failed to load.".to_string(),
+        sentence: status::POLICY_PIN_ONLY_SENTENCE.to_string(),
         detail: Some(reason.to_string()),
         fix: "Fix or remove the file named above, then run doctor again.",
     }
@@ -92,9 +93,9 @@ fn pin_only(reason: &str) -> Condition {
 /// The condition for a context that no method set can satisfy.
 fn unsatisfiable(context: &str) -> Condition {
     Condition {
-        code: format!("context-unsatisfiable: {context}"),
+        code: format!("{}: {context}", status::CONTEXT_UNSATISFIABLE),
         severity: Severity::Severe,
-        sentence: format!("{context} cannot be unlocked with the configured methods."),
+        sentence: status::context_unsatisfiable_sentence(context),
         detail: None,
         fix: "Add a method to the context or lower its factors in the policy file.",
     }

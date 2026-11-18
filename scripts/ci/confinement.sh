@@ -106,6 +106,9 @@ check "the_refused_policy_left_the_stored_layer_alone" 'call lh $N $P $N GetUser
 check "the_user_reads_its_own_effective_policy" 'call lh $N $P $N GetEffectivePolicy | grep -q "methods.biometrics_allowed = false"'
 check "another_user_effective_policy_has_nothing_of_it" '! call nobody $N $P $N GetEffectivePolicy | grep -q "biometrics_allowed = false"'
 check "pin_rules_are_readable" 'call nobody $N $P $N GetPinRules | grep -q "^uuasas "'
+check "status_is_empty_for_a_sound_policy" 'call lh $N $P $N GetStatus | grep -qx "a(sss) 0"'
+check "status_details_are_refused_to_a_user" 'call lh $N $P $N GetStatusDetails | grep -q "not allowed"'
+check "status_details_are_given_to_root" 'sudo busctl --system call $N $P $N GetStatusDetails | grep -qx "a(ssss) 0"'
 check "the_layer_is_a_private_file_of_the_agents_user" '[ "$(sudo stat -c "%U %a" /var/lib/linuxhello/users/$LHUID/policy.toml)" = "linuxhello 600" ]'
 
 # A subscriber hears the Agent's real signal; a bystander and two forgers cause nothing.
