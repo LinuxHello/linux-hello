@@ -9,6 +9,7 @@ Every commit must be signed off (`git commit -s`), certifying the [DCO](https://
 1. Pick the next issue: run `make next`, or open the **Next up** view of the Roadmap board. [The backlog](docs/project/backlog.md) explains the lanes, labels and order. Code only an issue that is `status:ready` and has an `## Implementation brief`.
 2. Branch from `main`, keep the change to one container where possible. Run `make hooks` once so commits with unformatted code are refused.
 3. Run `make fix`, then `make gates`, which runs every CI gate locally, fuzzing included.
+   `make bench` times the Agent's method calls against the 5 ms budget (L1). It is not a gate yet: it prints numbers and exits 0 unless `LH_ENFORCE_BUDGET=1` is set. Run it when you change the request path of the Agent and put the table in the pull request.
 4. Open a pull request using the template: intent, process mapping, acceptance criteria met. All required checks must pass, `quality-gate` included; it is squash merged.
 
 ## Rules
