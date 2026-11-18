@@ -13,6 +13,7 @@
 use linuxhello_dbus::{AuthMethod, PromptId, PromptReason, PromptResult, PromptState, SIGNALS};
 
 use crate::audit::{Audit, Event};
+use crate::pinsocket::{PinSocket, Process};
 use crate::policy::load::Policy;
 use crate::policy::schema::parse_layer;
 use crate::policy::user_store::{StoreError, UserPolicyStore, MAX_POLICY_BYTES};
@@ -533,6 +534,52 @@ impl Api {
         let uid = caller.uid.ok_or(ApiError::Denied)?;
         let store = self.user_policies.as_ref().ok_or(ApiError::Unavailable)?;
         store.get(uid).map_err(ApiError::from)
+    }
+
+    /// Announces a PIN (`ExpectPin`, ADR-0021 amendment 2026-11-18): the connection that opened
+    /// the prompt `prompt_id` is about to send one PIN on `socket`, for the user the prompt is
+    /// for. `process` is the caller's process id as the bus reports it. The Agent then accepts
+    /// one PIN from a connection of the same user and process, within 30 seconds
+    /// (`an_expected_process_may_send_one_pin`).
+    ///
+    /// # Errors
+    ///
+    /// [`ApiError::Denied`] without a caller uid, a connection name or a process id, for a
+    /// prompt that is not the caller's or was opened by another connection, and for a prompt
+    /// with no subject (one text for all, so nothing is told about other users' prompts);
+    /// [`ApiError::InvalidArgument`] for a malformed id; [`ApiError::LimitReached`] when 64
+    /// callers already wait; [`ApiError::Unavailable`] without a PIN socket.
+    pub fn expect_pin(
+        &self,
+        caller: Caller,
+        process: Option<u32>,
+        prompt_id: &str,
+        socket: Option<&PinSocket>,
+    ) -> Result<(), ApiError> {
+        let result = self.expect_pin_unaudited(&caller, process, prompt_id, socket);
+        self.audited(&caller, result)
+    }
+
+    /// The work of [`Api::expect_pin`], without the audit record.
+    fn expect_pin_unaudited(
+        &self,
+        caller: &Caller,
+        process: Option<u32>,
+        prompt_id: &str,
+        socket: Option<&PinSocket>,
+    ) -> Result<(), ApiError> {
+        let uid = caller.uid.ok_or(ApiError::Denied)?;
+        let prompt = parse_prompt(prompt_id)?;
+        let socket = socket.ok_or(ApiError::Unavailable)?;
+        let peer = Peer(caller.peer.ok_or(ApiError::Denied)?.as_str().to_string());
+        let subject = self
+            .store
+            .subject_of(uid, &prompt, Some(&peer))?
+            .ok_or(ApiError::Denied)?;
+        let pid = process.ok_or(ApiError::Denied)?;
+        socket
+            .expect(Process { uid, pid }, subject)
+            .map_err(|_| ApiError::LimitReached)
     }
 
     /// The conditions that affect the caller, each as `(code, severity, sentence)`: its own
@@ -1422,6 +1469,169 @@ mod tests {
         assert!(status
             .iter()
             .any(|(code, _, _)| code == "context-unsatisfiable: sudo"));
+    }
+
+    /// A caller of user `uid` on the bus connection `peer`.
+    fn on_peer(uid: u32, peer: &str) -> Caller {
+        Caller {
+            uid: Some(uid),
+            peer: PeerName::new(peer),
+        }
+    }
+
+    /// An API with a recorder, and a PIN socket in a temporary directory.
+    fn pin_setup() -> (Api, Recorder, PinSocket, std::path::PathBuf, TempDir) {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("pin.sock");
+        let uid = rustix::process::getuid().as_raw();
+        let socket = PinSocket::bind(&path, uid).unwrap();
+        let (api, recorder) = audited_api(Config::new(vec![]));
+        (api, recorder, socket, path, dir)
+    }
+
+    /// A valid prompt id.
+    fn prompt(name: &str) -> String {
+        PromptId::derive("test", name, "s1").as_str().to_string()
+    }
+
+    #[test]
+    fn expect_pin_for_another_users_prompt_is_denied() {
+        let (mut api, recorder, socket, _path, _dir) = pin_setup();
+        let id = prompt("p1");
+        api.open_prompt_from(on_peer(1000, ":1.1"), ":1.1", &id, Some(1000))
+            .unwrap();
+        // The opener may; another user, another connection of the opener's user and a prompt
+        // that does not exist all get the same refusal.
+        assert_eq!(
+            api.expect_pin(on_peer(1000, ":1.1"), Some(10), &id, Some(&socket)),
+            Ok(())
+        );
+        let stranger = on_peer(1001, ":1.2");
+        let other_connection = on_peer(1000, ":1.3");
+        let nothing = prompt("nothing");
+        for (caller, what) in [
+            (stranger, &id),
+            (other_connection, &id),
+            (on_peer(1000, ":1.1"), &nothing),
+        ] {
+            assert_eq!(
+                api.expect_pin(caller, Some(11), what, Some(&socket)),
+                Err(ApiError::Denied)
+            );
+        }
+        assert_eq!(recorder.events().len(), 3, "each refusal is audited once");
+    }
+
+    #[test]
+    fn a_caller_without_a_process_id_is_denied() {
+        let (mut api, _recorder, socket, _path, _dir) = pin_setup();
+        let id = prompt("p1");
+        api.open_prompt_from(on_peer(1000, ":1.1"), ":1.1", &id, Some(1000))
+            .unwrap();
+        assert_eq!(
+            api.expect_pin(on_peer(1000, ":1.1"), None, &id, Some(&socket)),
+            Err(ApiError::Denied)
+        );
+    }
+
+    #[test]
+    fn a_prompt_without_a_subject_is_denied() {
+        let (mut api, _recorder, socket, _path, _dir) = pin_setup();
+        let id = prompt("p1");
+        api.open_prompt_from(on_peer(0, ":1.1"), ":1.1", &id, None)
+            .unwrap();
+        assert_eq!(
+            api.expect_pin(on_peer(0, ":1.1"), Some(10), &id, Some(&socket)),
+            Err(ApiError::Denied)
+        );
+    }
+
+    #[test]
+    fn a_malformed_prompt_id_is_invalid_argument() {
+        let (api, _recorder, socket, _path, _dir) = pin_setup();
+        assert_eq!(
+            api.expect_pin(on_peer(1000, ":1.1"), Some(10), "not an id", Some(&socket)),
+            Err(ApiError::InvalidArgument)
+        );
+    }
+
+    #[test]
+    fn expect_pin_without_a_pin_socket_is_unavailable() {
+        let (mut api, recorder, _socket, _path, _dir) = pin_setup();
+        let id = prompt("p1");
+        api.open_prompt_from(on_peer(1000, ":1.1"), ":1.1", &id, Some(1000))
+            .unwrap();
+        assert_eq!(
+            api.expect_pin(on_peer(1000, ":1.1"), Some(10), &id, None),
+            Err(ApiError::Unavailable)
+        );
+        assert!(
+            recorder.events().is_empty(),
+            "an unavailable service is not a refusal"
+        );
+    }
+
+    #[test]
+    fn a_full_table_is_limit_reached() {
+        let (mut api, _recorder, socket, _path, _dir) = pin_setup();
+        let id = prompt("p1");
+        api.open_prompt_from(on_peer(1000, ":1.1"), ":1.1", &id, Some(1000))
+            .unwrap();
+        for pid in 0..64 {
+            assert_eq!(
+                api.expect_pin(on_peer(1000, ":1.1"), Some(1000 + pid), &id, Some(&socket)),
+                Ok(())
+            );
+        }
+        assert_eq!(
+            api.expect_pin(on_peer(1000, ":1.1"), Some(5000), &id, Some(&socket)),
+            Err(ApiError::LimitReached)
+        );
+    }
+
+    #[test]
+    fn an_expected_process_may_send_one_pin() {
+        use std::io::{Read, Write};
+        let (mut api, _recorder, socket, path, _dir) = pin_setup();
+        let (uid, pid) = (rustix::process::getuid().as_raw(), std::process::id());
+        let id = prompt("p1");
+        api.open_prompt_from(on_peer(uid, ":1.1"), ":1.1", &id, Some(uid))
+            .unwrap();
+        let send = |pin: &[u8]| {
+            let mut stream = std::os::unix::net::UnixStream::connect(&path).unwrap();
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                .unwrap();
+            let mut bytes = u16::try_from(pin.len()).unwrap().to_be_bytes().to_vec();
+            bytes.extend_from_slice(pin);
+            drop(stream.write_all(&bytes));
+            drop(stream.shutdown(std::net::Shutdown::Write));
+            let mut reply = [9_u8; 1];
+            stream.read_exact(&mut reply).unwrap();
+            reply[0]
+        };
+        let mut got = Vec::new();
+        std::thread::scope(|scope| {
+            // Before the call: refused. After it: accepted, once.
+            let refused = scope.spawn(|| send(b"1234"));
+            socket
+                .serve_one(&mut |s| got.push((s.subject, s.pin.to_vec())))
+                .unwrap();
+            assert_eq!(refused.join().unwrap(), crate::pinsocket::REPLY_REFUSED);
+            api.expect_pin(on_peer(uid, ":1.1"), Some(pid), &id, Some(&socket))
+                .unwrap();
+            let accepted = scope.spawn(|| send(b"1234"));
+            socket
+                .serve_one(&mut |s| got.push((s.subject, s.pin.to_vec())))
+                .unwrap();
+            assert_eq!(accepted.join().unwrap(), crate::pinsocket::REPLY_ACCEPTED);
+            let again = scope.spawn(|| send(b"1234"));
+            socket
+                .serve_one(&mut |s| got.push((s.subject, s.pin.to_vec())))
+                .unwrap();
+            assert_eq!(again.join().unwrap(), crate::pinsocket::REPLY_REFUSED);
+        });
+        assert_eq!(got, vec![(uid, b"1234".to_vec())]);
     }
 
     #[test]

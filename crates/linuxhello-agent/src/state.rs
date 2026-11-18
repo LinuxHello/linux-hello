@@ -352,6 +352,31 @@ impl StateStore {
         Ok(entry.subscribers.clone())
     }
 
+    /// The subject of a prompt that `reporter_uid` opened, which is `None` when the prompt was
+    /// opened for nobody in particular. With `opener`, only if the connection that opened the
+    /// prompt is that one: another process of the same user is refused like a stranger. A
+    /// prompt that does not exist, is another user's or has another opener is the same
+    /// [`Error::Denied`], so the answer tells nothing about other users' prompts.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Denied`] as above.
+    pub fn subject_of(
+        &self,
+        reporter_uid: u32,
+        prompt: &PromptId,
+        opener: Option<&Peer>,
+    ) -> Result<Option<u32>, Error> {
+        let entry = self
+            .prompts
+            .get(&(reporter_uid, prompt.clone()))
+            .ok_or(Error::Denied)?;
+        if opener.is_some() && entry.opener.as_ref() != opener {
+            return Err(Error::Denied);
+        }
+        Ok(entry.subject)
+    }
+
     /// The current state of the prompt.
     ///
     /// # Errors

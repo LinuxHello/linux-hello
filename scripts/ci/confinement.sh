@@ -122,6 +122,32 @@ for u in lh nobody; do
   check "another_user_cannot_use_the_pin_socket_($u)" '[ "$(pin_client '$u')" = 1 ]'
 done
 check "another_user_cannot_replace_the_pin_socket" '! sudo -u lh rm /run/linuxhello/pin.sock 2>/dev/null && ! sudo -u lh mv /run/linuxhello/pin.sock /run/linuxhello/x 2>/dev/null && [ -S /run/linuxhello/pin.sock ]'
+
+# ExpectPin (ADR-0021 amendment 2026-11-18): one process, so that the process id the bus reports
+# and the one the socket reports are the same. It opens a prompt for itself and sends a PIN before
+# the call (refused), after it (accepted) and again (refused: the call is used up).
+cat > /tmp/pin_flow.py <<'PY'
+import hashlib, socket, sys, dbus
+N, P = "io.github.LinuxHello.Agent1", "/io/github/LinuxHello/Agent1"
+d = hashlib.sha256(); d.update(b"io.github.LinuxHello.PromptId1")
+for a in ["vmtest", "tty3", "pinflow"]:
+    d.update(len(a).to_bytes(8, "big")); d.update(a.encode())
+prompt = d.hexdigest()
+def send_pin():
+    s = socket.socket(socket.AF_UNIX); s.connect("/run/linuxhello/pin.sock")
+    s.sendall(b"\x00\x041234"); s.shutdown(socket.SHUT_WR)
+    return s.recv(1)[0]
+agent = dbus.Interface(dbus.SystemBus().get_object(N, P), N)
+agent.OpenPrompt(prompt, dbus.Int64(int(sys.argv[1])))
+before = send_pin()
+agent.ExpectPin(prompt)
+after = send_pin()
+again = send_pin()
+print("REPLIES", before, after, again)
+PY
+chmod 644 /tmp/pin_flow.py
+check "the_opener_may_send_one_pin_after_expect_pin" '[ "$(sudo -u lh python3 /tmp/pin_flow.py $LHUID | tail -1)" = "REPLIES 1 0 1" ]'
+check "another_user_cannot_expect_a_pin_for_a_prompt_that_is_not_theirs" 'call nobody $N $P $N ExpectPin s $ID | grep -q "not allowed"'
 check "the_layer_is_a_private_file_of_the_agents_user" '[ "$(sudo stat -c "%U %a" /var/lib/linuxhello/users/$LHUID/policy.toml)" = "linuxhello 600" ]'
 
 # A subscriber hears the Agent's real signal; a bystander and two forgers cause nothing.

@@ -390,9 +390,11 @@ fn pin_is_never_a_dbus_message_body() {
         // The interface must be there, or the test would pass on nothing.
         assert!(xml.contains(AGENT_INTERFACE));
         assert!(xml.contains("OpenPrompt"));
-        // Documentation comments are prose, not names. `GetPinRules` is the one name that says
-        // "pin": it returns the rules a PIN must follow (length and character classes), never a
-        // PIN (ADR-0014, amendment 2026-11-17, point 3), so it is named here and nothing else is.
+        // Documentation comments are prose, not names. Two names say "pin" and are named here,
+        // nothing else is: `GetPinRules` returns the rules a PIN must follow (length and character
+        // classes), never a PIN (ADR-0014, amendment 2026-11-17, point 3), and `ExpectPin`
+        // announces that the opener of a prompt is about to send one on the PIN socket; it carries
+        // a prompt id and nothing secret (ADR-0021, amendment 2026-11-18).
         let names_only = {
             let mut text = xml.clone();
             while let (Some(start), Some(end)) = (text.find("<!--"), text.find("-->")) {
@@ -401,7 +403,7 @@ fn pin_is_never_a_dbus_message_body() {
             text
         };
         for name in names_only.split(['"', '\'']).skip(1).step_by(2) {
-            if name == "GetPinRules" {
+            if name == "GetPinRules" || name == "ExpectPin" {
                 continue;
             }
             for word in words_of(name) {
@@ -747,6 +749,105 @@ fn is_root() -> bool {
                 .and_then(|l| l.split_whitespace().nth(1).map(|u| u == "0"))
         })
         .unwrap_or(false)
+}
+
+/// The reply byte of a client that sends one frame carrying `pin` on the socket at `path`.
+fn send_pin(path: &std::path::Path, pin: &[u8]) -> u8 {
+    use std::io::{Read, Write};
+    let mut stream = std::os::unix::net::UnixStream::connect(path).expect("connect");
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+        .unwrap();
+    let mut bytes = u16::try_from(pin.len()).unwrap().to_be_bytes().to_vec();
+    bytes.extend_from_slice(pin);
+    drop(stream.write_all(&bytes));
+    drop(stream.shutdown(std::net::Shutdown::Write));
+    let mut reply = [9_u8; 1];
+    stream.read_exact(&mut reply).expect("one byte of reply");
+    reply[0]
+}
+
+#[test]
+fn a_pin_is_accepted_only_after_expect_pin_by_the_prompt_opener() {
+    use linuxhello_agent::audit::Audit;
+    use linuxhello_agent::bus::serve_with_pin_socket;
+    use linuxhello_agent::pinsocket::{PinSocket, REPLY_ACCEPTED, REPLY_REFUSED};
+    let daemon = Daemon::start();
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = dir.path().join("pin.sock");
+    let socket = std::sync::Arc::new(PinSocket::bind(&path, my_uid()).unwrap());
+    let (sent, received) = std::sync::mpsc::channel();
+    PinSocket::serve_forever(std::sync::Arc::clone(&socket), move |s| {
+        sent.send((s.subject, s.pin.to_vec())).unwrap();
+    });
+    run(async {
+        let _service = serve_with_pin_socket(
+            Builder::address(daemon.address.as_str()),
+            Config::new(vec![]),
+            None,
+            Audit::none(),
+            Some(socket),
+        )
+        .await
+        .expect("serve the Agent");
+        let client = connect(&daemon).await;
+        let id = pid("p1");
+        call(&client, "OpenPrompt", &(id.as_str(), i64::from(my_uid())))
+            .await
+            .expect("open the prompt");
+
+        assert_eq!(send_pin(&path, b"1234"), REPLY_REFUSED, "no ExpectPin yet");
+
+        call(&client, "ExpectPin", &(id.as_str(),))
+            .await
+            .expect("the opener may announce a PIN");
+        assert_eq!(send_pin(&path, b"1234"), REPLY_ACCEPTED);
+        let got = received
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("the sink got the PIN");
+        assert_eq!(got, (my_uid(), b"1234".to_vec()));
+        assert_eq!(
+            send_pin(&path, b"1234"),
+            REPLY_REFUSED,
+            "the call is used up"
+        );
+
+        // Another connection of the same user did not open the prompt.
+        let other = connect(&daemon).await;
+        let refused = call(&other, "ExpectPin", &(id.as_str(),)).await;
+        assert!(is_error(&refused, "io.github.LinuxHello.Error.Denied"));
+        let malformed = call(&client, "ExpectPin", &("not an id",)).await;
+        assert!(is_error(
+            &malformed,
+            "io.github.LinuxHello.Error.InvalidArgument"
+        ));
+    });
+}
+
+#[test]
+fn expect_pin_without_a_socket_is_unavailable_over_the_bus() {
+    let daemon = Daemon::start();
+    run(async {
+        let _service = serve(
+            Builder::address(daemon.address.as_str()),
+            Config::new(vec![]),
+        )
+        .await
+        .expect("serve the Agent");
+        let client = connect(&daemon).await;
+        let id = pid("p1");
+        call(&client, "OpenPrompt", &(id.as_str(), i64::from(my_uid())))
+            .await
+            .expect("open the prompt");
+        let result = call(&client, "ExpectPin", &(id.as_str(),)).await;
+        assert!(is_error(&result, "io.github.LinuxHello.Error.Unavailable"));
+    });
+}
+
+#[test]
+fn expect_pin_is_listed_in_capabilities() {
+    assert!(linuxhello_dbus::CAPABILITIES.contains(&"ExpectPin"));
+    assert_eq!(linuxhello_dbus::METHOD_EXPECT_PIN, "ExpectPin");
 }
 
 #[test]
