@@ -1,11 +1,12 @@
-//! The administrator's offline commands `status` and `doctor`: what is wrong with the policy files,
+//! The administrator's commands `status` and `doctor`: what is wrong with the policy files,
 //! in the words the user and the administrator read.
 //!
 //! C4 component: `cliCommands` ([workspace.dsl](https://github.com/LinuxHello/linux-hello-architecture/blob/main/workspace.dsl))
 //!
-//! Both commands read the policy files on disk through the Agent's own loader and need no running
-//! Agent. They probe nothing else (no TPM, no service, no bus) and never write
-//! (`status_and_doctor_never_write`). ADR-0018 says that only the Agent reads and writes a user's
+//! `status --user` and `doctor` read the policy files on disk through the Agent's own loader and
+//! need no running Agent; `status` without `--user` is the exception: it asks the running Agent
+//! with one call, `GetStatus`, and falls back to the files when the Agent does not answer. Neither
+//! command writes (`status_and_doctor_never_write`). ADR-0018 says that only the Agent reads and writes a user's
 //! layer; like `policy show` and `policy reset`, these commands are the administrator's offline
 //! exception to that sentence.
 //!
@@ -15,9 +16,10 @@
 //! A fact that cannot be read is a condition of its own, never a clean result
 //! (`doctor_reports_an_unreadable_state_directory_as_a_condition_not_a_clean_run`).
 //!
-//! `status` without `--user` asks the running Agent (`GetStatus`) and falls back to the policy files
-//! with `agent-unreachable`; with `--user` it probes only the policy files. `doctor` probes the policy files and four machine facts:
-//! the Agent unit, the AppArmor profile, the fingerprint service, and Howdy.
+//! `status` without `--user` asks the running Agent (`GetStatus`) and falls back to the policy
+//! files with `agent-unreachable` (`an_agent_that_does_not_answer_is_a_condition_and_the_files_are_read`);
+//! `status --user` probes nothing (`status_probes_nothing`). `doctor` probes the policy files and
+//! four machine facts: the Agent unit, the AppArmor profile, the fingerprint service, and Howdy.
 
 use std::io::{ErrorKind, Write};
 use std::path::Path;
