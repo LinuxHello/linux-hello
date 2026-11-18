@@ -30,6 +30,10 @@ fn socket() -> (PinSocket, PathBuf, TempDir) {
 /// What a client does: sends `bytes`, closes its writing side, reads the reply.
 fn send(path: &PathBuf, bytes: &[u8]) -> u8 {
     let mut stream = UnixStream::connect(path).unwrap();
+    // A socket that is not served must fail the test, not hang it.
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
     // The Agent refuses without reading when the caller has no control call, and may have closed
     // the connection by now: a failed write or shutdown is not an error here, and the reply it
     // sent first is still there to read.
@@ -283,4 +287,48 @@ fn pin_buffers_are_cleared_after_use() {
     // The probe itself works: a type with Debug is seen, and a Submission is not.
     const { assert!(Probe::<u8>::IMPLEMENTS_DEBUG) };
     const { assert!(!Probe::<Submission>::IMPLEMENTS_DEBUG) };
+}
+
+/// A socket that is served on a thread of its own, as the Agent serves it.
+fn served(
+    sink: impl FnMut(Submission) + Send + 'static,
+) -> (std::sync::Arc<PinSocket>, PathBuf, TempDir) {
+    let (socket, path, dir) = socket();
+    let socket = std::sync::Arc::new(socket);
+    PinSocket::serve_forever(std::sync::Arc::clone(&socket), sink);
+    (socket, path, dir)
+}
+
+#[test]
+fn a_served_socket_refuses_a_stranger_with_one_byte() {
+    let reached = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let seen = std::sync::Arc::clone(&reached);
+    let (_socket, path, _dir) =
+        served(move |_| seen.store(true, std::sync::atomic::Ordering::SeqCst));
+    // No control call was made: this is a stranger, whoever it is.
+    assert_eq!(send(&path, &frame(b"0000")), REPLY_REFUSED);
+    assert!(!reached.load(std::sync::atomic::Ordering::SeqCst));
+}
+
+#[test]
+fn serving_goes_on_after_a_refused_client() {
+    let (_socket, path, _dir) = served(|_| {});
+    for _ in 0..3 {
+        assert_eq!(send(&path, &frame(b"0000")), REPLY_REFUSED);
+    }
+}
+
+#[test]
+fn a_served_socket_hands_an_expected_pin_to_the_sink() {
+    let (sent, received) = std::sync::mpsc::channel();
+    let (socket, path, _dir) = served(move |submission| {
+        sent.send((submission.subject, submission.pin.to_vec()))
+            .unwrap();
+    });
+    socket.expect(me(), 4242).unwrap();
+    assert_eq!(send(&path, &frame(b"1234")), REPLY_ACCEPTED);
+    let got = received.recv_timeout(Duration::from_secs(2)).unwrap();
+    assert_eq!(got, (4242, b"1234".to_vec()));
+    // Once: the same process is a stranger again.
+    assert_eq!(send(&path, &frame(b"1234")), REPLY_REFUSED);
 }

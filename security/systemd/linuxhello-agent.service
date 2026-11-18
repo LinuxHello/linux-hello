@@ -29,6 +29,10 @@ NotifyAccess=main
 # State: root-key blobs and prompt data live under /var/lib/linuxhello, mode 0700.
 StateDirectory=linuxhello
 StateDirectoryMode=0700
+# /run/linuxhello holds the PIN socket (ADR-0021). The directory is the Agent's and nobody else can
+# change it; every user may enter it, because a PAM module runs as whoever signs in.
+RuntimeDirectory=linuxhello
+RuntimeDirectoryMode=0755
 UMask=0077
 # The admin policy layer is read-only for the Agent.
 ReadOnlyPaths=/etc/linuxhello
