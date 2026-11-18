@@ -14,10 +14,14 @@
 //! file name or a path (`status_never_prints_a_file_name`); `doctor` names the file in `detail`.
 //! A fact that cannot be read is a condition of its own, never a clean result
 //! (`doctor_reports_an_unreadable_state_directory_as_a_condition_not_a_clean_run`).
+//!
+//! `status` probes only the policy files. `doctor` probes the policy files and four machine facts:
+//! the Agent unit, the AppArmor profile, the fingerprint service, and Howdy.
 
 use std::io::{ErrorKind, Write};
 use std::path::Path;
 
+use crate::probe::Host;
 use linuxhello_agent::policy::{load, Policy, UserPolicyStore};
 
 /// The usage line printed on every usage error.
@@ -25,6 +29,23 @@ const USAGE: &str = "usage: linuxhello-ctl status --user <name|uid> | doctor";
 
 /// A path that cannot exist, so that loading "the admin layers alone" finds no user layer.
 const NO_USER_LAYER: &str = "/nonexistent/linuxhello/policy.toml";
+
+/// The list of loaded AppArmor profiles and their modes.
+const APPARMOR_PROFILES: &str = "/sys/kernel/security/apparmor/profiles";
+
+/// Howdy's configuration file: present when Howdy is installed.
+const HOWDY_CONFIG: &str = "/etc/howdy/config.ini";
+
+/// The call that asks the fingerprint service for its default device; it fails when there is none.
+const FPRINT_PROBE: [&str; 7] = [
+    "--system",
+    "--timeout=5",
+    "call",
+    "net.reactivated.Fprint",
+    "/net/reactivated/Fprint/Manager",
+    "net.reactivated.Fprint.Manager",
+    "GetDefaultDevice",
+];
 
 /// How serious a condition is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -90,6 +111,91 @@ fn state_directory_unreadable() -> Condition {
     }
 }
 
+/// A fact about the machine that `doctor` could not establish: a condition of its own, never a
+/// clean result.
+fn fact_unreadable(what: &str, fix: &'static str) -> Condition {
+    Condition {
+        code: format!("status-fact-unreadable: {what}"),
+        severity: Severity::Severe,
+        sentence: format!("Could not check {what}; see linuxhello-ctl doctor."),
+        detail: None,
+        fix,
+    }
+}
+
+/// The four facts about the machine that `doctor` probes through `host`: the Agent unit, the
+/// AppArmor profile, the fingerprint service and Howdy. A probe only reads, and the only commands
+/// and files it uses are the ones named here (`doctor_probes_only_the_named_commands_and_files`).
+fn machine_conditions(host: &dyn Host) -> Vec<Condition> {
+    let mut found = Vec::new();
+
+    match host.run("systemctl", &["is-active", "linuxhello-agent.service"]) {
+        None => found.push(fact_unreadable(
+            "the agent unit",
+            "Run as root and check that systemctl works.",
+        )),
+        Some((0, stdout)) if stdout == "active" => {}
+        Some(_) => found.push(Condition {
+            code: "agent-unit-inactive".to_string(),
+            severity: Severity::Severe,
+            sentence: "The Linux Hello Agent is not running.".to_string(),
+            detail: None,
+            fix: "Run `systemctl status linuxhello-agent` and read why it stopped.",
+        }),
+    }
+
+    match host.read(Path::new(APPARMOR_PROFILES)) {
+        None => found.push(fact_unreadable(
+            "the AppArmor profile list",
+            "Run as root on a system with AppArmor enabled.",
+        )),
+        Some(list) => {
+            let line = list.lines().find(|l| l.starts_with("linuxhello-agent ("));
+            let detail = match line {
+                Some(l) if l.ends_with("(enforce)") => None,
+                Some(_) => Some("in complain mode"),
+                None => Some("not loaded"),
+            };
+            if let Some(detail) = detail {
+                found.push(Condition {
+                    code: "agent-profile-not-enforcing".to_string(),
+                    severity: Severity::Severe,
+                    sentence: "The Agent's AppArmor profile is not in enforce mode, so the Agent will not start.".to_string(),
+                    detail: Some(detail.to_string()),
+                    fix: "Load the profile and set it to enforce mode (`aa-enforce`), then start the unit.",
+                });
+            }
+        }
+    }
+
+    match host.run("busctl", &FPRINT_PROBE) {
+        None => found.push(fact_unreadable(
+            "the fingerprint service",
+            "Install busctl (part of systemd) and run doctor as root.",
+        )),
+        Some((0, _)) => {}
+        Some(_) => found.push(Condition {
+            code: "method-unavailable: fingerprint".to_string(),
+            severity: Severity::Severe,
+            sentence: "Fingerprint sign-in is unavailable because the fingerprint service reports no device.".to_string(),
+            detail: None,
+            fix: "Install `fprintd` and check that the reader is listed by `fprintd-list`.",
+        }),
+    }
+
+    if host.read(Path::new(HOWDY_CONFIG)).is_none() {
+        found.push(Condition {
+            code: "method-unavailable: face".to_string(),
+            severity: Severity::Severe,
+            sentence: "Face sign-in is unavailable because Howdy is not installed.".to_string(),
+            detail: None,
+            fix: "Install Howdy and enrol a face, or remove the face method from the policy.",
+        });
+    }
+
+    found
+}
+
 /// The conditions of a loaded policy, in the fixed order: the PIN-only state first, then the
 /// unsatisfiable contexts by name.
 fn conditions_of(policy: &Policy) -> Vec<Condition> {
@@ -115,8 +221,10 @@ fn conditions_of(policy: &Policy) -> Vec<Condition> {
 /// Everything printed goes through `out` and `err`. The result is the exit code: 0 done, 1 `doctor`
 /// found a failure, 2 usage error. `status` exits 0 also when it prints conditions: it informs, it
 /// does not judge.
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     args: &[String],
+    host: &dyn Host,
     admin_dir: &Path,
     admin_owner_uid: u32,
     user_root: &Path,
@@ -140,7 +248,7 @@ pub fn run(
             }
             0
         }
-        ["doctor"] => doctor(admin_dir, admin_owner_uid, user_root, out),
+        ["doctor"] => doctor(host, admin_dir, admin_owner_uid, user_root, out),
         _ => usage(err, "expected: status --user <name|uid> or doctor"),
     }
 }
@@ -157,7 +265,14 @@ fn line(condition: &Condition) -> String {
 
 /// `doctor`: the admin layers, then every stored user layer in ascending uid order. A user layer
 /// that fails only because the admin layers failed (the same code and detail) is not reported again.
-fn doctor(admin_dir: &Path, admin_owner_uid: u32, user_root: &Path, out: &mut dyn Write) -> u8 {
+/// It also probes four machine facts.
+fn doctor(
+    host: &dyn Host,
+    admin_dir: &Path,
+    admin_owner_uid: u32,
+    user_root: &Path,
+    out: &mut dyn Write,
+) -> u8 {
     let admin = conditions_of(&load(admin_dir, Path::new(NO_USER_LAYER), admin_owner_uid));
     let mut reported: Vec<(String, Vec<Condition>)> = vec![("admin".to_string(), admin.clone())];
     match stored_uids(user_root) {
@@ -178,6 +293,8 @@ fn doctor(admin_dir: &Path, admin_owner_uid: u32, user_root: &Path, out: &mut dy
         }
         Err(()) => reported.push(("state".to_string(), vec![state_directory_unreadable()])),
     }
+
+    let machine_conditions = machine_conditions(host);
     let mut failures = 0_u32;
     for (scope, conditions) in &reported {
         for condition in conditions {
@@ -189,6 +306,16 @@ fn doctor(admin_dir: &Path, admin_owner_uid: u32, user_root: &Path, out: &mut dy
             let _ = writeln!(out, "  fix: {}", condition.fix);
         }
     }
+
+    for condition in &machine_conditions {
+        failures += 1;
+        let _ = writeln!(out, "[machine] {}", line(condition));
+        if let Some(detail) = &condition.detail {
+            let _ = writeln!(out, "  detail: {detail}");
+        }
+        let _ = writeln!(out, "  fix: {}", condition.fix);
+    }
+
     if failures == 0 {
         let _ = writeln!(out, "ok");
         0
