@@ -8,7 +8,7 @@
 //! names; the Agent emits no broadcast signal.
 //!
 //! The members are the Rust method names in PascalCase: `OpenPrompt`, `ReportState`, `GetState`,
-//! `Subscribe`, `ClosePrompt`, `GetCapabilities`, `GetEffectivePolicy`, `GetPinRules`, `GetStatus`, `GetStatusDetails`, and the signals `MethodsAvailable`, `ActiveMethods`, `State` and
+//! `Subscribe`, `ClosePrompt`, `GetCapabilities`, `GetEffectivePolicy`, `GetPinRules`, `GetStatus`, `GetStatusDetails`, `ExpectPin`, and the signals `MethodsAvailable`, `ActiveMethods`, `State` and
 //! `Result` of `linuxhello_dbus::SIGNALS`. A refusal is a D-Bus error of the closed set
 //! `linuxhello_dbus::ERRORS` under `io.github.LinuxHello.Error` ([`AgentError`]): `Denied`,
 //! `LimitReached`, `InvalidArgument`, `InvalidPolicy`, `Unavailable` or `Damaged`.
@@ -24,6 +24,7 @@ use linuxhello_dbus::{
 };
 use std::time::Instant;
 
+use std::sync::Arc;
 use zbus::fdo;
 use zbus::message::Header;
 use zbus::names::{BusName, UniqueName};
@@ -31,6 +32,7 @@ use zbus::{connection, interface, Connection};
 
 use crate::api::{Api, ApiError, Caller, Notification, PeerName};
 use crate::audit::Audit;
+use crate::pinsocket::PinSocket;
 use crate::policy::user_store::UserPolicyStore;
 use crate::state::Config;
 
@@ -42,6 +44,8 @@ pub struct AgentService {
     api: Api,
     /// When the service was made: the origin of the time the store's prompts are aged by.
     started: Instant,
+    /// The PIN socket that `ExpectPin` announces a PIN to, when the Agent has one.
+    pin_socket: Option<Arc<PinSocket>>,
 }
 
 impl AgentService {
@@ -50,6 +54,7 @@ impl AgentService {
         Self {
             api: Api::new(config),
             started: Instant::now(),
+            pin_socket: None,
         }
     }
 
@@ -84,7 +89,14 @@ impl AgentService {
                 .with_user_policy_store(user_policies)
                 .with_audit(audit),
             started: Instant::now(),
+            pin_socket: None,
         }
+    }
+
+    /// The same service with the PIN socket that `ExpectPin` announces to.
+    #[must_use]
+    pub fn with_pin_socket(self, pin_socket: Option<Arc<PinSocket>>) -> Self {
+        Self { pin_socket, ..self }
     }
 }
 
@@ -115,11 +127,23 @@ pub async fn serve_with_audit(
     user_policies: Option<UserPolicyStore>,
     audit: Audit,
 ) -> zbus::Result<Connection> {
+    serve_with_pin_socket(builder, config, user_policies, audit, None).await
+}
+
+/// Serves the Agent's state API with an optional user policy store, an audit trail and the PIN
+/// socket that `ExpectPin` announces to. Without a socket `ExpectPin` is `Unavailable`.
+pub async fn serve_with_pin_socket(
+    builder: connection::Builder<'_>,
+    config: Config,
+    user_policies: Option<UserPolicyStore>,
+    audit: Audit,
+    pin_socket: Option<Arc<PinSocket>>,
+) -> zbus::Result<Connection> {
     let connection = builder
         .name(AGENT_BUS_NAME)
         .serve_at(
             AGENT_OBJECT_PATH,
-            AgentService::with_audit(config, user_policies, audit),
+            AgentService::with_audit(config, user_policies, audit).with_pin_socket(pin_socket),
         )
         .build()
         .await?;
@@ -212,6 +236,27 @@ async fn caller_of(connection: &Connection, sender: Option<&UniqueName<'_>>) -> 
         uid: credentials.ok().and_then(|c| c.unix_user_id()),
         peer,
     }
+}
+
+/// The caller as [`caller_of`] finds it, and its process id as the bus reports it. The process id
+/// is looked up only where it is needed (`ExpectPin`), and is `None` when the bus cannot give it.
+async fn caller_and_process(
+    connection: &Connection,
+    sender: Option<&UniqueName<'_>>,
+) -> (Caller, Option<u32>) {
+    let caller = caller_of(connection, sender).await;
+    let Some(sender) = sender else {
+        return (caller, None);
+    };
+    let Ok(bus) = fdo::DBusProxy::new(connection).await else {
+        return (caller, None);
+    };
+    let process = bus
+        .get_connection_credentials(BusName::from(sender.clone()))
+        .await
+        .ok()
+        .and_then(|c| c.process_id());
+    (caller, process)
 }
 
 /// The errors of the Agent's interface, under `io.github.LinuxHello.Error` (ADR-0014, amendment
@@ -445,6 +490,20 @@ impl AgentService {
     ) -> Result<String, AgentError> {
         let caller = caller_of(connection, header.sender()).await;
         self.api.get_user_policy(caller).map_err(to_bus)
+    }
+
+    /// Announces that the caller, who opened the prompt, is about to send one PIN on the PIN
+    /// socket. The call carries the prompt id and nothing secret.
+    async fn expect_pin(
+        &self,
+        prompt_id: &str,
+        #[zbus(header)] header: Header<'_>,
+        #[zbus(connection)] connection: &Connection,
+    ) -> Result<(), AgentError> {
+        let (caller, process) = caller_and_process(connection, header.sender()).await;
+        self.api
+            .expect_pin(caller, process, prompt_id, self.pin_socket.as_deref())
+            .map_err(to_bus)
     }
 
     /// Returns the conditions that affect the caller, each as code, severity and sentence.

@@ -46,6 +46,7 @@ pub const INTERFACE_VERSION: u32 = 1;
 pub const CAPABILITIES: &[&str] = &[
     "ActiveMethods",
     "Closed",
+    "ExpectPin",
     "GetCapabilities",
     "GetEffectivePolicy",
     "GetPinRules",
@@ -130,6 +131,10 @@ pub mod status {
         }
     }
 }
+
+/// Method that announces a PIN: the opener of a prompt is about to send one on the PIN socket
+/// (ADR-0021, amendment 2026-11-18).
+pub const METHOD_EXPECT_PIN: &str = "ExpectPin";
 
 /// Method that returns the interface version and the optional members the Agent supports.
 pub const METHOD_GET_CAPABILITIES: &str = "GetCapabilities";

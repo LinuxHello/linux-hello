@@ -4,7 +4,7 @@
 //! bus policy decides who may own the name, so a start by any user but the Agent's own fails.
 //! It reads no configuration yet: the prompt hosts that may read any prompt are none, and the
 //! TPM and the policy engine are not wired in. Users can store and read their own policy layer
-//! (`GetUserPolicy`, `SetUserPolicy`). It binds the PIN socket of ADR-0021 and refuses every connection to it for now. `Api::policy_of` loads the admin layers and the user's layer
+//! (`GetUserPolicy`, `SetUserPolicy`). It binds the PIN socket of ADR-0021, and `ExpectPin` announces a PIN to it. `Api::policy_of` loads the admin layers and the user's layer
 //! and audits a fall back to PIN-only; no method of the API answers from it yet.
 //!
 //! C4 container: `agent` ([workspace.dsl](https://github.com/LinuxHello/linux-hello-architecture/blob/main/workspace.dsl))
@@ -16,7 +16,7 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 use linuxhello_agent::audit::Audit;
-use linuxhello_agent::bus::{bus_alive, serve_with_audit};
+use linuxhello_agent::bus::{bus_alive, serve_with_pin_socket};
 use linuxhello_agent::notify::{watchdog_interval, Notifier};
 use linuxhello_agent::pinsocket::PinSocket;
 use linuxhello_agent::policy::user_store::UserPolicyStore;
@@ -32,17 +32,22 @@ const ADMIN_POLICY_DIR: &str = "/etc/linuxhello/policy.d";
 /// The PIN socket (ADR-0021), in the runtime directory the unit creates for the Agent's user.
 const PIN_SOCKET: &str = "/run/linuxhello/pin.sock";
 
-/// Binds the PIN socket and serves it on a thread. A PIN is not used anywhere yet, so a socket
-/// that cannot be bound is reported on standard error and the Agent goes on serving the bus; the
-/// slice that wires the PIN path decides whether that stays so. Every connection is refused until
-/// the control call exists.
-fn serve_pin_socket() {
+/// Binds the PIN socket and serves it on a thread, and returns it so that `ExpectPin` can announce
+/// PINs to it. A PIN is not used anywhere yet, so a socket that cannot be bound is reported on
+/// standard error and the Agent goes on serving the bus (`ExpectPin` is then `Unavailable`); the
+/// slice that wires the PIN verifier decides whether that stays so.
+fn serve_pin_socket() -> Option<Arc<PinSocket>> {
     let owner = rustix::process::getuid().as_raw();
     match PinSocket::bind(Path::new(PIN_SOCKET), owner) {
         Ok(socket) => {
-            PinSocket::serve_forever(Arc::new(socket), drop);
+            let socket = Arc::new(socket);
+            PinSocket::serve_forever(Arc::clone(&socket), drop);
+            Some(socket)
         }
-        Err(error) => eprintln!("linuxhello-agent: the PIN socket is not available: {error}"),
+        Err(error) => {
+            eprintln!("linuxhello-agent: the PIN socket is not available: {error}");
+            None
+        }
     }
 }
 
@@ -52,13 +57,14 @@ fn serve_pin_socket() {
 ///
 /// Any error of connecting to the bus or claiming the name, such as the bus policy refusing it.
 async fn run() -> zbus::Result<()> {
-    serve_pin_socket();
+    let pin_socket = serve_pin_socket();
     let store = UserPolicyStore::new(USER_POLICY_ROOT).with_admin_layer(ADMIN_POLICY_DIR, 0);
-    let connection = serve_with_audit(
+    let connection = serve_with_pin_socket(
         Builder::system(),
         Config::new(Vec::new()),
         Some(store),
         Audit::journal(),
+        pin_socket,
     )
     .await?;
     // Under a watchdog (WatchdogSec= in the unit) the Agent tells the service manager it is alive,
