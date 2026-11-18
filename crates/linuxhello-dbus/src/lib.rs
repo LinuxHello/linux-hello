@@ -36,6 +36,25 @@ pub const ERRORS: &[&str] = &[
     "Damaged",
 ];
 
+/// The version of the Agent's interface. A change from version 1 on is additive (a new member, a
+/// new optional field in a closed set); a change that is not is a new interface name served next
+/// to the old one (ADR-0014, amendment 2026-11-17).
+pub const INTERFACE_VERSION: u32 = 1;
+
+/// The optional members of the interface that this Agent supports, as `GetCapabilities` names
+/// them. A client that needs one of them checks the list first.
+pub const CAPABILITIES: &[&str] = &[
+    "ActiveMethods",
+    "Closed",
+    "GetCapabilities",
+    "GetUserPolicy",
+    "SetUserPolicy",
+    "Unsubscribe",
+];
+
+/// Method that returns the interface version and the optional members the Agent supports.
+pub const METHOD_GET_CAPABILITIES: &str = "GetCapabilities";
+
 /// Method to report the current state.
 pub const METHOD_REPORT_STATE: &str = "ReportState";
 /// Method to retrieve the current state.
@@ -141,6 +160,52 @@ impl PromptResult {
     }
 }
 
+/// Why an attempt ended as it did, a closed set. Empty when there is nothing to add.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PromptReason {
+    /// No reason given.
+    None,
+    /// The camera image was too dark to match a face.
+    TooDark,
+    /// No face was found in the image.
+    NoFace,
+    /// A finger or face was read but did not match.
+    NotRecognised,
+    /// The person cancelled.
+    Cancelled,
+    /// Nobody answered in time.
+    Timeout,
+}
+
+impl PromptReason {
+    /// Every reason, in wire order.
+    pub const ALL: [Self; 6] = [
+        Self::None,
+        Self::TooDark,
+        Self::NoFace,
+        Self::NotRecognised,
+        Self::Cancelled,
+        Self::Timeout,
+    ];
+
+    /// Returns the wire string representation of the reason.
+    pub const fn as_wire(self) -> &'static str {
+        match self {
+            Self::None => "",
+            Self::TooDark => "too-dark",
+            Self::NoFace => "no-face",
+            Self::NotRecognised => "not-recognised",
+            Self::Cancelled => "cancelled",
+            Self::Timeout => "timeout",
+        }
+    }
+
+    /// Parses a reason from a wire string.
+    pub fn from_wire(s: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|reason| reason.as_wire() == s)
+    }
+}
+
 /// An opaque identifier for a specific authentication prompt.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct PromptId(String);
@@ -214,9 +279,9 @@ pub const SIGNALS: &[SignalSpec] = &[
         args: &["prompt_id", "methods"],
     },
     SignalSpec {
-        name: "ActiveMethod",
+        name: "ActiveMethods",
         delivery: Delivery::Unicast,
-        args: &["prompt_id", "method"],
+        args: &["prompt_id", "methods"],
     },
     SignalSpec {
         name: "State",
@@ -226,7 +291,7 @@ pub const SIGNALS: &[SignalSpec] = &[
     SignalSpec {
         name: "Result",
         delivery: Delivery::Unicast,
-        args: &["prompt_id", "result"],
+        args: &["prompt_id", "result", "reason", "retry_after"],
     },
     // Sent by the Agent when a prompt closes, never reported by a client.
     SignalSpec {
@@ -369,6 +434,37 @@ mod tests {
     }
 
     #[test]
+    fn reasons_are_a_closed_set() {
+        let wire: Vec<&str> = PromptReason::ALL.iter().map(|r| r.as_wire()).collect();
+        assert_eq!(
+            wire,
+            [
+                "",
+                "too-dark",
+                "no-face",
+                "not-recognised",
+                "cancelled",
+                "timeout"
+            ]
+        );
+        for reason in PromptReason::ALL {
+            assert_eq!(PromptReason::from_wire(reason.as_wire()), Some(reason));
+        }
+        assert_eq!(PromptReason::from_wire("TOO-DARK"), None);
+        assert_eq!(PromptReason::from_wire("locked"), None);
+    }
+
+    #[test]
+    fn capabilities_name_the_version() {
+        assert_eq!(INTERFACE_VERSION, 1);
+        assert!(CAPABILITIES.contains(&"GetCapabilities"));
+        let mut sorted = CAPABILITIES.to_vec();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(sorted, CAPABILITIES, "sorted and without duplicates");
+    }
+
+    #[test]
     fn no_signal_is_a_broadcast() {
         for sig in SIGNALS {
             assert_eq!(sig.delivery, Delivery::Unicast);
@@ -380,16 +476,16 @@ mod tests {
         assert_eq!(SIGNALS.len(), 5);
         let expected_names = [
             "MethodsAvailable",
-            "ActiveMethod",
+            "ActiveMethods",
             "State",
             "Result",
             "Closed",
         ];
         let expected_args: [&[&str]; 5] = [
             &["prompt_id", "methods"],
-            &["prompt_id", "method"],
+            &["prompt_id", "methods"],
             &["prompt_id", "state"],
-            &["prompt_id", "result"],
+            &["prompt_id", "result", "reason", "retry_after"],
             &["prompt_id"],
         ];
 
