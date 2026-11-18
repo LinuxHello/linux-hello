@@ -18,9 +18,10 @@
 //! made no control call, or another user's process, is refused and does not use up anyone's
 //! expectation.
 //!
-//! Not here yet: the control call on the bus, the PIN verifier that consumes a [`Submission`],
-//! the AppArmor rule and the unit settings for the socket, and the client in the PAM module.
-//! Nothing starts this socket in the Agent until the PIN path exists. Memory hygiene beyond
+//! The Agent binds the socket at start-up and serves it ([`PinSocket::serve_forever`]); its unit
+//! and profile allow exactly that. Not here yet: the control call on the bus (`ExpectPin`, ADR-0021
+//! amendment 2026-11-18), the PIN verifier that consumes a [`Submission`], and the client in the
+//! PAM module. Until the control call exists every connection is refused. Memory hygiene beyond
 //! [`Zeroizing`] is #189: the buffers and the missing `Debug` are tested here; core dumps are off in the unit (`LimitCORE=0`).
 //!
 //! Security property: `pin_is_never_a_dbus_message_body` (P-31) and the tests of this module.
@@ -31,7 +32,8 @@ use std::io::{self, ErrorKind, Read, Write};
 use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
-use std::sync::{Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError};
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use zeroize::Zeroizing;
@@ -211,6 +213,22 @@ impl PinSocket {
         let (stream, _) = self.listener.accept()?;
         self.handle(stream, sink);
         Ok(())
+    }
+
+    /// Serves `socket` on a thread of its own until the process ends: it takes connections one
+    /// after another and hands every accepted PIN to `sink`. A failure to accept a connection is
+    /// waited out for 100 ms and the loop goes on, so a burst of failures neither stops the
+    /// service nor spins. The socket is shared (`Arc`) so that the bus side can go on recording
+    /// control calls with [`PinSocket::expect`] while this thread serves it.
+    pub fn serve_forever(
+        socket: Arc<Self>,
+        mut sink: impl FnMut(Submission) + Send + 'static,
+    ) -> JoinHandle<()> {
+        std::thread::spawn(move || loop {
+            if socket.serve_one(&mut sink).is_err() {
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        })
     }
 
     /// Handles one connection and replies; every failure is the same refusal.

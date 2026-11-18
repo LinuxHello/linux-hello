@@ -109,6 +109,19 @@ check "pin_rules_are_readable" 'call nobody $N $P $N GetPinRules | grep -q "^uua
 check "status_is_empty_for_a_sound_policy" 'call lh $N $P $N GetStatus | grep -qx "a(sss) 0"'
 check "status_details_are_refused_to_a_user" 'call lh $N $P $N GetStatusDetails | grep -q "not allowed"'
 check "status_details_are_given_to_root" 'sudo busctl --system call $N $P $N GetStatusDetails | grep -qx "a(ssss) 0"'
+
+# The PIN socket (ADR-0021). A client sends one frame (two bytes of length, then the PIN) and closes
+# its writing side; the Agent replies with one byte, 0 accepted and 1 refused. Until the control
+# call exists, every connection is refused, whoever it is.
+pin_client() { sudo -u "$1" python3 -c 'import socket
+s = socket.socket(socket.AF_UNIX); s.connect("/run/linuxhello/pin.sock")
+s.sendall(b"\x00\x040000"); s.shutdown(socket.SHUT_WR)
+print(s.recv(1)[0])'; }
+check "the_pin_socket_is_owned_by_the_agent" '[ "$(stat -c "%U %a" /run/linuxhello)" = "linuxhello 755" ] && [ "$(stat -c "%U" /run/linuxhello/pin.sock)" = linuxhello ]'
+for u in lh nobody; do
+  check "another_user_cannot_use_the_pin_socket_($u)" '[ "$(pin_client '$u')" = 1 ]'
+done
+check "another_user_cannot_replace_the_pin_socket" '! sudo -u lh rm /run/linuxhello/pin.sock 2>/dev/null && ! sudo -u lh mv /run/linuxhello/pin.sock /run/linuxhello/x 2>/dev/null && [ -S /run/linuxhello/pin.sock ]'
 check "the_layer_is_a_private_file_of_the_agents_user" '[ "$(sudo stat -c "%U %a" /var/lib/linuxhello/users/$LHUID/policy.toml)" = "linuxhello 600" ]'
 
 # A subscriber hears the Agent's real signal; a bystander and two forgers cause nothing.
@@ -180,6 +193,10 @@ check "the_unit_refuses_to_start_with_the_profile_not_loaded" '[ "$(systemctl is
 sudo systemctl stop linuxhello-agent; sudo systemctl reset-failed linuxhello-agent 2>/dev/null
 sudo apparmor_parser -r /etc/apparmor.d/linuxhello-agent; sudo systemctl start linuxhello-agent; sleep 1
 check "the_unit_starts_again_once_the_profile_is_enforcing" '[ "$(systemctl is-active linuxhello-agent)" = active ]'
+# A restart replaces the socket file; it comes last of the checks that need the prompt opened above, because
+# a restart drops every prompt.
+sudo systemctl restart linuxhello-agent; sleep 2
+check "the_pin_socket_survives_a_restart" '[ "$(systemctl is-active linuxhello-agent)" = active ] && [ -S /run/linuxhello/pin.sock ] && [ "$(pin_client lh)" = 1 ]'
 
 # No AppArmor denial except the probes of this test (the Properties calls that the policy refuses).
 D=$(sudo journalctl -k --no-pager --since "@$T0" | grep "apparmor=\"DENIED\"" | grep "linuxhello-agent" | grep -vc "interface=\"org.freedesktop.DBus.Properties\"")

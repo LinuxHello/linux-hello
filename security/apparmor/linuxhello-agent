@@ -40,6 +40,12 @@ profile linuxhello-agent /usr/libexec/linuxhello/linuxhello-agent flags=(attach_
   /var/lib/linuxhello/ rw,
   /var/lib/linuxhello/** rwk,
 
+  # The PIN socket (ADR-0021): the runtime directory the unit creates, and a stream socket file in
+  # it. Writing covers making the socket file; the unix stream rule above covers
+  # listening, accepting and reading the peer's credentials (SO_PEERCRED).
+  /run/linuxhello/ rw,
+  /run/linuxhello/pin.sock rw,
+
   # The admin policy layer, read-only.
   /etc/linuxhello/policy.d/ r,
   /etc/linuxhello/policy.d/** r,
