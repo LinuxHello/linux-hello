@@ -142,6 +142,19 @@ pub struct StateReply {
     pub retry_after: u32,
 }
 
+/// The PIN rules a client shows in its dialog, as wire values.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PinRulesReply {
+    /// Shortest allowed PIN.
+    pub min_length: u32,
+    /// Longest allowed PIN.
+    pub max_length: u32,
+    /// The character classes a PIN must contain: `digits`, `lowercase`, `uppercase`, `special`.
+    pub required: Vec<String>,
+    /// The character classes a PIN must not contain.
+    pub disallowed: Vec<String>,
+}
+
 /// The request layer over a [`StateStore`].
 pub struct Api {
     /// The per-prompt state and its access rules.
@@ -508,6 +521,76 @@ impl Api {
         let uid = caller.uid.ok_or(ApiError::Denied)?;
         let store = self.user_policies.as_ref().ok_or(ApiError::Unavailable)?;
         store.get(uid).map_err(ApiError::from)
+    }
+
+    /// The policy that applies to the caller, as TOML text with one `path = value` line per key,
+    /// and the paths an administrator manages (`GetEffectivePolicy`, ADR-0014 amendment
+    /// 2026-11-17, point 3). It shows values only: no file name, no admin layer as such, and
+    /// nothing of any other user (`a_user_reads_only_its_own_effective_policy`).
+    ///
+    /// # Errors
+    ///
+    /// [`ApiError::Denied`] without a caller uid;
+    /// [`ApiError::Unavailable`] if the user policy store is not configured.
+    pub fn get_effective_policy(&self, caller: Caller) -> Result<(String, Vec<String>), ApiError> {
+        let result = self.effective_policy_unaudited(&caller);
+        self.audited(&caller, result)
+    }
+
+    /// The work of [`Api::get_effective_policy`], without the audit record.
+    fn effective_policy_unaudited(
+        &self,
+        caller: &Caller,
+    ) -> Result<(String, Vec<String>), ApiError> {
+        let uid = caller.uid.ok_or(ApiError::Denied)?;
+        let view = self.policy_of(uid)?.effective();
+        let mut text = String::new();
+        let mut managed = Vec::new();
+        for setting in view.settings {
+            text.push_str(&format!("{} = {}\n", setting.path, setting.value));
+            if setting.managed {
+                managed.push(setting.path);
+            }
+        }
+        Ok((text, managed))
+    }
+
+    /// The PIN rules that apply to the caller, for the PIN dialog: the shortest and longest
+    /// length, and the character classes that are required and those that are disallowed
+    /// (`GetPinRules`, ADR-0014 amendment 2026-11-17, point 3).
+    ///
+    /// # Errors
+    ///
+    /// [`ApiError::Denied`] without a caller uid;
+    /// [`ApiError::Unavailable`] if the user policy store is not configured.
+    pub fn get_pin_rules(&self, caller: Caller) -> Result<PinRulesReply, ApiError> {
+        let result = self.pin_rules_unaudited(&caller);
+        self.audited(&caller, result)
+    }
+
+    /// The work of [`Api::get_pin_rules`], without the audit record.
+    fn pin_rules_unaudited(&self, caller: &Caller) -> Result<PinRulesReply, ApiError> {
+        let uid = caller.uid.ok_or(ApiError::Denied)?;
+        let rules = self.policy_of(uid)?.pin_rules();
+        let classes = [
+            ("digits", &rules.digits),
+            ("lowercase", &rules.lowercase),
+            ("uppercase", &rules.uppercase),
+            ("special", &rules.special),
+        ];
+        let named = |wanted: &str| {
+            classes
+                .iter()
+                .filter(|(_, rule)| rule.as_str() == wanted)
+                .map(|(name, _)| (*name).to_string())
+                .collect::<Vec<_>>()
+        };
+        Ok(PinRulesReply {
+            min_length: rules.min_length,
+            max_length: rules.max_length,
+            required: named("required"),
+            disallowed: named("disallowed"),
+        })
     }
 
     /// Replaces the caller's user policy with the provided TOML text.
@@ -1063,6 +1146,77 @@ mod tests {
         assert!(recorder.events()[1]
             .fields()
             .contains(&("LH_FAULT", "user_layer".to_string())));
+    }
+
+    /// ADR-0014 amendment, point 3: a caller reads what applies to them, and nothing else.
+    #[test]
+    fn a_user_reads_only_its_own_effective_policy() {
+        let tmp = TempDir::new().unwrap();
+        let (store, admin) = store_with_admin(&tmp);
+        std::fs::write(admin.join("zz-site-layer.toml"), "[pin]\nmin_length = 10\n").unwrap();
+        let mut api = Api::new(Config::new(vec![])).with_user_policy_store(Some(store));
+        let user = |uid| Caller {
+            uid: Some(uid),
+            peer: None,
+        };
+        let layer = "[context.sudo]\nmethods = [\"pin\"]\nfactors = 1\nreverify_after = \"37m\"\n";
+        assert_eq!(api.set_user_policy(user(1000), layer), Ok(()));
+
+        let (own, managed) = api.get_effective_policy(user(1000)).unwrap();
+        assert!(own.contains("\"37m\""), "{own}");
+        assert!(own.contains("pin.min_length = 10"), "{own}");
+        assert_eq!(managed, vec!["pin.min_length".to_string()]);
+
+        let (other, managed) = api.get_effective_policy(user(1001)).unwrap();
+        assert!(other.contains("pin.min_length = 10"), "{other}");
+        assert_eq!(managed, vec!["pin.min_length".to_string()]);
+        for hidden in ["37m", "1000", "zz-site-layer", "policy.d", "toml"] {
+            assert!(
+                !other.contains(hidden) && !managed.iter().any(|m| m.contains(hidden)),
+                "user 1001 sees {hidden:?}: {other}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_pin_rules_name_the_required_and_disallowed_classes() {
+        let tmp = TempDir::new().unwrap();
+        let (store, admin) = store_with_admin(&tmp);
+        std::fs::write(
+            admin.join("pin.toml"),
+            "[pin]\nmin_length = 10\nmax_length = 40\ndigits = \"required\"\nspecial = \"disallowed\"\n",
+        )
+        .unwrap();
+        let api = Api::new(Config::new(vec![])).with_user_policy_store(Some(store));
+        let caller = Caller {
+            uid: Some(1000),
+            peer: None,
+        };
+        let rules = api.get_pin_rules(caller).unwrap();
+        assert_eq!(rules.min_length, 10);
+        assert_eq!(rules.max_length, 40);
+        assert_eq!(rules.required, vec!["digits".to_string()]);
+        assert_eq!(rules.disallowed, vec!["special".to_string()]);
+    }
+
+    #[test]
+    fn the_policy_readers_refuse_a_caller_without_a_uid_and_need_a_store() {
+        let tmp = TempDir::new().unwrap();
+        let (store, _admin) = store_with_admin(&tmp);
+        let anonymous = || Caller {
+            uid: None,
+            peer: None,
+        };
+        let known = Caller {
+            uid: Some(1000),
+            peer: None,
+        };
+        let api = Api::new(Config::new(vec![])).with_user_policy_store(Some(store));
+        assert_eq!(api.get_effective_policy(anonymous()), Err(ApiError::Denied));
+        assert_eq!(api.get_pin_rules(anonymous()), Err(ApiError::Denied));
+        let bare = Api::new(Config::new(vec![]));
+        assert_eq!(bare.get_effective_policy(known), Err(ApiError::Unavailable));
+        assert_eq!(bare.get_pin_rules(known), Err(ApiError::Unavailable));
     }
 
     #[test]
