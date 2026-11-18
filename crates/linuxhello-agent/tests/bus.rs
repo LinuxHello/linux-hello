@@ -390,7 +390,20 @@ fn pin_is_never_a_dbus_message_body() {
         // The interface must be there, or the test would pass on nothing.
         assert!(xml.contains(AGENT_INTERFACE));
         assert!(xml.contains("OpenPrompt"));
-        for name in xml.split(['"', '\'']).skip(1).step_by(2) {
+        // Documentation comments are prose, not names. `GetPinRules` is the one name that says
+        // "pin": it returns the rules a PIN must follow (length and character classes), never a
+        // PIN (ADR-0014, amendment 2026-11-17, point 3), so it is named here and nothing else is.
+        let names_only = {
+            let mut text = xml.clone();
+            while let (Some(start), Some(end)) = (text.find("<!--"), text.find("-->")) {
+                text.replace_range(start..end + 3, "");
+            }
+            text
+        };
+        for name in names_only.split(['"', '\'']).skip(1).step_by(2) {
+            if name == "GetPinRules" {
+                continue;
+            }
             for word in words_of(name) {
                 assert!(
                     !["pin", "secret", "password", "passphrase", "credential"]
@@ -654,6 +667,46 @@ fn invalid_user_policy_names_the_offending_key() {
         call(&client, "SetUserPolicy", &tighter.to_string())
             .await
             .expect("valid text is accepted afterwards");
+    });
+}
+
+#[test]
+fn the_policy_readers_answer_over_the_bus() {
+    let daemon = Daemon::start();
+    let tmp = tempfile::TempDir::new().unwrap();
+    let store = UserPolicyStore::new(tmp.path());
+    run(async {
+        let _service = serve_with(
+            Builder::address(daemon.address.as_str()),
+            Config::new(vec![]),
+            Some(store),
+        )
+        .await
+        .expect("serve the Agent");
+        let client = connect(&daemon).await;
+        call(
+            &client,
+            "SetUserPolicy",
+            &"[methods]\nbiometrics_allowed = false\n".to_string(),
+        )
+        .await
+        .expect("set policy");
+
+        let reply = call(&client, "GetEffectivePolicy", &())
+            .await
+            .expect("the effective policy");
+        let (text, managed): (String, Vec<String>) = reply.body().deserialize().expect("the reply");
+        assert!(
+            text.contains("methods.biometrics_allowed = false"),
+            "{text}"
+        );
+        assert!(managed.is_empty());
+
+        let reply = call(&client, "GetPinRules", &()).await.expect("PIN rules");
+        let (min, max, required, disallowed): (u32, u32, Vec<String>, Vec<String>) =
+            reply.body().deserialize().expect("the reply");
+        assert!(min >= 1 && max >= min);
+        assert!(required.iter().all(|c| !disallowed.contains(c)));
     });
 }
 

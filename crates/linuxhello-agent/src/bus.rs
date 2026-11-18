@@ -8,7 +8,7 @@
 //! names; the Agent emits no broadcast signal.
 //!
 //! The members are the Rust method names in PascalCase: `OpenPrompt`, `ReportState`, `GetState`,
-//! `Subscribe`, `ClosePrompt`, `GetCapabilities`, and the signals `MethodsAvailable`, `ActiveMethods`, `State` and
+//! `Subscribe`, `ClosePrompt`, `GetCapabilities`, `GetEffectivePolicy`, `GetPinRules`, and the signals `MethodsAvailable`, `ActiveMethods`, `State` and
 //! `Result` of `linuxhello_dbus::SIGNALS`. A refusal is a D-Bus error of the closed set
 //! `linuxhello_dbus::ERRORS` under `io.github.LinuxHello.Error` ([`AgentError`]): `Denied`,
 //! `LimitReached`, `InvalidArgument`, `InvalidPolicy`, `Unavailable` or `Damaged`.
@@ -445,6 +445,31 @@ impl AgentService {
     ) -> Result<String, AgentError> {
         let caller = caller_of(connection, header.sender()).await;
         self.api.get_user_policy(caller).map_err(to_bus)
+    }
+
+    /// Returns the policy that applies to the caller as TOML text, and the paths an
+    /// administrator manages.
+    async fn get_effective_policy(
+        &self,
+        #[zbus(header)] header: Header<'_>,
+        #[zbus(connection)] connection: &Connection,
+    ) -> Result<(String, Vec<String>), AgentError> {
+        let caller = caller_of(connection, header.sender()).await;
+        self.api.get_effective_policy(caller).map_err(to_bus)
+    }
+
+    /// Returns the shortest and longest PIN, and the character classes that are required and
+    /// those that are disallowed.
+    async fn get_pin_rules(
+        &self,
+        #[zbus(header)] header: Header<'_>,
+        #[zbus(connection)] connection: &Connection,
+    ) -> Result<(u32, u32, Vec<String>, Vec<String>), AgentError> {
+        let caller = caller_of(connection, header.sender()).await;
+        self.api
+            .get_pin_rules(caller)
+            .map(|r| (r.min_length, r.max_length, r.required, r.disallowed))
+            .map_err(to_bus)
     }
 
     /// Replaces the caller's user policy with the provided TOML text.

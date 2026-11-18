@@ -103,6 +103,9 @@ check "the_user_reads_its_own_policy_layer" 'call lh $N $P $N GetUserPolicy | gr
 check "another_user_sees_only_its_own_empty_layer" 'call nobody $N $P $N GetUserPolicy | grep -qx "s \"\""'
 check "a_policy_the_schema_rejects_is_refused" 'call lh $N $P $N SetUserPolicy s "invalid = toml" | grep -q "TOML parse error"'
 check "the_refused_policy_left_the_stored_layer_alone" 'call lh $N $P $N GetUserPolicy | grep -q "biometrics_allowed = false"'
+check "the_user_reads_its_own_effective_policy" 'call lh $N $P $N GetEffectivePolicy | grep -q "methods.biometrics_allowed = false"'
+check "another_user_effective_policy_has_nothing_of_it" '! call nobody $N $P $N GetEffectivePolicy | grep -q "biometrics_allowed = false"'
+check "pin_rules_are_readable" 'call nobody $N $P $N GetPinRules | grep -q "^uuasas "'
 check "the_layer_is_a_private_file_of_the_agents_user" '[ "$(sudo stat -c "%U %a" /var/lib/linuxhello/users/$LHUID/policy.toml)" = "linuxhello 600" ]'
 
 # A subscriber hears the Agent's real signal; a bystander and two forgers cause nothing.

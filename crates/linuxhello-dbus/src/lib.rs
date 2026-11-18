@@ -47,6 +47,8 @@ pub const CAPABILITIES: &[&str] = &[
     "ActiveMethods",
     "Closed",
     "GetCapabilities",
+    "GetEffectivePolicy",
+    "GetPinRules",
     "GetUserPolicy",
     "SetUserPolicy",
     "Unsubscribe",
