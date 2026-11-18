@@ -136,18 +136,25 @@ fn get_state_returns_the_prompt_state_over_the_bus() {
         let fresh = call(&client, "GetState", &(id.as_str(),))
             .await
             .expect("get");
-        let fresh: (Vec<String>, String, String, String) =
+        let fresh: (Vec<String>, Vec<String>, String, String, String, u32) =
             fresh.body().deserialize().expect("the reply");
         assert_eq!(
             fresh,
-            (vec![], String::new(), "idle".to_string(), String::new())
+            (
+                vec![],
+                vec![],
+                "idle".to_string(),
+                String::new(),
+                String::new(),
+                0
+            )
         );
 
         for (signal, values) in [
             ("MethodsAvailable", vec!["face", "pin"]),
-            ("ActiveMethod", vec!["face"]),
+            ("ActiveMethods", vec!["face", "fingerprint"]),
             ("State", vec!["scanning"]),
-            ("Result", vec!["failure"]),
+            ("Result", vec!["failure", "no-face"]),
         ] {
             call(&client, "ReportState", &(id.as_str(), signal, values))
                 .await
@@ -156,13 +163,15 @@ fn get_state_returns_the_prompt_state_over_the_bus() {
         let reply = call(&client, "GetState", &(id.as_str(),))
             .await
             .expect("get");
-        let reply: (Vec<String>, String, String, String) =
+        let reply: (Vec<String>, Vec<String>, String, String, String, u32) =
             reply.body().deserialize().expect("the reply");
         let expected = (
             vec!["face".to_string(), "pin".to_string()],
-            "face".to_string(),
+            vec!["face".to_string(), "fingerprint".to_string()],
             "scanning".to_string(),
             "failure".to_string(),
+            "no-face".to_string(),
+            0,
         );
         assert_eq!(reply, expected);
     });
@@ -645,5 +654,80 @@ fn invalid_user_policy_names_the_offending_key() {
         call(&client, "SetUserPolicy", &tighter.to_string())
             .await
             .expect("valid text is accepted afterwards");
+    });
+}
+
+#[test]
+fn capabilities_name_the_version() {
+    let daemon = Daemon::start();
+    run(async {
+        let _service = serve(
+            Builder::address(daemon.address.as_str()),
+            Config::new(vec![]),
+        )
+        .await
+        .expect("serve the Agent");
+        let client = connect(&daemon).await;
+        let reply = call(&client, "GetCapabilities", &())
+            .await
+            .expect("any user may ask");
+        let (version, names): (u32, Vec<String>) = reply.body().deserialize().expect("the reply");
+        assert_eq!(version, linuxhello_dbus::INTERFACE_VERSION);
+        let wanted: Vec<String> = linuxhello_dbus::CAPABILITIES
+            .iter()
+            .map(|name| (*name).to_string())
+            .collect();
+        assert_eq!(names, wanted);
+    });
+}
+
+#[test]
+fn a_result_signal_carries_the_reason_and_the_seconds() {
+    let daemon = Daemon::start();
+    run(async {
+        let _service = serve(
+            Builder::address(daemon.address.as_str()),
+            Config::new(vec![]),
+        )
+        .await
+        .expect("serve the Agent");
+        let (owner, subscriber) = (connect(&daemon).await, connect(&daemon).await);
+        let id = pid("p1");
+        call(&owner, "OpenPrompt", &(id.as_str(), i64::from(my_uid())))
+            .await
+            .expect("open the prompt");
+        let mut heard = signals(&subscriber, "Result").await;
+        let mut heard_methods = signals(&subscriber, "ActiveMethods").await;
+        call(&subscriber, "Subscribe", &(id.as_str(),))
+            .await
+            .expect("subscribe");
+
+        call(
+            &owner,
+            "ReportState",
+            &(id.as_str(), "Result", vec!["locked-out", "", "300"]),
+        )
+        .await
+        .expect("report");
+        let note = next_within(&mut heard, 3000).await.expect("told");
+        let body: (String, String, String, u32) = note.body().deserialize().expect("the body");
+        assert_eq!(
+            body,
+            (id.clone(), "locked-out".to_string(), String::new(), 300)
+        );
+
+        call(
+            &owner,
+            "ReportState",
+            &(id.as_str(), "ActiveMethods", vec!["face", "fingerprint"]),
+        )
+        .await
+        .expect("report");
+        let note = next_within(&mut heard_methods, 3000).await.expect("told");
+        let body: (String, Vec<String>) = note.body().deserialize().expect("the body");
+        assert_eq!(
+            body,
+            (id, vec!["face".to_string(), "fingerprint".to_string()])
+        );
     });
 }

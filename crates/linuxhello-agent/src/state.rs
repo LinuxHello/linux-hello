@@ -34,7 +34,7 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use linuxhello_dbus::{AuthMethod, PromptId, PromptResult, PromptState};
+use linuxhello_dbus::{AuthMethod, PromptId, PromptReason, PromptResult, PromptState};
 
 /// Settings of a [`StateStore`].
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -77,17 +77,40 @@ pub enum Error {
     LimitReached,
 }
 
+/// How an attempt ended, and why. `retry_after` is a number of seconds, nonzero only for
+/// [`PromptResult::LockedOut`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Outcome {
+    /// How the attempt ended.
+    pub result: PromptResult,
+    /// Why, from a closed set; [`PromptReason::None`] when there is nothing to add.
+    pub reason: PromptReason,
+    /// Seconds until another attempt may be made; zero unless the result is `LockedOut`.
+    pub retry_after: u32,
+}
+
+impl Outcome {
+    /// An outcome with no reason and no waiting time.
+    pub const fn new(result: PromptResult) -> Self {
+        Self {
+            result,
+            reason: PromptReason::None,
+            retry_after: 0,
+        }
+    }
+}
+
 /// One change to a prompt's state, in the terms of the signals of `linuxhello_dbus::SIGNALS`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Update {
     /// The methods that can be used now.
     Methods(Vec<AuthMethod>),
-    /// The method that is running, or none.
-    Active(Option<AuthMethod>),
+    /// The methods that are running, none when the list is empty.
+    Active(Vec<AuthMethod>),
     /// What the prompt is doing.
     State(PromptState),
-    /// How the attempt ended.
-    Result(PromptResult),
+    /// How the attempt ended, and why.
+    Result(Outcome),
 }
 
 /// The state of a prompt at one moment.
@@ -95,12 +118,12 @@ pub enum Update {
 pub struct Snapshot {
     /// The methods that can be used now.
     pub methods: Vec<AuthMethod>,
-    /// The method that is running, or none.
-    pub active: Option<AuthMethod>,
+    /// The methods that are running; face and fingerprint can run in parallel.
+    pub active: Vec<AuthMethod>,
     /// What the prompt is doing.
     pub state: PromptState,
     /// How the attempt ended, once it has.
-    pub result: Option<PromptResult>,
+    pub result: Option<Outcome>,
 }
 
 impl Snapshot {
@@ -108,7 +131,7 @@ impl Snapshot {
     fn initial() -> Self {
         Self {
             methods: Vec::new(),
-            active: None,
+            active: Vec::new(),
             state: PromptState::Idle,
             result: None,
         }
@@ -501,7 +524,11 @@ mod tests {
         let id = PromptId::derive("sddm", ":0", "c1");
         store.open(1000, &id, Some(1000)).unwrap();
         store
-            .report(1000, &id, Update::Result(PromptResult::Success))
+            .report(
+                1000,
+                &id,
+                Update::Result(Outcome::new(PromptResult::Success)),
+            )
             .unwrap();
         // Without a prompt of root's, the host sees nothing, and cannot subscribe.
         assert_eq!(store.get(990, &id), Err(Error::Denied));
@@ -524,7 +551,7 @@ mod tests {
         // The squatter reads only its own prompt, never root's for another subject.
         assert_eq!(
             store.get(1000, &id).unwrap().result,
-            Some(PromptResult::Success)
+            Some(Outcome::new(PromptResult::Success))
         );
     }
 
@@ -729,18 +756,18 @@ mod tests {
         assert_eq!(store.get(1000, &id).unwrap(), Snapshot::initial());
         let steps = [
             Update::Methods(vec![AuthMethod::Face, AuthMethod::Pin]),
-            Update::Active(Some(AuthMethod::Face)),
+            Update::Active(vec![AuthMethod::Face]),
             Update::State(PromptState::Scanning),
-            Update::Result(PromptResult::Failure),
+            Update::Result(Outcome::new(PromptResult::Failure)),
         ];
         for step in steps {
             store.report(1000, &id, step).unwrap();
         }
         let snapshot = store.get(1000, &id).unwrap();
         assert_eq!(snapshot.methods, vec![AuthMethod::Face, AuthMethod::Pin]);
-        assert_eq!(snapshot.active, Some(AuthMethod::Face));
+        assert_eq!(snapshot.active, vec![AuthMethod::Face]);
         assert_eq!(snapshot.state, PromptState::Scanning);
-        assert_eq!(snapshot.result, Some(PromptResult::Failure));
+        assert_eq!(snapshot.result, Some(Outcome::new(PromptResult::Failure)));
     }
 
     /// A peer with the given unique bus name.

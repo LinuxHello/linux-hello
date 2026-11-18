@@ -8,7 +8,7 @@
 //! names; the Agent emits no broadcast signal.
 //!
 //! The members are the Rust method names in PascalCase: `OpenPrompt`, `ReportState`, `GetState`,
-//! `Subscribe`, `ClosePrompt`, and the signals `MethodsAvailable`, `ActiveMethod`, `State` and
+//! `Subscribe`, `ClosePrompt`, `GetCapabilities`, and the signals `MethodsAvailable`, `ActiveMethods`, `State` and
 //! `Result` of `linuxhello_dbus::SIGNALS`. A refusal is a D-Bus error of the closed set
 //! `linuxhello_dbus::ERRORS` under `io.github.LinuxHello.Error` ([`AgentError`]): `Denied`,
 //! `LimitReached`, `InvalidArgument`, `InvalidPolicy`, `Unavailable` or `Damaged`.
@@ -19,7 +19,9 @@
 //! C4 component: `dbusApi` ([workspace.dsl](https://github.com/LinuxHello/linux-hello-architecture/blob/main/workspace.dsl))
 
 use futures_lite::StreamExt;
-use linuxhello_dbus::{AGENT_BUS_NAME, AGENT_INTERFACE, AGENT_OBJECT_PATH};
+use linuxhello_dbus::{
+    AGENT_BUS_NAME, AGENT_INTERFACE, AGENT_OBJECT_PATH, CAPABILITIES, INTERFACE_VERSION,
+};
 use std::time::Instant;
 
 use zbus::fdo;
@@ -263,7 +265,7 @@ async fn send(connection: &Connection, note: &Notification) {
                 &(prompt,),
             )
             .await
-    } else if note.signal == "MethodsAvailable" {
+    } else if note.signal == "MethodsAvailable" || note.signal == "ActiveMethods" {
         connection
             .emit_signal(
                 peer,
@@ -271,6 +273,18 @@ async fn send(connection: &Connection, note: &Notification) {
                 AGENT_INTERFACE,
                 note.signal,
                 &(prompt, &note.values),
+            )
+            .await
+    } else if note.signal == "Result" {
+        let value = |at: usize| note.values.get(at).map_or("", String::as_str);
+        let seconds: u32 = value(2).parse().unwrap_or(0);
+        connection
+            .emit_signal(
+                peer,
+                AGENT_OBJECT_PATH,
+                AGENT_INTERFACE,
+                note.signal,
+                &(prompt, value(0), value(1), seconds),
             )
             .await
     } else {
@@ -318,7 +332,7 @@ impl AgentService {
     }
 
     /// Changes one part of a prompt's state and signals the subscribed peers. `signal` is one
-    /// of `MethodsAvailable`, `ActiveMethod`, `State` and `Result`.
+    /// of `MethodsAvailable`, `ActiveMethods`, `State` and `Result`.
     async fn report_state(
         &mut self,
         prompt_id: &str,
@@ -345,15 +359,30 @@ impl AgentService {
         prompt_id: &str,
         #[zbus(header)] header: Header<'_>,
         #[zbus(connection)] connection: &Connection,
-    ) -> Result<(Vec<String>, String, String, String), AgentError> {
+    ) -> Result<(Vec<String>, Vec<String>, String, String, String, u32), AgentError> {
         let caller = caller_of(connection, header.sender()).await;
         let reply = self.api.get_state(caller, prompt_id).map_err(to_bus)?;
         Ok((
             reply.methods,
-            reply.active.unwrap_or_default(),
+            reply.active,
             reply.state,
             reply.result.unwrap_or_default(),
+            reply.reason,
+            reply.retry_after,
         ))
+    }
+
+    /// Returns the version of the interface and the names of the optional members this Agent
+    /// supports, so that a client can tell what it may use. Any user may ask; the answer is the
+    /// same for everyone and says nothing about a prompt, a user or a file.
+    async fn get_capabilities(&self) -> (u32, Vec<String>) {
+        (
+            INTERFACE_VERSION,
+            CAPABILITIES
+                .iter()
+                .map(|name| (*name).to_string())
+                .collect(),
+        )
     }
 
     /// Subscribes the calling connection to the prompt's signals.

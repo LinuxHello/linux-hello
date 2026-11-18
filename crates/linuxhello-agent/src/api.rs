@@ -10,13 +10,13 @@
 //!
 //! C4 component: `dbusApi` ([workspace.dsl](https://github.com/LinuxHello/linux-hello-architecture/blob/main/workspace.dsl))
 
-use linuxhello_dbus::{AuthMethod, PromptId, PromptResult, PromptState, SIGNALS};
+use linuxhello_dbus::{AuthMethod, PromptId, PromptReason, PromptResult, PromptState, SIGNALS};
 
 use crate::audit::{Audit, Event};
 use crate::policy::load::Policy;
 use crate::policy::schema::parse_layer;
 use crate::policy::user_store::{StoreError, UserPolicyStore, MAX_POLICY_BYTES};
-use crate::state::{Config, Error as StateError, Peer, StateStore, Update};
+use crate::state::{Config, Error as StateError, Outcome, Peer, StateStore, Update};
 
 /// The longest D-Bus bus name, in bytes.
 const MAX_PEER_NAME: usize = 255;
@@ -130,12 +130,16 @@ pub struct Notification {
 pub struct StateReply {
     /// The methods that can be used now.
     pub methods: Vec<String>,
-    /// The method that is running, if any.
-    pub active: Option<String>,
+    /// The methods that are running, none when the list is empty.
+    pub active: Vec<String>,
     /// What the prompt is doing.
     pub state: String,
     /// How the attempt ended, once it has.
     pub result: Option<String>,
+    /// Why it ended so; empty when there is nothing to add or no result yet.
+    pub reason: String,
+    /// Seconds until another attempt may be made; zero unless the result is `locked-out`.
+    pub retry_after: u32,
 }
 
 /// The request layer over a [`StateStore`].
@@ -295,8 +299,8 @@ impl Api {
     /// subscribed peer, in the order they subscribed.
     ///
     /// `signal` is one of the names in `linuxhello_dbus::SIGNALS`. `MethodsAvailable` takes
-    /// any number of different methods, `ActiveMethod` none or one, `State` and `Result`
-    /// exactly one value.
+    /// any number of different methods, `ActiveMethods` the same, `State` exactly one value and
+    /// `Result` one to three: the result, its reason and the seconds to wait.
     ///
     /// # Errors
     ///
@@ -368,9 +372,17 @@ impl Api {
                 .iter()
                 .map(|m| m.as_wire().to_string())
                 .collect(),
-            active: snapshot.active.map(|m| m.as_wire().to_string()),
+            active: snapshot
+                .active
+                .iter()
+                .map(|m| m.as_wire().to_string())
+                .collect(),
             state: snapshot.state.as_wire().to_string(),
-            result: snapshot.result.map(|r| r.as_wire().to_string()),
+            result: snapshot.result.map(|o| o.result.as_wire().to_string()),
+            reason: snapshot
+                .result
+                .map_or(String::new(), |o| o.reason.as_wire().to_string()),
+            retry_after: snapshot.result.map_or(0, |o| o.retry_after),
         })
     }
 
@@ -544,29 +556,45 @@ fn parse_prompt(prompt_id: &str) -> Result<PromptId, ApiError> {
 /// Parses the values of a signal into the store's update for it.
 fn parse_update(signal: &str, values: &[&str]) -> Result<Update, ApiError> {
     match (signal, values) {
-        ("MethodsAvailable", values) => {
-            let mut methods = Vec::new();
-            for value in values {
-                let method = AuthMethod::from_wire(value).ok_or(ApiError::InvalidArgument)?;
-                if methods.contains(&method) {
-                    return Err(ApiError::InvalidArgument);
-                }
-                methods.push(method);
-            }
-            Ok(Update::Methods(methods))
-        }
-        ("ActiveMethod", []) => Ok(Update::Active(None)),
-        ("ActiveMethod", [value]) => AuthMethod::from_wire(value)
-            .map(|method| Update::Active(Some(method)))
-            .ok_or(ApiError::InvalidArgument),
+        ("MethodsAvailable", values) => Ok(Update::Methods(parse_methods(values)?)),
+        ("ActiveMethods", values) => Ok(Update::Active(parse_methods(values)?)),
         ("State", [value]) => PromptState::from_wire(value)
             .map(Update::State)
             .ok_or(ApiError::InvalidArgument),
-        ("Result", [value]) => PromptResult::from_wire(value)
-            .map(Update::Result)
-            .ok_or(ApiError::InvalidArgument),
+        ("Result", [result]) => parse_outcome(result, "", "0"),
+        ("Result", [result, reason]) => parse_outcome(result, reason, "0"),
+        ("Result", [result, reason, seconds]) => parse_outcome(result, reason, seconds),
         _ => Err(ApiError::InvalidArgument),
     }
+}
+
+/// Parses a list of different methods, in the order given.
+fn parse_methods(values: &[&str]) -> Result<Vec<AuthMethod>, ApiError> {
+    let mut methods = Vec::new();
+    for value in values {
+        let method = AuthMethod::from_wire(value).ok_or(ApiError::InvalidArgument)?;
+        if methods.contains(&method) {
+            return Err(ApiError::InvalidArgument);
+        }
+        methods.push(method);
+    }
+    Ok(methods)
+}
+
+/// Parses the values of a `Result`: the result, its reason (empty for none) and the seconds to
+/// wait. The seconds are nonzero only for a locked-out result.
+fn parse_outcome(result: &str, reason: &str, seconds: &str) -> Result<Update, ApiError> {
+    let result = PromptResult::from_wire(result).ok_or(ApiError::InvalidArgument)?;
+    let reason = PromptReason::from_wire(reason).ok_or(ApiError::InvalidArgument)?;
+    let retry_after: u32 = seconds.parse().map_err(|_| ApiError::InvalidArgument)?;
+    if retry_after != 0 && result != PromptResult::LockedOut {
+        return Err(ApiError::InvalidArgument);
+    }
+    Ok(Update::Result(Outcome {
+        result,
+        reason,
+        retry_after,
+    }))
 }
 
 /// The canonical wire strings of an update's values.
@@ -575,7 +603,11 @@ fn wire_values(update: &Update) -> Vec<String> {
         Update::Methods(methods) => methods.iter().map(|m| m.as_wire().to_string()).collect(),
         Update::Active(active) => active.iter().map(|m| m.as_wire().to_string()).collect(),
         Update::State(state) => vec![state.as_wire().to_string()],
-        Update::Result(result) => vec![result.as_wire().to_string()],
+        Update::Result(outcome) => vec![
+            outcome.result.as_wire().to_string(),
+            outcome.reason.as_wire().to_string(),
+            outcome.retry_after.to_string(),
+        ],
     }
 }
 
@@ -683,12 +715,20 @@ mod tests {
         let id = pid("p1");
         let mut api = api_with_prompt(&id);
         let fresh = api.get_state(USER, &id).unwrap();
-        let bad: [(&str, &[&str]); 6] = [
+        let bad: [(&str, &[&str]); 14] = [
             ("State", &["bogus"]),
             ("State", &[]),
             ("State", &["idle", "idle"]),
             ("Result", &["bogus"]),
-            ("ActiveMethod", &["face", "pin"]),
+            ("Result", &[]),
+            ("Result", &["failure", "bogus"]),
+            ("Result", &["failure", "", "soon"]),
+            ("Result", &["failure", "", "5"]),
+            ("Result", &["locked-out", "", "-1"]),
+            ("Result", &["failure", "", "0", "extra"]),
+            ("ActiveMethods", &["face", "FACE"]),
+            ("ActiveMethods", &["face", "face"]),
+            ("ActiveMethod", &["face"]),
             ("MethodsAvailable", &["face", "FACE"]),
         ];
         for (signal, values) in bad {
@@ -719,8 +759,15 @@ mod tests {
             assert_eq!(note.values, vec!["face".to_string(), "pin".to_string()]);
         }
 
-        let told = api.report_state(USER, &id, "ActiveMethod", &[]).unwrap();
+        let told = api.report_state(USER, &id, "ActiveMethods", &[]).unwrap();
         assert!(told[0].values.is_empty());
+        let told = api
+            .report_state(USER, &id, "ActiveMethods", &["face", "fingerprint"])
+            .unwrap();
+        assert_eq!(
+            told[0].values,
+            vec!["face".to_string(), "fingerprint".to_string()]
+        );
         let told = api.report_state(USER, &id, "State", &["scanning"]).unwrap();
         assert_eq!(told[0].values, vec!["scanning".to_string()]);
     }
@@ -731,21 +778,79 @@ mod tests {
         let mut api = api_with_prompt(&id);
         let fresh = api.get_state(USER, &id).unwrap();
         assert!(fresh.methods.is_empty());
-        assert_eq!(fresh.active, None);
+        assert!(fresh.active.is_empty());
         assert_eq!(fresh.state, "idle");
         assert_eq!(fresh.result, None);
+        assert_eq!((fresh.reason.as_str(), fresh.retry_after), ("", 0));
 
         api.report_state(USER, &id, "MethodsAvailable", &["face"])
             .unwrap();
-        api.report_state(USER, &id, "ActiveMethod", &["face"])
+        api.report_state(USER, &id, "ActiveMethods", &["face", "fingerprint"])
             .unwrap();
         api.report_state(USER, &id, "State", &["scanning"]).unwrap();
         api.report_state(USER, &id, "Result", &["failure"]).unwrap();
         let reply = api.get_state(USER, &id).unwrap();
         assert_eq!(reply.methods, vec!["face".to_string()]);
-        assert_eq!(reply.active, Some("face".to_string()));
+        assert_eq!(
+            reply.active,
+            vec!["face".to_string(), "fingerprint".to_string()]
+        );
         assert_eq!(reply.state, "scanning".to_string());
         assert_eq!(reply.result, Some("failure".to_string()));
+    }
+
+    #[test]
+    fn active_methods_is_a_list() {
+        let id = pid("p1");
+        let mut api = api_with_prompt(&id);
+        for (values, expected) in [
+            (vec![], vec![]),
+            (vec!["face"], vec!["face"]),
+            (vec!["face", "pin"], vec!["face", "pin"]),
+        ] {
+            api.report_state(USER, &id, "ActiveMethods", &values)
+                .unwrap();
+            let reply = api.get_state(USER, &id).unwrap();
+            assert_eq!(reply.active, expected);
+        }
+    }
+
+    #[test]
+    fn a_locked_out_result_carries_the_seconds() {
+        let id = pid("p1");
+        let mut api = api_with_prompt(&id);
+        api.subscribe(USER, ":1.1", &id).unwrap();
+
+        let told = api
+            .report_state(USER, &id, "Result", &["locked-out", "", "300"])
+            .unwrap();
+        assert_eq!(
+            told[0].values,
+            vec!["locked-out".to_string(), String::new(), "300".to_string()]
+        );
+        let reply = api.get_state(USER, &id).unwrap();
+        assert_eq!(reply.result.as_deref(), Some("locked-out"));
+        assert_eq!((reply.reason.as_str(), reply.retry_after), ("", 300));
+
+        // A reason and no seconds, and a bare result, fill in what is left out.
+        let told = api
+            .report_state(USER, &id, "Result", &["failure", "too-dark"])
+            .unwrap();
+        assert_eq!(
+            told[0].values,
+            vec![
+                "failure".to_string(),
+                "too-dark".to_string(),
+                "0".to_string()
+            ]
+        );
+        let told = api.report_state(USER, &id, "Result", &["success"]).unwrap();
+        assert_eq!(
+            told[0].values,
+            vec!["success".to_string(), String::new(), "0".to_string()]
+        );
+        let reply = api.get_state(USER, &id).unwrap();
+        assert_eq!((reply.reason.as_str(), reply.retry_after), ("", 0));
     }
 
     #[test]
