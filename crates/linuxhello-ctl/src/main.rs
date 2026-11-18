@@ -5,8 +5,10 @@
 #![forbid(unsafe_code)]
 
 mod policy;
+mod probe;
 mod status;
 
+use crate::probe::RealHost;
 use std::process::ExitCode;
 
 /// The Agent's state directory for the user layers (the same value as `USER_POLICY_ROOT` in the
@@ -36,9 +38,11 @@ fn main() -> ExitCode {
         std::io::stdout(),
         std::io::stderr(),
     );
+    let host = RealHost;
     let code = if matches!(args[0].as_str(), "status" | "doctor") {
         status::run(
             &args,
+            &host,
             std::path::Path::new(ADMIN_POLICY_DIR),
             0,
             state_root,
