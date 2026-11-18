@@ -417,3 +417,70 @@ fn doctor_probes_only_the_named_commands_and_files() {
         ]
     );
 }
+
+/// What `busctl` prints for `GetStatus` when the policy is damaged and `sudo` cannot be satisfied.
+const AGENT_SAYS: &str = r#"a(sss) 2 "policy-pin-only" "severe" "Biometric sign-in is off because a policy file failed to load." "context-unsatisfiable: sudo" "severe" "sudo cannot be unlocked with the configured methods.""#;
+
+#[test]
+fn status_without_a_user_shows_what_the_agent_says() {
+    let t = sound_tree();
+    let host = FakeHost::all_ok().with_program("busctl", 0, AGENT_SAYS);
+    let (code, out, _) = go_on(&host, &t, &t.users, &["status"]);
+    assert_eq!(code, 0);
+    assert!(out.contains("policy-pin-only  severe  Biometric sign-in is off"));
+    assert!(out.contains("context-unsatisfiable: sudo  severe"));
+    assert!(!out.contains("agent-unreachable"));
+    assert_eq!(
+        host.calls(),
+        vec![
+            "run busctl --system --timeout=5 call io.github.LinuxHello.Agent1 \
+             /io/github/LinuxHello/Agent1 io.github.LinuxHello.Agent1 GetStatus"
+                .to_string()
+        ]
+    );
+}
+
+#[test]
+fn status_without_a_user_says_no_conditions_for_an_empty_answer() {
+    let t = sound_tree();
+    let host = FakeHost::all_ok().with_program("busctl", 0, "a(sss) 0");
+    let (_, out, _) = go_on(&host, &t, &t.users, &["status"]);
+    assert_eq!(out, "no conditions\n");
+}
+
+#[test]
+fn an_agent_that_does_not_answer_is_a_condition_and_the_files_are_read() {
+    let t = damaged();
+    for host in [
+        FakeHost::all_ok().with_program("busctl", 1, ""),
+        FakeHost::all_ok().without_program("busctl"),
+        FakeHost::all_ok().with_program("busctl", 0, "not what busctl prints"),
+    ] {
+        let host = host.with_file(
+            "/proc/self/status",
+            "Name:\tx\nUid:\t1000\t1001\t1002\t1003\n",
+        );
+        let (code, out, _) = go_on(&host, &t, &t.users, &["status"]);
+        assert_eq!(code, 0);
+        assert!(out.starts_with("agent-unreachable  severe  "), "{out}");
+        assert!(out.contains("policy-pin-only  severe"), "{out}");
+        assert!(out.contains("context-unsatisfiable: sudo  severe"), "{out}");
+        assert!(
+            !out.contains(t.tmp.path().to_str().unwrap()),
+            "no file name: {out}"
+        );
+    }
+}
+
+#[test]
+fn an_unknown_caller_is_a_condition_not_a_clean_result() {
+    let t = sound_tree();
+    let host = FakeHost::all_ok().without_program("busctl");
+    let (_, out, _) = go_on(&host, &t, &t.users, &["status"]);
+    assert!(out.starts_with("agent-unreachable"), "{out}");
+    assert!(
+        out.contains("status-fact-unreadable: the caller's user id"),
+        "{out}"
+    );
+    assert!(!out.contains("no conditions"));
+}

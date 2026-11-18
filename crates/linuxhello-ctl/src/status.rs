@@ -1,11 +1,12 @@
-//! The administrator's offline commands `status` and `doctor`: what is wrong with the policy files,
+//! The administrator's commands `status` and `doctor`: what is wrong with the policy files,
 //! in the words the user and the administrator read.
 //!
 //! C4 component: `cliCommands` ([workspace.dsl](https://github.com/LinuxHello/linux-hello-architecture/blob/main/workspace.dsl))
 //!
-//! Both commands read the policy files on disk through the Agent's own loader and need no running
-//! Agent. They probe nothing else (no TPM, no service, no bus) and never write
-//! (`status_and_doctor_never_write`). ADR-0018 says that only the Agent reads and writes a user's
+//! `status --user` and `doctor` read the policy files on disk through the Agent's own loader and
+//! need no running Agent; `status` without `--user` is the exception: it asks the running Agent
+//! with one call, `GetStatus`, and falls back to the files when the Agent does not answer. Neither
+//! command writes (`status_and_doctor_never_write`). ADR-0018 says that only the Agent reads and writes a user's
 //! layer; like `policy show` and `policy reset`, these commands are the administrator's offline
 //! exception to that sentence.
 //!
@@ -15,18 +16,21 @@
 //! A fact that cannot be read is a condition of its own, never a clean result
 //! (`doctor_reports_an_unreadable_state_directory_as_a_condition_not_a_clean_run`).
 //!
-//! `status` probes only the policy files. `doctor` probes the policy files and four machine facts:
-//! the Agent unit, the AppArmor profile, the fingerprint service, and Howdy.
+//! `status` without `--user` asks the running Agent (`GetStatus`) and falls back to the policy
+//! files with `agent-unreachable` (`an_agent_that_does_not_answer_is_a_condition_and_the_files_are_read`);
+//! `status --user` probes nothing (`status_probes_nothing`). `doctor` probes the policy files and
+//! four machine facts: the Agent unit, the AppArmor profile, the fingerprint service, and Howdy.
 
 use std::io::{ErrorKind, Write};
 use std::path::Path;
 
+use crate::ask;
 use crate::probe::Host;
 use linuxhello_agent::policy::{load, Policy, UserPolicyStore};
 use linuxhello_dbus::status;
 
 /// The usage line printed on every usage error.
-const USAGE: &str = "usage: linuxhello-ctl status --user <name|uid> | doctor";
+const USAGE: &str = "usage: linuxhello-ctl status [--user <name|uid>] | doctor";
 
 /// A path that cannot exist, so that loading "the admin layers alone" finds no user layer.
 const NO_USER_LAYER: &str = "/nonexistent/linuxhello/policy.toml";
@@ -249,9 +253,54 @@ pub fn run(
             }
             0
         }
+        ["status"] => own_status(host, admin_dir, admin_owner_uid, user_root, out),
         ["doctor"] => doctor(host, admin_dir, admin_owner_uid, user_root, out),
-        _ => usage(err, "expected: status --user <name|uid> or doctor"),
+        _ => usage(err, "expected: status, status --user <name|uid> or doctor"),
     }
+}
+
+/// `status` without `--user`: the running Agent's conditions for the caller. When the Agent does
+/// not answer, `agent-unreachable` and then what the policy files say about the caller, which is
+/// the same as `status --user <the caller>` (ADR-0024, point 7).
+fn own_status(
+    host: &dyn Host,
+    admin_dir: &Path,
+    admin_owner_uid: u32,
+    user_root: &Path,
+    out: &mut dyn Write,
+) -> u8 {
+    if let Some(reported) = ask::get_status(host) {
+        if reported.is_empty() {
+            let _ = writeln!(out, "no conditions");
+        }
+        for r in &reported {
+            let _ = writeln!(out, "{}  {}  {}", r.code, r.severity, r.sentence);
+        }
+        return 0;
+    }
+    let _ = writeln!(
+        out,
+        "{}  {}  {}",
+        ask::AGENT_UNREACHABLE,
+        Severity::Severe.word(),
+        ask::AGENT_UNREACHABLE_SENTENCE
+    );
+    let Some(uid) = ask::own_uid(host) else {
+        let _ = writeln!(
+            out,
+            "{}",
+            line(&fact_unreadable(
+                "the caller's user id",
+                "Run `linuxhello-ctl status --user <name|uid>` instead."
+            ))
+        );
+        return 0;
+    };
+    let path = UserPolicyStore::new(user_root).path(uid);
+    for condition in &conditions_of(&load(admin_dir, &path, admin_owner_uid)) {
+        let _ = writeln!(out, "{}", line(condition));
+    }
+    0
 }
 
 /// The one line `status` prints for `condition`: code, severity, sentence.
