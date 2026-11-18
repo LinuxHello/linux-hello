@@ -1153,11 +1153,7 @@ mod tests {
     fn a_user_reads_only_its_own_effective_policy() {
         let tmp = TempDir::new().unwrap();
         let (store, admin) = store_with_admin(&tmp);
-        std::fs::write(
-            admin.join("site-secret-name.toml"),
-            "[pin]\nmin_length = 10\n",
-        )
-        .unwrap();
+        std::fs::write(admin.join("zz-site-layer.toml"), "[pin]\nmin_length = 10\n").unwrap();
         let mut api = Api::new(Config::new(vec![])).with_user_policy_store(Some(store));
         let user = |uid| Caller {
             uid: Some(uid),
@@ -1174,10 +1170,10 @@ mod tests {
         let (other, managed) = api.get_effective_policy(user(1001)).unwrap();
         assert!(other.contains("pin.min_length = 10"), "{other}");
         assert_eq!(managed, vec!["pin.min_length".to_string()]);
-        for secret in ["37m", "1000", "secret", "policy.d", "toml"] {
+        for hidden in ["37m", "1000", "zz-site-layer", "policy.d", "toml"] {
             assert!(
-                !other.contains(secret) && !managed.iter().any(|m| m.contains(secret)),
-                "user 1001 sees {secret:?}: {other}"
+                !other.contains(hidden) && !managed.iter().any(|m| m.contains(hidden)),
+                "user 1001 sees {hidden:?}: {other}"
             );
         }
     }
