@@ -17,7 +17,7 @@ use std::sync::Arc;
 
 use linuxhello_agent::audit::Audit;
 use linuxhello_agent::bus::{bus_alive, serve_with_extras, Extras};
-use linuxhello_agent::methods::{fingerprint::FingerprintMethod, username_of};
+use linuxhello_agent::methods::{face::FaceMethod, fingerprint::FingerprintMethod, username_of};
 use linuxhello_agent::notify::{watchdog_interval, Notifier};
 use linuxhello_agent::orchestrator::Method;
 use linuxhello_agent::pinlock::service::{Limits, PinLockService};
@@ -37,12 +37,18 @@ const ADMIN_POLICY_DIR: &str = "/etc/linuxhello/policy.d";
 /// The PIN socket (ADR-0021), in the runtime directory the unit creates for the Agent's user.
 const PIN_SOCKET: &str = "/run/linuxhello/pin.sock";
 
-/// The methods an authentication of the user `subject` runs: the fingerprint method when the
-/// account has a name in `/etc/passwd`. Face and PIN are later slices of #195.
+/// The methods an authentication of the user `subject` runs: the fingerprint and the face method
+/// when the account has a name in `/etc/passwd` (a method that is not installed reports itself
+/// unavailable and is not offered). The PIN is a later slice of #195.
 fn methods_of(subject: u32) -> Vec<Box<dyn Method>> {
     let passwd = std::fs::read_to_string("/etc/passwd").unwrap_or_default();
     username_of(subject, &passwd)
-        .map(|name| vec![Box::new(FingerprintMethod::new(name)) as Box<dyn Method>])
+        .map(|name| {
+            vec![
+                Box::new(FaceMethod::new(&name)) as Box<dyn Method>,
+                Box::new(FingerprintMethod::new(name)),
+            ]
+        })
         .unwrap_or_default()
 }
 
