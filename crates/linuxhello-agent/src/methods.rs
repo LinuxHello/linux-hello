@@ -8,6 +8,7 @@
 
 pub mod face;
 pub mod fingerprint;
+pub mod pin;
 
 /// The name of the account with user id `uid`, read from the text of `/etc/passwd`. `None` for a
 /// uid that has no line (a name that only the name service knows is not found here).

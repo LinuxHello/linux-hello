@@ -152,9 +152,9 @@ impl AgentService {
 
     /// The same service with the PIN lock that `GetStatus` reads.
     #[must_use]
-    pub fn with_pin_lock(self, pin_lock: Option<PinLockService>) -> Self {
+    pub fn with_pin_lock(self, pin_lock: Option<Arc<PinLockService>>) -> Self {
         Self {
-            api: self.api.with_pin_lock(pin_lock),
+            api: self.api.with_shared_pin_lock(pin_lock),
             ..self
         }
     }
@@ -221,7 +221,7 @@ pub async fn serve_with_pin_lock(
     let extras = Extras {
         audit: Some(audit),
         pin_socket,
-        pin_lock,
+        pin_lock: pin_lock.map(Arc::new),
         ..Extras::default()
     };
     serve_with_extras(builder, config, user_policies, extras).await
@@ -235,7 +235,7 @@ pub struct Extras {
     /// The PIN socket that `ExpectPin` announces a PIN to.
     pub pin_socket: Option<Arc<PinSocket>>,
     /// The PIN lock that `GetStatus` reads.
-    pub pin_lock: Option<PinLockService>,
+    pub pin_lock: Option<Arc<PinLockService>>,
     /// Makes the methods an authentication runs; none by default.
     pub methods: Option<MethodFactory>,
     /// How long an authentication may take; a minute by default.
