@@ -10,7 +10,15 @@ publish.workspace = true
 
 [dependencies]
 linuxhello-dbus = { path = "../linuxhello-dbus" }
-tss-esapi = "7.7"
+tss-esapi = { version = "7.7", optional = true }
+rustix = { version = "1", default-features = false, features = ["std", "net"] }
+zeroize = "1"
+
+[features]
+# The TPM itself. Off for a client of the provider (the Agent), which must not link the TSS2 C
+# libraries: the Agent is a static, pure-Rust binary.
+default = ["tpm"]
+tpm = ["dep:tss-esapi"]
 
 [lints]
 workspace = true

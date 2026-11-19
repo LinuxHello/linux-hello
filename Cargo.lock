@@ -405,8 +405,10 @@ name = "linuxhello-tpm-provider"
 version = "0.0.0"
 dependencies = [
  "linuxhello-dbus",
+ "rustix",
  "tempfile",
  "tss-esapi",
+ "zeroize",
 ]
 
 [[package]]
