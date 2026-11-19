@@ -9,12 +9,14 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
+argon2 = { version = "0.6", features = ["zeroize"] }
 async-io = "2"
 futures-lite = "2"
 linuxhello-dbus = { path = "../linuxhello-dbus" }
 rustix = { version = "1", default-features = false, features = ["std", "net"] }
 serde = { version = "1", features = ["derive"] }
 toml = "1.1"
+unicode-normalization = "0.1.26"
 zbus = "6.2"
 zeroize = "1"
 

@@ -11,6 +11,7 @@ pub mod bus;
 pub mod methods;
 pub mod notify;
 pub mod orchestrator;
+pub mod pinkdf;
 pub mod pinlock;
 pub mod pinsocket;
 pub mod policy;
