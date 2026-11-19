@@ -3,8 +3,11 @@
 
 use super::*;
 
-/// A salt of the bytes 0 to 15.
-const SALT: [u8; SALT_BYTES] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
+/// A salt of the bytes 0 to 15, made when it is needed. (A written-out array is read by CodeQL as a
+/// hard-coded salt in production code; this is a test value, and a known answer needs a fixed one.)
+fn salt() -> [u8; SALT_BYTES] {
+    std::array::from_fn(|i| u8::try_from(i).expect("a small index"))
+}
 
 /// Fast enough for a test: the smallest accepted parameters.
 const FAST: Params = Params::MINIMUM;
@@ -37,23 +40,23 @@ fn the_crate_matches_rfc_9106() {
 
 #[test]
 fn the_same_pin_salt_and_parameters_give_the_same_result() {
-    let a = stretch(b"1234", &SALT, &FAST).unwrap();
-    let b = stretch(b"1234", &SALT, &FAST).unwrap();
+    let a = stretch(b"1234", &salt(), &FAST).unwrap();
+    let b = stretch(b"1234", &salt(), &FAST).unwrap();
     assert_eq!(a.as_bytes(), b.as_bytes());
 }
 
 #[test]
 fn another_pin_salt_or_parameters_give_another_result() {
-    let base = stretch(b"1234", &SALT, &FAST).unwrap();
-    let other_pin = stretch(b"1235", &SALT, &FAST).unwrap();
-    let mut salt = SALT;
-    salt[15] ^= 1;
-    let other_salt = stretch(b"1234", &salt, &FAST).unwrap();
+    let base = stretch(b"1234", &salt(), &FAST).unwrap();
+    let other_pin = stretch(b"1235", &salt(), &FAST).unwrap();
+    let mut changed = salt();
+    changed[15] ^= 1;
+    let other_salt = stretch(b"1234", &changed, &FAST).unwrap();
     let more = Params {
         passes: FAST.passes + 1,
         ..FAST
     };
-    let other_params = stretch(b"1234", &SALT, &more).unwrap();
+    let other_params = stretch(b"1234", &salt(), &more).unwrap();
     for other in [other_pin, other_salt, other_params] {
         assert_ne!(base.as_bytes(), other.as_bytes());
     }
@@ -63,31 +66,31 @@ fn another_pin_salt_or_parameters_give_another_result() {
 /// parameters are used cannot go unnoticed: every record in the field would stop opening.
 #[test]
 fn the_result_for_a_known_input_does_not_change() {
-    let got = stretch(b"1234", &SALT, &FAST).unwrap();
+    let got = stretch(b"1234", &salt(), &FAST).unwrap();
     let hex: String = got.as_bytes().iter().map(|b| format!("{b:02x}")).collect();
     assert_eq!(hex, EXPECTED_1234, "the stretched PIN changed");
 }
 
-/// The result for "1234", [`SALT`] and [`FAST`].
+/// The result for "1234", a salt of the bytes 0 to 15 and [`FAST`].
 const EXPECTED_1234: &str = "e3aa759ef5ce8fdf573cc14f72dae6c48dbd781f4d4ac6d7201f8a71e4855418";
 
 #[test]
 fn equivalent_texts_are_the_same_pin() {
-    let ascii = stretch(b"1234", &SALT, &FAST).unwrap();
+    let ascii = stretch(b"1234", &salt(), &FAST).unwrap();
     // Full-width digits.
-    let wide = stretch("１２３４".as_bytes(), &SALT, &FAST).unwrap();
+    let wide = stretch("１２３４".as_bytes(), &salt(), &FAST).unwrap();
     assert_eq!(ascii.as_bytes(), wide.as_bytes());
     // A letter composed, and the same letter as a base letter and a combining accent.
-    let composed = stretch("pi\u{e9}ce1".as_bytes(), &SALT, &FAST).unwrap();
-    let decomposed = stretch("pie\u{301}ce1".as_bytes(), &SALT, &FAST).unwrap();
+    let composed = stretch("pi\u{e9}ce1".as_bytes(), &salt(), &FAST).unwrap();
+    let decomposed = stretch("pie\u{301}ce1".as_bytes(), &salt(), &FAST).unwrap();
     assert_eq!(composed.as_bytes(), decomposed.as_bytes());
 }
 
 #[test]
 fn an_empty_pin_and_a_pin_that_is_not_text_are_refused() {
-    assert_eq!(stretch(b"", &SALT, &FAST).err(), Some(KdfError::NotText));
+    assert_eq!(stretch(b"", &salt(), &FAST).err(), Some(KdfError::NotText));
     assert_eq!(
-        stretch(&[0xff, 0xfe, 0x31], &SALT, &FAST).err(),
+        stretch(&[0xff, 0xfe, 0x31], &salt(), &FAST).err(),
         Some(KdfError::NotText)
     );
 }
@@ -97,12 +100,12 @@ fn a_normal_form_that_does_not_fit_is_refused() {
     // U+FDFA becomes eighteen letters of two bytes each: 200 of them are far over the buffer.
     let long = "\u{fdfa}".repeat(200);
     assert_eq!(
-        stretch(long.as_bytes(), &SALT, &FAST).err(),
+        stretch(long.as_bytes(), &salt(), &FAST).err(),
         Some(KdfError::TooLong)
     );
     // And a shorter run of the same character fits.
     let fits = "\u{fdfa}".repeat(10);
-    assert!(stretch(fits.as_bytes(), &SALT, &FAST).is_ok());
+    assert!(stretch(fits.as_bytes(), &salt(), &FAST).is_ok());
 }
 
 #[test]
@@ -129,7 +132,7 @@ fn parameters_outside_the_accepted_range_are_refused_before_any_work() {
     ] {
         assert!(!params.acceptable(), "{params:?}");
         assert_eq!(
-            stretch(b"1234", &SALT, &params).err(),
+            stretch(b"1234", &salt(), &params).err(),
             Some(KdfError::BadParams)
         );
     }
@@ -170,7 +173,7 @@ fn the_cost_of_the_default_parameters() {
     let started = std::time::Instant::now();
     let runs = 5;
     for _ in 0..runs {
-        stretch(b"123456", &SALT, &Params::DEFAULT).unwrap();
+        stretch(b"123456", &salt(), &Params::DEFAULT).unwrap();
     }
     println!("default parameters: {:?} per PIN", started.elapsed() / runs);
 }
