@@ -197,6 +197,19 @@ jobs:
       - name: Unsafe code exists only in allow-listed modules
         run: bash scripts/ci/unsafe-policy.sh
 
+  # What is tracked: no build output and no file over 1 MiB (a fuzz crate once went in with its
+  # target/ and corpus/). Not in scripts/ci/quality-gates.txt: adding it would change what the
+  # attestation claims (ADR-0006), which is the maintainer's decision.
+  repo-hygiene:
+    name: repo-hygiene
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: The checker refuses tracked build output and big files
+        run: bash scripts/ci/test-repo-hygiene.sh
+      - name: Nothing tracked is build output or over 1 MiB
+        run: bash scripts/ci/repo-hygiene.sh
+
   docs:
     name: docs
     needs: changes
