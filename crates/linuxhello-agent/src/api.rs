@@ -11,12 +11,13 @@
 //! C4 component: `dbusApi` ([workspace.dsl](https://github.com/LinuxHello/linux-hello-architecture/blob/main/workspace.dsl))
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use linuxhello_dbus::{AuthMethod, PromptId, PromptReason, PromptResult, PromptState, SIGNALS};
 
 use crate::audit::{Audit, Event};
 use crate::orchestrator::Cancel;
-use crate::pinlock::service::{LockStatus, PinLockService};
+use crate::pinlock::service::{wall_clock_seconds, LockStatus, PinLockService};
 use crate::pinsocket::{PinSocket, Process};
 use crate::policy::load::Policy;
 use crate::policy::schema::parse_layer;
@@ -175,13 +176,6 @@ struct StatusItem {
     detail: Option<String>,
 }
 
-/// The wall clock in whole seconds since the Unix epoch; zero if the clock is before it.
-fn wall_clock_seconds() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs())
-}
-
 /// The PIN rules a client shows in its dialog, as wire values.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PinRulesReply {
@@ -207,7 +201,7 @@ pub struct Api {
     /// flag stops the orchestrator when the prompt closes.
     running: HashMap<(u32, PromptId), Cancel>,
     /// The PIN lock, when the Agent has one.
-    pin_lock: Option<PinLockService>,
+    pin_lock: Option<Arc<PinLockService>>,
     /// The time in seconds since the Unix epoch; the wall clock, replaced in tests.
     clock: fn() -> u64,
 }
@@ -228,6 +222,12 @@ impl Api {
     /// An API with the Agent's PIN lock, which `GetStatus` reads.
     #[must_use]
     pub fn with_pin_lock(self, pin_lock: Option<PinLockService>) -> Self {
+        self.with_shared_pin_lock(pin_lock.map(Arc::new))
+    }
+
+    /// An API with a PIN lock that something else holds too, such as the PIN method.
+    #[must_use]
+    pub fn with_shared_pin_lock(self, pin_lock: Option<Arc<PinLockService>>) -> Self {
         Self { pin_lock, ..self }
     }
 

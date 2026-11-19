@@ -46,6 +46,8 @@ pub enum MethodEnd {
     Unavailable,
     /// The method stopped because it was told to.
     Cancelled,
+    /// The user is locked out of this method for this many seconds (too many wrong PINs).
+    LockedOut(u32),
 }
 
 /// A flag that a method reads and the orchestrator sets.
@@ -150,6 +152,7 @@ impl Orchestrator {
         let started = Instant::now();
         let mut running: Vec<(usize, AuthMethod)> = kinds.iter().copied().enumerate().collect();
         let mut last_failure: Option<PromptReason> = None;
+        let mut locked_out: Option<u32> = None;
         let outcome = loop {
             if stop.is_cancelled() {
                 cancel.cancel();
@@ -170,6 +173,9 @@ impl Orchestrator {
                 }
                 Ok((index, end)) => {
                     running.retain(|(i, _)| *i != index);
+                    if let MethodEnd::LockedOut(seconds) = end {
+                        locked_out = Some(seconds);
+                    }
                     if let MethodEnd::Failure(reason) = end {
                         last_failure = Some(if reason == PromptReason::None {
                             PromptReason::NotRecognised
@@ -178,25 +184,32 @@ impl Orchestrator {
                         });
                     }
                     if running.is_empty() {
-                        break Outcome {
-                            reason: last_failure.unwrap_or(PromptReason::None),
-                            ..Outcome::new(PromptResult::Failure)
-                        };
+                        break failed(last_failure, locked_out);
                     }
                     reporter.report(Update::Active(running.iter().map(|(_, k)| *k).collect()));
                 }
                 Err(RecvTimeoutError::Timeout) => {}
-                Err(RecvTimeoutError::Disconnected) => {
-                    break Outcome {
-                        reason: last_failure.unwrap_or(PromptReason::None),
-                        ..Outcome::new(PromptResult::Failure)
-                    };
-                }
+                Err(RecvTimeoutError::Disconnected) => break failed(last_failure, locked_out),
             }
         };
         reporter.report(Update::Active(Vec::new()));
         reporter.report(Update::State(PromptState::Idle));
         finish(reporter, outcome)
+    }
+}
+
+/// The outcome when no method succeeded: locked out if a method said so, else a failure with the
+/// reason of the last one.
+fn failed(last_failure: Option<PromptReason>, locked_out: Option<u32>) -> Outcome {
+    match locked_out {
+        Some(seconds) => Outcome {
+            retry_after: seconds,
+            ..Outcome::new(PromptResult::LockedOut)
+        },
+        None => Outcome {
+            reason: last_failure.unwrap_or(PromptReason::None),
+            ..Outcome::new(PromptResult::Failure)
+        },
     }
 }
 

@@ -28,6 +28,14 @@ use crate::policy::Policy;
 /// The longest a lockout can be: 24 hours. The policy has no key for it.
 pub const MAX_LOCKOUT_SECS: u64 = 24 * 3600;
 
+/// The wall clock in whole seconds since the Unix epoch; zero if the clock is before it. The lockout
+/// file keeps these times, so they mean the same after a restart.
+pub fn wall_clock_seconds() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
 /// The limits a [`PinLock`] is built with.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Limits {
