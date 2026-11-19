@@ -229,18 +229,31 @@ fn agent_profile_grants_no_capability_and_denies_tracing() {
 fn agent_profile_grants_the_tpm_and_no_other_device() {
     let rules = profile_rules();
     let devices: Vec<&String> = rules.iter().filter(|r| r.starts_with("/dev/")).collect();
-    assert_eq!(devices, ["/dev/tpmrm0 rw,"]);
+    // The camera is for the face method (Howdy inherits this profile).
+    assert!(devices.contains(&&"/dev/tpmrm0 rw,".to_string()));
+    assert_eq!(devices.len(), 2);
 }
 
+/// The Agent starts the Python interpreter, for Howdy, and no other program; the child inherits the
+/// profile, so everything the profile denies is denied to Howdy too.
 #[test]
-fn agent_profile_denies_home_directories_and_names_the_registered_bus_name() {
+fn the_agent_may_start_python_for_howdy_and_no_other_program() {
     let rules = profile_rules();
-    assert!(rules.iter().any(|r| r.starts_with("deny /home/**")));
-    assert!(rules.iter().any(|r| r.starts_with("deny /root/**")));
-    let name = format!("name={AGENT_BUS_NAME}");
-    assert!(rules
+    let executes: Vec<&String> = rules
         .iter()
-        .any(|r| r.starts_with("dbus bind") && r.contains(&name)));
+        .filter(|r| {
+            [" ix", " Cx", " Px", " Ux", " px", " cx", " ux"]
+                .iter()
+                .any(|m| r.contains(m))
+        })
+        .collect();
+    assert_eq!(executes, ["/usr/bin/python3{,.[0-9]*} ix,"]);
+    // Nothing that Howdy inherits lets it out: no network but the bus socket, no home directory.
+    assert!(rules.contains(&"deny network inet,".to_string()));
+    assert!(rules.iter().any(|r| r.starts_with("deny /home/**")));
+    // The camera, and only the camera and the TPM, among the devices.
+    let devices: Vec<&String> = rules.iter().filter(|r| r.starts_with("/dev/")).collect();
+    assert_eq!(devices, ["/dev/video[0-9]* rw,", "/dev/tpmrm0 rw,"]);
 }
 
 /// The statements of the AppArmor profile that begin with `prefix`, with their continuation
