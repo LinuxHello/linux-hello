@@ -19,3 +19,5 @@ pub mod wire;
 pub mod keys;
 #[cfg(feature = "tpm")]
 pub mod server;
+#[cfg(feature = "testing")]
+pub mod testing;

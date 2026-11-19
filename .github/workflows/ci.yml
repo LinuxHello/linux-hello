@@ -209,6 +209,21 @@ jobs:
       - name: Unsafe code exists only in allow-listed modules
         run: bash scripts/ci/unsafe-policy.sh
 
+  # The Agent is a static, pure-Rust binary: no TPM library in its dependency tree. Not in
+  # scripts/ci/quality-gates.txt (see repo-hygiene).
+  agent-links-no-tpm:
+    name: agent-links-no-tpm
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: stable
+      - name: tss-esapi is not in the Agent's dependencies
+        run: bash scripts/ci/agent-links-no-tpm.sh
+
   # What is tracked: no build output and no file over 1 MiB (a fuzz crate once went in with its
   # target/ and corpus/). Not in scripts/ci/quality-gates.txt: adding it would change what the
   # attestation claims (ADR-0006), which is the maintainer's decision.

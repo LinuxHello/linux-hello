@@ -8,10 +8,8 @@
 
 use std::process::{Command, Stdio};
 
-mod common;
-
-use common::SoftTpm;
 use linuxhello_tpm_provider::keys::{Blobs, TpmError, AUTH_BYTES};
+use linuxhello_tpm_provider::testing::SoftTpm;
 
 /// An authorisation value of 32 bytes made of `b`.
 fn auth(b: u8) -> [u8; AUTH_BYTES] {
