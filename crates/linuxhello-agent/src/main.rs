@@ -17,10 +17,11 @@ use std::sync::Arc;
 
 use linuxhello_agent::audit::Audit;
 use linuxhello_agent::bus::{bus_alive, serve_with_extras, Extras};
+use linuxhello_agent::methods::pin::{NoVerifier, PinInbox, PinMethod, PinVerifier};
 use linuxhello_agent::methods::{face::FaceMethod, fingerprint::FingerprintMethod, username_of};
 use linuxhello_agent::notify::{watchdog_interval, Notifier};
 use linuxhello_agent::orchestrator::Method;
-use linuxhello_agent::pinlock::service::{Limits, PinLockService};
+use linuxhello_agent::pinlock::service::{wall_clock_seconds, Limits, PinLockService};
 use linuxhello_agent::pinlock::store::PinLockFile;
 use linuxhello_agent::pinsocket::PinSocket;
 use linuxhello_agent::policy::load;
@@ -37,19 +38,29 @@ const ADMIN_POLICY_DIR: &str = "/etc/linuxhello/policy.d";
 /// The PIN socket (ADR-0021), in the runtime directory the unit creates for the Agent's user.
 const PIN_SOCKET: &str = "/run/linuxhello/pin.sock";
 
-/// The methods an authentication of the user `subject` runs: the fingerprint and the face method
-/// when the account has a name in `/etc/passwd` (a method that is not installed reports itself
-/// unavailable and is not offered). The PIN is a later slice of #195.
-fn methods_of(subject: u32) -> Vec<Box<dyn Method>> {
+/// The methods an authentication of the user `subject` runs: face and fingerprint when the
+/// account has a name in `/etc/passwd` (a method that is not installed reports itself unavailable
+/// and is not offered), and the PIN. The PIN method is offered only when a verifier can check a PIN,
+/// and none can yet: the TPM side is not built.
+fn methods_of(
+    subject: u32,
+    inbox: &Arc<PinInbox>,
+    lock: &Arc<PinLockService>,
+    verifier: &Arc<dyn PinVerifier>,
+) -> Vec<Box<dyn Method>> {
+    let mut methods: Vec<Box<dyn Method>> = vec![Box::new(PinMethod::new(
+        subject,
+        Arc::clone(inbox),
+        Arc::clone(lock),
+        Arc::clone(verifier),
+        wall_clock_seconds,
+    ))];
     let passwd = std::fs::read_to_string("/etc/passwd").unwrap_or_default();
-    username_of(subject, &passwd)
-        .map(|name| {
-            vec![
-                Box::new(FaceMethod::new(&name)) as Box<dyn Method>,
-                Box::new(FingerprintMethod::new(name)),
-            ]
-        })
-        .unwrap_or_default()
+    if let Some(name) = username_of(subject, &passwd) {
+        methods.push(Box::new(FaceMethod::new(&name)));
+        methods.push(Box::new(FingerprintMethod::new(name)));
+    }
+    methods
 }
 
 /// The file that keeps the PIN lockout records across a restart, in the state directory.
@@ -74,12 +85,16 @@ fn pin_lock() -> PinLockService {
 /// PINs to it. A PIN is not used anywhere yet, so a socket that cannot be bound is reported on
 /// standard error and the Agent goes on serving the bus (`ExpectPin` is then `Unavailable`); the
 /// slice that wires the PIN verifier decides whether that stays so.
-fn serve_pin_socket() -> Option<Arc<PinSocket>> {
+fn serve_pin_socket(inbox: Arc<PinInbox>) -> Option<Arc<PinSocket>> {
     let owner = rustix::process::getuid().as_raw();
     match PinSocket::bind(Path::new(PIN_SOCKET), owner) {
         Ok(socket) => {
             let socket = Arc::new(socket);
-            PinSocket::serve_forever(Arc::clone(&socket), drop);
+            // An accepted PIN goes to the PIN method that waits for its user; if none does, it is
+            // wiped here.
+            PinSocket::serve_forever(Arc::clone(&socket), move |submission| {
+                inbox.deliver(submission.subject, submission.pin);
+            });
             Some(socket)
         }
         Err(error) => {
@@ -95,13 +110,18 @@ fn serve_pin_socket() -> Option<Arc<PinSocket>> {
 ///
 /// Any error of connecting to the bus or claiming the name, such as the bus policy refusing it.
 async fn run() -> zbus::Result<()> {
-    let pin_socket = serve_pin_socket();
+    let inbox = Arc::new(PinInbox::default());
+    let lock = Arc::new(pin_lock());
+    let verifier: Arc<dyn PinVerifier> = Arc::new(NoVerifier);
+    let pin_socket = serve_pin_socket(Arc::clone(&inbox));
     let store = UserPolicyStore::new(USER_POLICY_ROOT).with_admin_layer(ADMIN_POLICY_DIR, 0);
     let extras = Extras {
         audit: Some(Audit::journal()),
         pin_socket,
-        pin_lock: Some(pin_lock()),
-        methods: Some(Arc::new(methods_of)),
+        pin_lock: Some(Arc::clone(&lock)),
+        methods: Some(Arc::new(move |subject| {
+            methods_of(subject, &inbox, &lock, &verifier)
+        })),
         auth_deadline: None,
     };
     let connection = serve_with_extras(

@@ -24,6 +24,8 @@ enum Script {
     IgnoreCancelFor(u64),
     /// Panics.
     Panic,
+    /// Ends locked out for this many seconds after this many milliseconds.
+    LockedOutAfter(u64, u32),
 }
 
 /// A fake method that follows a [`Script`].
@@ -104,6 +106,13 @@ impl Method for Fake {
             Script::IgnoreCancelFor(ms) => {
                 sleep(Duration::from_millis(ms));
                 MethodEnd::Cancelled
+            }
+            Script::LockedOutAfter(ms, seconds) => {
+                if waited(ms) {
+                    MethodEnd::LockedOut(seconds)
+                } else {
+                    MethodEnd::Cancelled
+                }
             }
             Script::Panic => panic!("a method that panics"),
         }
@@ -375,4 +384,24 @@ fn an_outside_stop_cancels_everything_and_says_cancelled() {
     assert_eq!(outcome.reason, PromptReason::Cancelled);
     assert!(cancelled.load(Ordering::SeqCst));
     assert_eq!(results(&recorder.updates()).len(), 1);
+}
+
+#[test]
+fn a_locked_out_method_gives_a_locked_out_result_with_the_seconds() {
+    let (pin, _, _) = fake(AuthMethod::Pin, Script::LockedOutAfter(10, 900));
+    let (face, _, _) = fake(
+        AuthMethod::Face,
+        Script::FailAfter(30, PromptReason::NoFace),
+    );
+    let (outcome, updates) = go(&rule(), vec![pin, face], 5_000);
+    assert_eq!(outcome.result, PromptResult::LockedOut);
+    assert_eq!(outcome.retry_after, 900);
+    assert_eq!(results(&updates), vec![outcome]);
+
+    // A success of another method still wins over a lockout.
+    let (pin, _, _) = fake(AuthMethod::Pin, Script::LockedOutAfter(10, 900));
+    let (finger, _, _) = fake(AuthMethod::Fingerprint, Script::SucceedAfter(50));
+    let (outcome, _) = go(&rule(), vec![pin, finger], 5_000);
+    assert_eq!(outcome.result, PromptResult::Success);
+    assert_eq!(outcome.retry_after, 0);
 }
