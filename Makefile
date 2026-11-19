@@ -1,6 +1,6 @@
 # Local entry points for the CI gates (AGENTS.md, Gates). Agents and humans run
 # `make fix` after writing code and `make gates` before opening a pull request.
-.PHONY: help fmt fix gates fmt-check clippy test deny audit unsafe-policy fuzz bench docs docs-site hooks verify-gate next backlog backlog-check
+.PHONY: help fmt fix gates fmt-check clippy test deny audit unsafe-policy hygiene fuzz bench docs docs-site hooks verify-gate next backlog backlog-check
 
 FUZZ_SECONDS ?= 60
 
@@ -24,7 +24,7 @@ fix: fmt
 	cargo clippy --workspace --all-targets --fix --allow-dirty --allow-staged -- -D warnings
 	cargo fmt --all
 
-gates: fmt-check clippy test deny audit unsafe-policy fuzz docs
+gates: fmt-check clippy test deny audit unsafe-policy hygiene fuzz docs
 	@echo "All gates passed."
 
 fmt-check:
@@ -46,6 +46,10 @@ audit:
 
 unsafe-policy:
 	bash scripts/ci/unsafe-policy.sh
+
+hygiene:
+	bash scripts/ci/test-repo-hygiene.sh
+	bash scripts/ci/repo-hygiene.sh
 
 fuzz:
 	scripts/ci/fuzz.sh $(FUZZ_SECONDS)
