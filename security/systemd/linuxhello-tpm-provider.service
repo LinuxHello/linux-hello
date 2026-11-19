@@ -1,0 +1,55 @@
+[Unit]
+Description=Linux Hello TPM provider
+Documentation=https://github.com/LinuxHello/linux-hello
+# The Agent reaches the TPM through this service's socket (ADR-0021). The Agent does not need it to
+# start: a provider that is not there is a PIN that cannot be checked, never a wrong one.
+Before=linuxhello-agent.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStartPre=+/bin/sh -c 'grep -qx "linuxhello-tpm-provider (enforce)" /sys/kernel/security/apparmor/profiles'
+ExecStart=/usr/libexec/linuxhello/linuxhello-tpm-provider
+AppArmorProfile=linuxhello-tpm-provider
+User=linuxhello-tpm
+Group=linuxhello-tpm
+Restart=on-failure
+RestartSec=1
+
+# The directory of the socket: the provider's, and nobody else can change it.
+RuntimeDirectory=linuxhello-tpm
+RuntimeDirectoryMode=0755
+UMask=0077
+
+NoNewPrivileges=yes
+LimitCORE=0
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateNetwork=yes
+IPAddressDeny=any
+RemoveIPC=yes
+RestrictAddressFamilies=AF_UNIX
+DevicePolicy=closed
+DeviceAllow=/dev/tpmrm0 rw
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+
+[Install]
+WantedBy=multi-user.target

@@ -77,6 +77,10 @@ profile linuxhello-agent /usr/libexec/linuxhello/linuxhello-agent flags=(attach_
   /run/linuxhello/ rw,
   /run/linuxhello/pin.sock rw,
 
+  # The TPM provider's socket (ADR-0021): the Agent reaches the TPM through it and opens no TPM
+  # library. The unix stream rule above covers connecting.
+  /run/linuxhello-tpm/tpm.sock rw,
+
   # The admin policy layer, read-only.
   /etc/linuxhello/policy.d/ r,
   /etc/linuxhello/policy.d/** r,

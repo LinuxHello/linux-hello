@@ -148,6 +148,18 @@ impl Server {
     }
 }
 
+/// The user id of the account `name` in the text of `/etc/passwd`; `None` for a name that has no
+/// line.
+pub fn uid_of(name: &str, passwd: &str) -> Option<u32> {
+    passwd.lines().find_map(|line| {
+        let mut fields = line.split(':');
+        let account = fields.next()?;
+        let _password = fields.next()?;
+        let id: u32 = fields.next()?.parse().ok()?;
+        (account == name).then_some(id)
+    })
+}
+
 /// The user id of the process at the other end of `stream`, as the kernel reports it.
 fn peer_uid(stream: &UnixStream) -> Option<u32> {
     Some(
@@ -156,4 +168,23 @@ fn peer_uid(stream: &UnixStream) -> Option<u32> {
             .uid
             .as_raw(),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::uid_of;
+
+    #[test]
+    fn an_account_is_found_by_name_in_the_passwd_text() {
+        let passwd = "root:x:0:0:root:/root:/bin/bash\nlinuxhello:x:988:988:Agent:/var/lib/linuxhello:/usr/sbin/nologin\n# n\nbroken\n";
+        assert_eq!(uid_of("linuxhello", passwd), Some(988));
+        assert_eq!(uid_of("root", passwd), Some(0));
+        assert_eq!(
+            uid_of("linuxhell", passwd),
+            None,
+            "a prefix is not the name"
+        );
+        assert_eq!(uid_of("nobody", passwd), None);
+        assert_eq!(uid_of("linuxhello", ""), None);
+    }
 }
