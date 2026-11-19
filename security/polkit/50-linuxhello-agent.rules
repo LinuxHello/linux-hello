@@ -1,0 +1,14 @@
+// Lets the Linux Hello Agent use the fingerprint service for the person who is signing in.
+//
+// fprintd asks polkit before it lets a program claim a fingerprint reader for a user and scan a
+// finger. The Agent runs as its own user (linuxhello), not as the person signing in, so without
+// this rule fprintd would refuse it. The rule allows that one user exactly the two actions that
+// claiming and scanning need, and nothing else: enrolling or deleting a fingerprint stays with
+// the person or an administrator. Install as /etc/polkit-1/rules.d/50-linuxhello-agent.rules.
+polkit.addRule(function(action, subject) {
+    if (subject.user == "linuxhello" &&
+        (action.id == "net.reactivated.fprint.device.verify" ||
+         action.id == "net.reactivated.fprint.device.setusername")) {
+        return polkit.Result.YES;
+    }
+});

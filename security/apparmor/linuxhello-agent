@@ -25,13 +25,24 @@ profile linuxhello-agent /usr/libexec/linuxhello/linuxhello-agent flags=(attach_
   dbus (send, receive) bus=system path=/io/github/LinuxHello/Agent1
        interface=org.freedesktop.DBus.{Introspectable,Peer},
   dbus send bus=system path=/org/freedesktop/DBus interface=org.freedesktop.DBus
-       member={Hello,RequestName,ReleaseName,GetConnectionCredentials,AddMatch,RemoveMatch}
+       member={Hello,RequestName,ReleaseName,GetConnectionCredentials,AddMatch,RemoveMatch,GetNameOwner,StartServiceByName}
        peer=(name=org.freedesktop.DBus),
   # The bus tells the Agent when a connection leaves, so that the prompts it opened and its
   # subscriptions are removed (NameOwnerChanged, from the bus itself and nothing else).
   dbus receive bus=system path=/org/freedesktop/DBus interface=org.freedesktop.DBus
        member=NameOwnerChanged
        peer=(name=org.freedesktop.DBus),
+
+  # The fingerprint method (ADR-0023): the Agent is a client of fprintd. It calls the manager and
+  # the readers, hears the result of a scan, and reads the account name of the user who signs in
+  # (a name that only a name service knows is not found, and that user has no fingerprint method).
+  dbus send bus=system path=/net/reactivated/Fprint/**
+       interface=net.reactivated.Fprint.{Manager,Device}
+       peer=(name=net.reactivated.Fprint),
+  dbus receive bus=system path=/net/reactivated/Fprint/**
+       interface=net.reactivated.Fprint.Device member=VerifyStatus
+       peer=(name=net.reactivated.Fprint),
+  /etc/passwd r,
 
   # The only device: the TPM resource manager.
   /dev/tpmrm0 rw,

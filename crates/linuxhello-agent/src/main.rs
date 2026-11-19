@@ -16,8 +16,10 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 use linuxhello_agent::audit::Audit;
-use linuxhello_agent::bus::{bus_alive, serve_with_pin_lock};
+use linuxhello_agent::bus::{bus_alive, serve_with_extras, Extras};
+use linuxhello_agent::methods::{fingerprint::FingerprintMethod, username_of};
 use linuxhello_agent::notify::{watchdog_interval, Notifier};
+use linuxhello_agent::orchestrator::Method;
 use linuxhello_agent::pinlock::service::{Limits, PinLockService};
 use linuxhello_agent::pinlock::store::PinLockFile;
 use linuxhello_agent::pinsocket::PinSocket;
@@ -34,6 +36,15 @@ const ADMIN_POLICY_DIR: &str = "/etc/linuxhello/policy.d";
 
 /// The PIN socket (ADR-0021), in the runtime directory the unit creates for the Agent's user.
 const PIN_SOCKET: &str = "/run/linuxhello/pin.sock";
+
+/// The methods an authentication of the user `subject` runs: the fingerprint method when the
+/// account has a name in `/etc/passwd`. Face and PIN are later slices of #195.
+fn methods_of(subject: u32) -> Vec<Box<dyn Method>> {
+    let passwd = std::fs::read_to_string("/etc/passwd").unwrap_or_default();
+    username_of(subject, &passwd)
+        .map(|name| vec![Box::new(FingerprintMethod::new(name)) as Box<dyn Method>])
+        .unwrap_or_default()
+}
 
 /// The file that keeps the PIN lockout records across a restart, in the state directory.
 const PIN_LOCK_FILE: &str = "/var/lib/linuxhello/pinlock.toml";
@@ -80,13 +91,18 @@ fn serve_pin_socket() -> Option<Arc<PinSocket>> {
 async fn run() -> zbus::Result<()> {
     let pin_socket = serve_pin_socket();
     let store = UserPolicyStore::new(USER_POLICY_ROOT).with_admin_layer(ADMIN_POLICY_DIR, 0);
-    let connection = serve_with_pin_lock(
+    let extras = Extras {
+        audit: Some(Audit::journal()),
+        pin_socket,
+        pin_lock: Some(pin_lock()),
+        methods: Some(Arc::new(methods_of)),
+        auth_deadline: None,
+    };
+    let connection = serve_with_extras(
         Builder::system(),
         Config::new(Vec::new()),
         Some(store),
-        Audit::journal(),
-        pin_socket,
-        Some(pin_lock()),
+        extras,
     )
     .await?;
     // Under a watchdog (WatchdogSec= in the unit) the Agent tells the service manager it is alive,

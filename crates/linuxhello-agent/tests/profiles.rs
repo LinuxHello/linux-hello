@@ -244,27 +244,99 @@ fn agent_profile_denies_home_directories_and_names_the_registered_bus_name() {
 }
 
 /// The statements of the AppArmor profile that begin with `prefix`, with their continuation
-/// lines joined by one space.
+/// lines joined by one space. A statement ends at a comma outside braces: `member={A,B}` is one.
 fn statements(prefix: &str) -> Vec<String> {
-    profile_rules()
-        .join(" ")
-        .split(',')
+    // Not the line that opens the profile, nor the one that closes it.
+    let body: Vec<String> = profile_rules()
+        .into_iter()
+        .filter(|r| !r.starts_with("profile ") && r != "}")
+        .collect();
+    let text = body.join(" ");
+    let (mut found, mut current, mut depth) = (Vec::new(), String::new(), 0_u32);
+    for c in text.chars() {
+        match c {
+            '{' => depth += 1,
+            '}' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => {
+                found.push(std::mem::take(&mut current));
+                continue;
+            }
+            _ => {}
+        }
+        current.push(c);
+    }
+    found.push(current);
+    found
+        .into_iter()
         .map(|s| s.trim().to_string())
         .filter(|s| s.starts_with(prefix))
         .collect()
 }
 
 #[test]
-fn agent_profile_receives_only_name_owner_changed_from_the_bus_itself() {
+fn agent_profile_receives_only_name_owner_changed_from_the_bus_and_the_scan_result_from_fprintd() {
     let received = statements("dbus receive");
-    assert_eq!(received.len(), 1, "one receive rule: {received:?}");
-    let rule = &received[0];
-    assert!(rule.contains("path=/org/freedesktop/DBus"), "{rule}");
-    assert!(rule.contains("interface=org.freedesktop.DBus"), "{rule}");
-    assert!(rule.contains("member=NameOwnerChanged"), "{rule}");
-    assert!(rule.contains("peer=(name=org.freedesktop.DBus)"), "{rule}");
-    // No wildcard member: the rule names the one signal.
-    assert!(!rule.contains('{') && !rule.contains('*'), "{rule}");
+    assert_eq!(received.len(), 2, "two receive rules: {received:?}");
+    assert!(
+        received
+            .iter()
+            .any(|r| r.contains("member=NameOwnerChanged")
+                && r.contains("name=org.freedesktop.DBus")),
+        "{received:?}"
+    );
+    assert!(
+        received.iter().any(|r| r.contains("member=VerifyStatus")
+            && r.contains("name=net.reactivated.Fprint")
+            && r.contains("interface=net.reactivated.Fprint.Device")),
+        "{received:?}"
+    );
+}
+
+#[test]
+fn agent_profile_talks_to_fprintd_and_to_no_other_service() {
+    let sends = statements("dbus send");
+    for rule in &sends {
+        assert!(
+            rule.contains("peer=(name=org.freedesktop.DBus)")
+                || rule.contains("peer=(name=net.reactivated.Fprint)")
+                || rule.contains("path=/io/github/LinuxHello/Agent1"),
+            "a send rule with another peer: {rule}"
+        );
+    }
+    assert!(sends
+        .iter()
+        .any(|r| r.contains("peer=(name=net.reactivated.Fprint)")
+            && r.contains("interface=net.reactivated.Fprint.{Manager,Device}")));
+    assert!(profile_rules().contains(&"/etc/passwd r,".to_string()));
+}
+
+/// The polkit rule that lets the Agent claim and scan a fingerprint reader for another user.
+#[test]
+fn the_polkit_rule_allows_the_agent_exactly_two_fingerprint_actions() {
+    let rule = read("polkit/50-linuxhello-agent.rules");
+    let code: String = rule
+        .lines()
+        .filter(|l| !l.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(code.contains("subject.user == \"linuxhello\""));
+    let actions: Vec<&str> = code
+        .split('"')
+        .filter(|s| s.starts_with("net.reactivated.fprint."))
+        .collect();
+    assert_eq!(
+        actions,
+        [
+            "net.reactivated.fprint.device.verify",
+            "net.reactivated.fprint.device.setusername"
+        ],
+        "no enrol or delete action"
+    );
+    assert_eq!(code.matches("polkit.Result.YES").count(), 1);
+    assert!(
+        !code.contains("polkit.Result.AUTH"),
+        "no other result is given"
+    );
 }
 
 #[test]
