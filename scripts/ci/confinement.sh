@@ -178,6 +178,22 @@ check "authenticate_refuses_an_unknown_context" 'call lh $N $P $N Authenticate s
 # fprintd is not installed in the test VM (nothing is downloaded for this check), so the method is
 # unavailable and the denials check below shows whether the profile lets the Agent try to reach it.
 check "polkit_loads_the_agents_rule_without_an_error" 'sudo journalctl -u polkit --no-pager --since "-5min" > /tmp/polkit.log; grep -q "Finished loading" /tmp/polkit.log && ! grep -Eqi "error|syntax" /tmp/polkit.log'
+
+# The face method runs Howdy as a child under its own profile. Howdy is not installed in the test VM,
+# so a stand-in plays its compare script: the interpreter and the path are the real ones, and the
+# script only exits with the code Howdy would (0 a match, 11 no match). The checks show that the
+# Agent starts the child, that the child's profile lets Python run it, and that its exit code
+# decides the result.
+stub() { sudo install -d -m755 /lib/security/howdy; printf '#!/usr/bin/python3\nimport sys\nsys.exit(%s)\n' "$1" | sudo tee /lib/security/howdy/compare.py >/dev/null; sudo chmod 644 /lib/security/howdy/compare.py; }
+# The user's own layer, set by the checks above, switches biometrics off; take it away for these two
+# checks and put it back after them.
+call lh $N $P $N SetUserPolicy s "" >/dev/null
+stub 0
+check "a_face_that_howdy_accepts_is_a_success" 'sudo -u lh python3 /tmp/auth_flow.py $LHUID | grep -q "^RESULT success"'
+stub 11
+check "a_face_that_howdy_rejects_is_a_failure_with_a_reason" 'sudo -u lh python3 /tmp/auth_flow.py $LHUID | grep -q "RESULT failure .not-recognised"'
+sudo rm -rf /lib/security/howdy
+call lh $N $P $N SetUserPolicy s $'[methods]\nbiometrics_allowed = false\n' >/dev/null
 check "the_layer_is_a_private_file_of_the_agents_user" '[ "$(sudo stat -c "%U %a" /var/lib/linuxhello/users/$LHUID/policy.toml)" = "linuxhello 600" ]'
 
 # A subscriber hears the Agent's real signal; a bystander and two forgers cause nothing.

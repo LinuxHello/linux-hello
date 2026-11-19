@@ -44,6 +44,26 @@ profile linuxhello-agent /usr/libexec/linuxhello/linuxhello-agent flags=(attach_
        peer=(name=net.reactivated.Fprint),
   /etc/passwd r,
 
+  # The face method (ADR-0023): Howdy runs as a child of the Agent, started by the Agent's own
+  # code with a fixed command line and an empty environment. The Agent may start the Python
+  # interpreter and nothing else, and the child INHERITS this profile (ix). A child profile of its
+  # own would be narrower (no bus, no TPM), but the unit sets NoNewPrivileges, and the kernel then
+  # refuses to enter it ("no new privs", found in the test VM). Isolating Howdy better is a
+  # follow-up (a helper unit with its own profile, #195); until then Howdy's files and the camera
+  # are listed here, and the denials below still hold for the child: no network, no capability, no
+  # tracing, no home directory.
+  /usr/bin/python3{,.[0-9]*} ix,
+  include <abstractions/python>
+  /{usr/,}lib/security/howdy/ r,
+  /{usr/,}lib/security/howdy/** mr,
+  /etc/nsswitch.conf r,
+  /etc/howdy/ r,
+  /etc/howdy/** r,
+  /dev/video[0-9]* rw,
+  /sys/class/video4linux/ r,
+  /sys/class/video4linux/** r,
+  /sys/devices/** r,
+
   # The only device: the TPM resource manager.
   /dev/tpmrm0 rw,
 

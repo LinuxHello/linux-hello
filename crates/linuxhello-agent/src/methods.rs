@@ -6,6 +6,7 @@
 //!
 //! C4 component: `methodOrch` ([workspace.dsl](https://github.com/LinuxHello/linux-hello-architecture/blob/main/workspace.dsl))
 
+pub mod face;
 pub mod fingerprint;
 
 /// The name of the account with user id `uid`, read from the text of `/etc/passwd`. `None` for a
