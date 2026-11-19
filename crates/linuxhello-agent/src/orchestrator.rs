@@ -9,8 +9,7 @@
 //!
 //! The orchestrator knows no real method and no bus: a [`Method`] is anything that can run and
 //! be cancelled, and a [`Reporter`] is anything that wants the state in the shapes of the bus
-//! (`Update`). Real methods (fprintd, Howdy, the PIN) and the call that starts it are later
-//! slices of #195. This slice supports one factor: a context that asks for more is not run.
+//! (`Update`). The real methods are in [`crate::methods`] and the call that starts it is `Authenticate`.
 //!
 //! The reporter is used only by the thread that calls [`Orchestrator::run`]; method threads only
 //! send their end over a channel, so a method that is slow to stop can never report anything
@@ -21,7 +20,7 @@
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, RecvTimeoutError};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use linuxhello_dbus::{AuthMethod, PromptReason, PromptResult, PromptState};
@@ -90,15 +89,23 @@ pub trait Reporter: Send {
 pub struct Orchestrator;
 
 impl Orchestrator {
-    /// Runs the methods that `rule` allows and that are available, until one succeeds, all end
-    /// without success, or `deadline` passes.
+    /// Runs the methods that `rule` allows and that are available until `rule.factors` different
+    /// methods have succeeded, one method fails every method that is left, or `deadline` passes.
+    ///
+    /// With one factor (the default) all methods run side by side and the first success ends the
+    /// attempt. With more, the attempt goes in **stages** (ADR-0023 amendment, D3): in each stage
+    /// every method that has not yet succeeded runs side by side and the first success of the stage
+    /// counts as one factor and cancels the rest of that stage; the next stage runs what is left.
+    /// A method counts once: the same kind is never needed twice. A stage in which nothing
+    /// succeeds ends the attempt.
     ///
     /// `stop` is a flag of the caller: when it is set the attempt ends at once with the result
-    /// `cancelled` (the prompt was closed). It is looked at every 50 milliseconds.
+    /// `cancelled` (the prompt was closed). It is looked at every 50 milliseconds, and `deadline`
+    /// is for the whole attempt, not for a stage.
     ///
-    /// Reports, in this order: `Methods` (the methods that run, none if none can), `Active`, the
-    /// state, then, when the attempt ends, `Active` empty, `State(Idle)` and `Result`. An
-    /// attempt that cannot start (more than one factor, an unsatisfiable context, no method)
+    /// Reports `Methods` once (the methods that can run, none for an unsatisfiable rule); then, for
+    /// every stage, `Active` and the state; then `Active` empty, `State(Idle)` and `Result`. An
+    /// attempt that cannot start (an unsatisfiable rule, no method, fewer methods than factors)
     /// reports `Methods` and `Result` only.
     pub fn run(
         rule: &MethodRule,
@@ -113,9 +120,10 @@ impl Orchestrator {
             .collect();
         chosen.sort_by_key(|m| order(m.kind()));
         let kinds: Vec<AuthMethod> = chosen.iter().map(|m| m.kind()).collect();
+        let needed = usize::try_from(rule.factors.max(1)).unwrap_or(usize::MAX);
 
-        if rule.factors > 1 || rule.unsatisfiable || chosen.is_empty() {
-            reporter.report(Update::Methods(if rule.factors > 1 || rule.unsatisfiable {
+        if rule.unsatisfiable || chosen.len() < needed {
+            reporter.report(Update::Methods(if rule.unsatisfiable {
                 Vec::new()
             } else {
                 kinds
@@ -123,7 +131,71 @@ impl Orchestrator {
             return finish(reporter, Outcome::new(PromptResult::Failure));
         }
 
-        reporter.report(Update::Methods(kinds.clone()));
+        reporter.report(Update::Methods(kinds));
+        let shared: Vec<Shared> = chosen
+            .into_iter()
+            .map(|m| (m.kind(), Arc::new(Mutex::new(m))))
+            .collect();
+        let started = Instant::now();
+        let mut remaining: Vec<usize> = (0..shared.len()).collect();
+        let mut won = 0;
+        let outcome = loop {
+            let stage = Stage {
+                methods: &shared,
+                running: &remaining,
+                started,
+                deadline,
+                stop,
+            };
+            match stage.run(reporter) {
+                StageEnd::Won(index) => {
+                    won += 1;
+                    remaining.retain(|i| *i != index);
+                    if won >= needed {
+                        break Outcome::new(PromptResult::Success);
+                    }
+                    if remaining.len() < needed - won {
+                        break failed(None, None);
+                    }
+                }
+                StageEnd::Ended(outcome) => break outcome,
+            }
+        };
+        reporter.report(Update::Active(Vec::new()));
+        reporter.report(Update::State(PromptState::Idle));
+        finish(reporter, outcome)
+    }
+}
+
+/// A method and its kind, shared so that a later stage can run it again.
+type Shared = (AuthMethod, Arc<Mutex<Box<dyn Method>>>);
+
+/// One stage of an attempt: the methods in `running` (indexes into `methods`) side by side.
+struct Stage<'a> {
+    /// Every method of the attempt.
+    methods: &'a [Shared],
+    /// The ones that have not succeeded yet, which run in this stage.
+    running: &'a [usize],
+    /// When the attempt started, for the deadline.
+    started: Instant,
+    /// How long the whole attempt may take.
+    deadline: Duration,
+    /// The caller's stop flag.
+    stop: &'a Cancel,
+}
+
+/// How a stage ended.
+enum StageEnd {
+    /// The method with this index succeeded; the others of the stage were cancelled.
+    Won(usize),
+    /// The attempt is over, with this outcome (no method succeeded, a stop, or the deadline).
+    Ended(Outcome),
+}
+
+impl Stage<'_> {
+    /// Runs the stage and reports its `Active` list and state, and the shrinking of the list.
+    fn run(&self, reporter: &mut dyn Reporter) -> StageEnd {
+        let kinds: Vec<AuthMethod> = self.running.iter().map(|i| self.methods[*i].0).collect();
         reporter.report(Update::Active(kinds.clone()));
         reporter.report(Update::State(
             if kinds
@@ -138,38 +210,51 @@ impl Orchestrator {
 
         let cancel = Cancel::default();
         let (sender, receiver) = channel();
-        for (index, mut method) in chosen.into_iter().enumerate() {
-            let (cancel, sender) = (cancel.clone(), sender.clone());
+        for index in self.running {
+            let (method, cancel, sender, index) = (
+                Arc::clone(&self.methods[*index].1),
+                cancel.clone(),
+                sender.clone(),
+                *index,
+            );
             std::thread::spawn(move || {
                 // A method that panics is a method that could not run, not a crash of the Agent.
-                let end = catch_unwind(AssertUnwindSafe(|| method.run(&cancel)))
-                    .unwrap_or(MethodEnd::Unavailable);
+                let end = catch_unwind(AssertUnwindSafe(|| {
+                    method
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .run(&cancel)
+                }))
+                .unwrap_or(MethodEnd::Unavailable);
                 let _ = sender.send((index, end));
             });
         }
         drop(sender);
 
-        let started = Instant::now();
-        let mut running: Vec<(usize, AuthMethod)> = kinds.iter().copied().enumerate().collect();
+        let mut running: Vec<(usize, AuthMethod)> = self
+            .running
+            .iter()
+            .map(|i| (*i, self.methods[*i].0))
+            .collect();
         let mut last_failure: Option<PromptReason> = None;
         let mut locked_out: Option<u32> = None;
-        let outcome = loop {
-            if stop.is_cancelled() {
+        loop {
+            if self.stop.is_cancelled() {
                 cancel.cancel();
                 wait_for_stop(&receiver, running.len());
-                break Outcome {
+                return StageEnd::Ended(Outcome {
                     reason: PromptReason::Cancelled,
                     ..Outcome::new(PromptResult::Cancelled)
-                };
+                });
             }
-            let Some(left) = deadline.checked_sub(started.elapsed()) else {
-                break timed_out(&cancel, &receiver);
+            let Some(left) = self.deadline.checked_sub(self.started.elapsed()) else {
+                return StageEnd::Ended(timed_out(&cancel, &receiver));
             };
             match receiver.recv_timeout(left.min(STOP_POLL)) {
                 Ok((index, MethodEnd::Success)) if running.iter().any(|(i, _)| *i == index) => {
                     cancel.cancel();
                     wait_for_stop(&receiver, running.len().saturating_sub(1));
-                    break Outcome::new(PromptResult::Success);
+                    return StageEnd::Won(index);
                 }
                 Ok((index, end)) => {
                     running.retain(|(i, _)| *i != index);
@@ -184,17 +269,16 @@ impl Orchestrator {
                         });
                     }
                     if running.is_empty() {
-                        break failed(last_failure, locked_out);
+                        return StageEnd::Ended(failed(last_failure, locked_out));
                     }
                     reporter.report(Update::Active(running.iter().map(|(_, k)| *k).collect()));
                 }
                 Err(RecvTimeoutError::Timeout) => {}
-                Err(RecvTimeoutError::Disconnected) => break failed(last_failure, locked_out),
+                Err(RecvTimeoutError::Disconnected) => {
+                    return StageEnd::Ended(failed(last_failure, locked_out));
+                }
             }
-        };
-        reporter.report(Update::Active(Vec::new()));
-        reporter.report(Update::State(PromptState::Idle));
-        finish(reporter, outcome)
+        }
     }
 }
 

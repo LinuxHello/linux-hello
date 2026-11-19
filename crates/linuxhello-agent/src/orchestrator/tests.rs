@@ -326,22 +326,128 @@ fn a_method_the_policy_does_not_allow_is_not_started() {
     assert!(pin_started.load(Ordering::SeqCst));
 }
 
+/// A rule that needs `factors` methods and allows every method.
+fn factors(factors: u32) -> MethodRule {
+    MethodRule { factors, ..rule() }
+}
+
 #[test]
-fn more_than_one_factor_is_not_run() {
-    let mut two = rule();
-    two.factors = 2;
+fn fewer_methods_than_factors_is_not_run() {
     let (pin, _, started) = fake(AuthMethod::Pin, Script::SucceedAfter(1));
-    let (outcome, updates) = go(&two, vec![pin], 5_000);
+    let (outcome, updates) = go(&factors(2), vec![pin], 5_000);
     assert_eq!(outcome, Outcome::new(PromptResult::Failure));
     assert!(!started.load(Ordering::SeqCst));
+    assert_eq!(updates[0], Update::Methods(vec![AuthMethod::Pin]));
     assert_eq!(results(&updates).len(), 1);
 
     let mut unsatisfiable = rule();
     unsatisfiable.unsatisfiable = true;
     let (pin, _, started) = fake(AuthMethod::Pin, Script::SucceedAfter(1));
-    let (outcome, _) = go(&unsatisfiable, vec![pin], 5_000);
+    let (outcome, updates) = go(&unsatisfiable, vec![pin], 5_000);
     assert_eq!(outcome.result, PromptResult::Failure);
     assert!(!started.load(Ordering::SeqCst));
+    assert_eq!(updates[0], Update::Methods(vec![]));
+}
+
+#[test]
+fn two_factors_need_two_different_methods_in_stages() {
+    let (finger, _, _) = fake(AuthMethod::Fingerprint, Script::SucceedAfter(30));
+    let (pin, _, _) = fake(AuthMethod::Pin, Script::SucceedAfter(300));
+    let (outcome, updates) = go(&factors(2), vec![finger, pin], 5_000);
+    assert_eq!(outcome, Outcome::new(PromptResult::Success));
+    // Both ran in the first stage; the fingerprint won it, and the PIN got a stage of its own.
+    assert_eq!(
+        updates,
+        vec![
+            Update::Methods(vec![AuthMethod::Fingerprint, AuthMethod::Pin]),
+            Update::Active(vec![AuthMethod::Fingerprint, AuthMethod::Pin]),
+            Update::State(PromptState::Scanning),
+            Update::Active(vec![AuthMethod::Pin]),
+            Update::State(PromptState::WaitingForInput),
+            Update::Active(vec![]),
+            Update::State(PromptState::Idle),
+            Update::Result(Outcome::new(PromptResult::Success)),
+        ]
+    );
+}
+
+#[test]
+fn the_second_factor_failing_fails_the_attempt() {
+    let (finger, _, _) = fake(AuthMethod::Fingerprint, Script::SucceedAfter(20));
+    let (pin, _, _) = fake(
+        AuthMethod::Pin,
+        Script::FailAfter(60, PromptReason::NotRecognised),
+    );
+    let (outcome, _) = go(&factors(2), vec![finger, pin], 5_000);
+    assert_eq!(outcome.result, PromptResult::Failure);
+    assert_eq!(outcome.reason, PromptReason::NotRecognised);
+}
+
+#[test]
+fn three_factors_need_all_three_methods() {
+    let (face, _, _) = fake(AuthMethod::Face, Script::SucceedAfter(10));
+    let (finger, _, _) = fake(AuthMethod::Fingerprint, Script::SucceedAfter(60));
+    let (pin, _, _) = fake(AuthMethod::Pin, Script::SucceedAfter(120));
+    let (outcome, updates) = go(&factors(3), vec![face, finger, pin], 5_000);
+    assert_eq!(outcome.result, PromptResult::Success);
+    assert_eq!(results(&updates).len(), 1);
+    // A stage for each factor: three lists of running methods, shrinking by the winner.
+    let actives: Vec<&Update> = updates
+        .iter()
+        .filter(|u| matches!(u, Update::Active(a) if !a.is_empty()))
+        .collect();
+    assert!(actives.len() >= 3, "{updates:?}");
+}
+
+#[test]
+fn a_method_never_counts_twice() {
+    // Two factors, two methods, but one of them can never succeed: the attempt fails; the one that
+    // can does not count a second time.
+    let (finger, _, _) = fake(AuthMethod::Fingerprint, Script::SucceedAfter(10));
+    let (pin, _, _) = fake(AuthMethod::Pin, Script::UnavailableAfter(10));
+    let (outcome, _) = go(&factors(2), vec![finger, pin], 5_000);
+    assert_eq!(outcome.result, PromptResult::Failure);
+}
+
+#[test]
+fn the_deadline_is_for_the_whole_attempt_not_for_a_stage() {
+    let (finger, _, _) = fake(AuthMethod::Fingerprint, Script::SucceedAfter(150));
+    let (pin, _, _) = fake(AuthMethod::Pin, Script::SucceedAfter(200));
+    let started = Instant::now();
+    // The first stage takes 150 ms and the second 200 ms more: 350 ms, over the deadline of 300 ms,
+    // though neither stage alone is.
+    let (outcome, _) = go(&factors(2), vec![finger, pin], 300);
+    assert_eq!(outcome.reason, PromptReason::Timeout);
+    assert!(
+        started.elapsed() < Duration::from_millis(900),
+        "{:?}",
+        started.elapsed()
+    );
+}
+
+#[test]
+fn a_stop_between_stages_ends_the_attempt() {
+    let (finger, _, _) = fake(AuthMethod::Fingerprint, Script::SucceedAfter(20));
+    let (pin, _, _) = fake(AuthMethod::Pin, Script::UntilCancelled);
+    let stop = Cancel::default();
+    let recorder = Recorder::default();
+    let mut reporter = recorder.clone();
+    let outcome = std::thread::scope(|scope| {
+        let run = scope.spawn(|| {
+            Orchestrator::run(
+                &factors(2),
+                vec![finger, pin],
+                &mut reporter,
+                Duration::from_secs(30),
+                &stop,
+            )
+        });
+        sleep(Duration::from_millis(250));
+        stop.cancel();
+        run.join().unwrap()
+    });
+    assert_eq!(outcome.result, PromptResult::Cancelled);
+    assert_eq!(results(&recorder.updates()).len(), 1);
 }
 
 #[test]
