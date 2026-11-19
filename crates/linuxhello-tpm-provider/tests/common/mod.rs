@@ -18,36 +18,42 @@ pub struct SoftTpm {
 }
 
 impl SoftTpm {
-    /// Starts swtpm, or `None` (and a line saying so) when it is not installed.
+    /// Starts swtpm, or `None` (and a line saying so) when it is not installed. The tests run side by
+    /// side and pick their ports one after another, so two can pick the same one; the one that loses
+    /// finds its swtpm gone (the port is taken), and tries again with another port.
     pub fn start() -> Option<Self> {
-        let state = tempfile::TempDir::new().unwrap();
-        let port = free_port();
-        let child = Command::new("swtpm")
-            .args(["socket", "--tpm2", "--tpmstate"])
-            .arg(format!("dir={}", state.path().display()))
-            .arg("--server")
-            .arg(format!("type=tcp,port={port}"))
-            .arg("--ctrl")
-            .arg(format!("type=tcp,port={}", port + 1))
-            .args(["--flags", "not-need-init,startup-clear"])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn();
-        let Ok(child) = child else {
-            assert!(
-                std::env::var("LH_REQUIRE_SWTPM").is_err(),
-                "swtpm is required here (LH_REQUIRE_SWTPM) and is not installed"
-            );
-            eprintln!("SKIPPED: swtpm is not installed");
-            return None;
-        };
-        let soft = Self {
-            child,
-            port,
-            _state: state,
-        };
-        soft.wait_until_listening();
-        Some(soft)
+        for _ in 0..8 {
+            let state = tempfile::TempDir::new().unwrap();
+            let port = free_port();
+            let child = Command::new("swtpm")
+                .args(["socket", "--tpm2", "--tpmstate"])
+                .arg(format!("dir={}", state.path().display()))
+                .arg("--server")
+                .arg(format!("type=tcp,port={port}"))
+                .arg("--ctrl")
+                .arg(format!("type=tcp,port={}", port + 1))
+                .args(["--flags", "not-need-init,startup-clear"])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn();
+            let Ok(child) = child else {
+                assert!(
+                    std::env::var("LH_REQUIRE_SWTPM").is_err(),
+                    "swtpm is required here (LH_REQUIRE_SWTPM) and is not installed"
+                );
+                eprintln!("SKIPPED: swtpm is not installed");
+                return None;
+            };
+            let mut soft = Self {
+                child,
+                port,
+                _state: state,
+            };
+            if soft.wait_until_listening() {
+                return Some(soft);
+            }
+        }
+        panic!("swtpm did not start listening on any of eight ports");
     }
 
     /// The TCTI string of this TPM.
@@ -60,15 +66,21 @@ impl SoftTpm {
         Tpm::open(&self.tcti()).expect("open the software TPM")
     }
 
-    fn wait_until_listening(&self) {
+    /// Waits until swtpm accepts connections on its data port. `false` when swtpm has already ended
+    /// (it could not take its port), so that the caller tries another one.
+    fn wait_until_listening(&mut self) -> bool {
         let until = Instant::now() + Duration::from_secs(10);
         while Instant::now() < until {
+            if !matches!(self.child.try_wait(), Ok(None)) {
+                return false;
+            }
             if std::net::TcpStream::connect(("127.0.0.1", self.port)).is_ok() {
-                return;
+                // It may be another test's swtpm that answered; ours is still running.
+                return matches!(self.child.try_wait(), Ok(None));
             }
             std::thread::sleep(Duration::from_millis(50));
         }
-        panic!("swtpm did not start listening");
+        false
     }
 }
 
