@@ -56,6 +56,9 @@ jobs:
           key: cargo-llvm-cov-0.9.1-${{ runner.os }}
       - run: cargo install cargo-llvm-cov --version 0.9.1 --locked
         if: steps.classify.outputs.rust == 'true' && steps.llvm-cov-cache.outputs.cache-hit != 'true'
+      - name: Install the TSS2 libraries, a software TPM and the TPM tools
+        if: steps.classify.outputs.rust == 'true'
+        run: sudo apt-get update -qq && sudo apt-get install --yes --no-install-recommends libtss2-dev clang libclang-dev pkg-config swtpm swtpm-tools tpm2-tools
       - name: Clippy report for Sonar
         if: steps.classify.outputs.rust == 'true'
         run: cargo clippy --workspace --all-targets --message-format=json > clippy-report.json
