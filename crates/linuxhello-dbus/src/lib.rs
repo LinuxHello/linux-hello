@@ -105,7 +105,33 @@ pub mod status {
 
     /// The base codes `GetStatus` may return, a closed set. A code is never renamed; a new one is
     /// an additive change (ADR-0024, point 3).
-    pub const CODES: &[&str] = &[POLICY_PIN_ONLY, CONTEXT_UNSATISFIABLE];
+    pub const CODES: &[&str] = &[
+        POLICY_PIN_ONLY,
+        CONTEXT_UNSATISFIABLE,
+        PIN_LOCKED,
+        PIN_LOCK_DAMAGED,
+    ];
+
+    /// The code of a user whose PIN is locked after too many wrong attempts.
+    pub const PIN_LOCKED: &str = "pin-locked";
+
+    /// The sentence of [`PIN_LOCKED`]: the whole minutes left, rounded up, are the one number
+    /// the Agent computes (ADR-0024, point 5).
+    #[must_use]
+    pub fn pin_locked_sentence(seconds: u64) -> String {
+        let minutes = seconds.div_ceil(60).max(1);
+        if minutes == 1 {
+            "Your PIN is locked for 1 more minute.".to_string()
+        } else {
+            format!("Your PIN is locked for {minutes} more minutes.")
+        }
+    }
+
+    /// The code of a record of failed PIN attempts that cannot be trusted: nobody may try a PIN.
+    pub const PIN_LOCK_DAMAGED: &str = "pin-lock-damaged";
+    /// The sentence of [`PIN_LOCK_DAMAGED`].
+    pub const PIN_LOCK_DAMAGED_SENTENCE: &str =
+        "The record of failed PIN attempts cannot be trusted, so PIN sign-in is refused.";
 
     /// The sentence for an unsatisfiable `context`.
     #[must_use]

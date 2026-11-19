@@ -32,6 +32,7 @@ use zbus::{connection, interface, Connection};
 
 use crate::api::{Api, ApiError, Caller, Notification, PeerName};
 use crate::audit::Audit;
+use crate::pinlock::service::PinLockService;
 use crate::pinsocket::PinSocket;
 use crate::policy::user_store::UserPolicyStore;
 use crate::state::Config;
@@ -93,6 +94,15 @@ impl AgentService {
         }
     }
 
+    /// The same service with the PIN lock that `GetStatus` reads.
+    #[must_use]
+    pub fn with_pin_lock(self, pin_lock: Option<PinLockService>) -> Self {
+        Self {
+            api: self.api.with_pin_lock(pin_lock),
+            ..self
+        }
+    }
+
     /// The same service with the PIN socket that `ExpectPin` announces to.
     #[must_use]
     pub fn with_pin_socket(self, pin_socket: Option<Arc<PinSocket>>) -> Self {
@@ -139,11 +149,26 @@ pub async fn serve_with_pin_socket(
     audit: Audit,
     pin_socket: Option<Arc<PinSocket>>,
 ) -> zbus::Result<Connection> {
+    serve_with_pin_lock(builder, config, user_policies, audit, pin_socket, None).await
+}
+
+/// Serves the Agent's state API with everything the Agent has: a user policy store, an audit
+/// trail, the PIN socket and the PIN lock that `GetStatus` reads.
+pub async fn serve_with_pin_lock(
+    builder: connection::Builder<'_>,
+    config: Config,
+    user_policies: Option<UserPolicyStore>,
+    audit: Audit,
+    pin_socket: Option<Arc<PinSocket>>,
+    pin_lock: Option<PinLockService>,
+) -> zbus::Result<Connection> {
     let connection = builder
         .name(AGENT_BUS_NAME)
         .serve_at(
             AGENT_OBJECT_PATH,
-            AgentService::with_audit(config, user_policies, audit).with_pin_socket(pin_socket),
+            AgentService::with_audit(config, user_policies, audit)
+                .with_pin_socket(pin_socket)
+                .with_pin_lock(pin_lock),
         )
         .build()
         .await?;
