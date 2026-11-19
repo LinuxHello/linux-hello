@@ -45,6 +45,7 @@ pub const INTERFACE_VERSION: u32 = 1;
 /// them. A client that needs one of them checks the list first.
 pub const CAPABILITIES: &[&str] = &[
     "ActiveMethods",
+    "Authenticate",
     "Closed",
     "ExpectPin",
     "GetCapabilities",
@@ -157,6 +158,10 @@ pub mod status {
         }
     }
 }
+
+/// Method that starts the authentication of a prompt: the Agent runs the methods of a context and
+/// reports by the `Result` signal (ADR-0023, amendment 2026-11-19).
+pub const METHOD_AUTHENTICATE: &str = "Authenticate";
 
 /// Method that announces a PIN: the opener of a prompt is about to send one on the PIN socket
 /// (ADR-0021, amendment 2026-11-18).

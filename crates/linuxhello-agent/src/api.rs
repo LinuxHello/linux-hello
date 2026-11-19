@@ -10,14 +10,18 @@
 //!
 //! C4 component: `dbusApi` ([workspace.dsl](https://github.com/LinuxHello/linux-hello-architecture/blob/main/workspace.dsl))
 
+use std::collections::HashMap;
+
 use linuxhello_dbus::{AuthMethod, PromptId, PromptReason, PromptResult, PromptState, SIGNALS};
 
 use crate::audit::{Audit, Event};
+use crate::orchestrator::Cancel;
 use crate::pinlock::service::{LockStatus, PinLockService};
 use crate::pinsocket::{PinSocket, Process};
 use crate::policy::load::Policy;
 use crate::policy::schema::parse_layer;
 use crate::policy::user_store::{StoreError, UserPolicyStore, MAX_POLICY_BYTES};
+use crate::policy::MethodRule;
 use crate::state::{Config, Error as StateError, Outcome, Peer, StateStore, Update};
 
 /// The longest D-Bus bus name, in bytes.
@@ -144,6 +148,21 @@ pub struct StateReply {
     pub retry_after: u32,
 }
 
+/// An authentication that may start: who opened the prompt, for whom, by which rule.
+#[derive(Debug)]
+pub struct AuthStart {
+    /// The user who opened the prompt, which keys it in the store.
+    pub opener_uid: u32,
+    /// The prompt.
+    pub prompt: PromptId,
+    /// The user being authenticated.
+    pub subject: u32,
+    /// The methods the context allows for the subject, and how many must succeed.
+    pub rule: MethodRule,
+    /// Set when the prompt closes; the orchestrator stops at once.
+    pub stop: Cancel,
+}
+
 /// One condition of `GetStatus`, with the detail only root sees.
 struct StatusItem {
     /// The code, from the closed set of `linuxhello_dbus::status`.
@@ -184,6 +203,9 @@ pub struct Api {
     user_policies: Option<UserPolicyStore>,
     /// The audit trail of refusals and policy changes.
     audit: Audit,
+    /// The authentications that are running, by the user who opened the prompt and its id; the
+    /// flag stops the orchestrator when the prompt closes.
+    running: HashMap<(u32, PromptId), Cancel>,
     /// The PIN lock, when the Agent has one.
     pin_lock: Option<PinLockService>,
     /// The time in seconds since the Unix epoch; the wall clock, replaced in tests.
@@ -197,6 +219,7 @@ impl Api {
             store: StateStore::new(config),
             user_policies: None,
             audit: Audit::none(),
+            running: HashMap::new(),
             pin_lock: None,
             clock: wall_clock_seconds,
         }
@@ -270,7 +293,9 @@ impl Api {
     /// started) and closes the prompts that have had no report for longer than the store's
     /// `max_idle`. Returns how many it closed. Not a request of a caller, so not audited.
     pub fn advance(&mut self, now: std::time::Duration) -> usize {
-        self.store.advance(now)
+        let closed = self.store.advance(now);
+        self.stop_orphans();
+        closed
     }
 
     /// Opens a prompt owned by the caller.
@@ -333,7 +358,9 @@ impl Api {
     /// audited.
     pub fn peer_left(&mut self, peer: &str) -> usize {
         let peer = Peer(peer.to_string());
-        self.store.drop_opener(&peer) + self.store.drop_subscriber(&peer)
+        let removed = self.store.drop_opener(&peer) + self.store.drop_subscriber(&peer);
+        self.stop_orphans();
+        removed
     }
 
     /// The work of [`Api::open_prompt`], without the audit record.
@@ -542,7 +569,9 @@ impl Api {
     fn close_prompt_unaudited(&mut self, caller: &Caller, prompt_id: &str) -> Result<(), ApiError> {
         let uid = caller.uid.ok_or(ApiError::Denied)?;
         let prompt = parse_prompt(prompt_id)?;
-        Ok(self.store.close(uid, &prompt)?)
+        self.store.close(uid, &prompt)?;
+        self.stop_orphans();
+        Ok(())
     }
 
     /// Returns the caller's user policy as TOML text.
@@ -561,6 +590,105 @@ impl Api {
         let uid = caller.uid.ok_or(ApiError::Denied)?;
         let store = self.user_policies.as_ref().ok_or(ApiError::Unavailable)?;
         store.get(uid).map_err(ApiError::from)
+    }
+
+    /// Starts the authentication of a prompt (`Authenticate`, ADR-0023 amendment 2026-11-19):
+    /// checks that the caller opened the prompt, which user it is for and what the policy of that
+    /// user allows in `context`, and records that one authentication is running. The caller then
+    /// runs the orchestrator with what this returns and reports through
+    /// [`Api::agent_report`]. Only the connection that opened the prompt may ask.
+    ///
+    /// # Errors
+    ///
+    /// [`ApiError::Denied`] without a caller uid or connection name, for a prompt that is not the
+    /// caller's, one that does not exist and one with no subject (one text for all);
+    /// [`ApiError::InvalidArgument`] for a malformed id or a context that is not one of the four;
+    /// [`ApiError::LimitReached`] while an authentication of this prompt runs;
+    /// [`ApiError::Unavailable`] without a policy store.
+    pub fn begin_authentication(
+        &mut self,
+        caller: Caller,
+        prompt_id: &str,
+        context: &str,
+    ) -> Result<AuthStart, ApiError> {
+        let result = self.begin_authentication_unaudited(&caller, prompt_id, context);
+        self.audited(&caller, result)
+    }
+
+    /// The work of [`Api::begin_authentication`], without the audit record.
+    fn begin_authentication_unaudited(
+        &mut self,
+        caller: &Caller,
+        prompt_id: &str,
+        context: &str,
+    ) -> Result<AuthStart, ApiError> {
+        let uid = caller.uid.ok_or(ApiError::Denied)?;
+        let prompt = parse_prompt(prompt_id)?;
+        if !linuxhello_dbus::status::CONTEXTS.contains(&context) {
+            return Err(ApiError::InvalidArgument);
+        }
+        let peer = Peer(caller.peer.ok_or(ApiError::Denied)?.as_str().to_string());
+        let subject = self
+            .store
+            .subject_of(uid, &prompt, Some(&peer))?
+            .ok_or(ApiError::Denied)?;
+        if self.running.contains_key(&(uid, prompt.clone())) {
+            return Err(ApiError::LimitReached);
+        }
+        let rule = self.policy_of(subject)?.methods_for(context);
+        let stop = Cancel::default();
+        self.running.insert((uid, prompt.clone()), stop.clone());
+        Ok(AuthStart {
+            opener_uid: uid,
+            prompt,
+            subject,
+            rule,
+            stop,
+        })
+    }
+
+    /// Applies a report of the orchestrator to the prompt that `uid` opened, as the Agent and not
+    /// as a caller, and returns the signals to send. A prompt that is gone changes nothing and
+    /// gives no signals. The end of the authentication (`Update::Result`) frees the prompt for
+    /// the next call of [`Api::begin_authentication`].
+    pub fn agent_report(
+        &mut self,
+        uid: u32,
+        prompt: &PromptId,
+        update: Update,
+    ) -> Vec<Notification> {
+        let signal = match &update {
+            Update::Methods(_) => "MethodsAvailable",
+            Update::Active(_) => "ActiveMethods",
+            Update::State(_) => "State",
+            Update::Result(_) => "Result",
+        };
+        let wire = wire_values(&update);
+        let ended = matches!(update, Update::Result(_));
+        let peers = self.store.report(uid, prompt, update).unwrap_or_default();
+        if ended {
+            self.running.remove(&(uid, prompt.clone()));
+        }
+        peers
+            .into_iter()
+            .map(|peer| Notification {
+                peer,
+                signal,
+                prompt_id: prompt.as_str().to_string(),
+                values: wire.clone(),
+            })
+            .collect()
+    }
+
+    /// Stops the authentication of every prompt that no longer exists: it was closed, its opener
+    /// left, or it was idle too long. The orchestrator then ends with the result `cancelled`.
+    fn stop_orphans(&mut self) {
+        let store = &self.store;
+        for ((uid, prompt), stop) in &self.running {
+            if store.subject_of(*uid, prompt, None).is_err() {
+                stop.cancel();
+            }
+        }
     }
 
     /// Announces a PIN (`ExpectPin`, ADR-0021 amendment 2026-11-18): the connection that opened
@@ -1752,6 +1880,134 @@ mod tests {
             assert_eq!(again.join().unwrap(), crate::pinsocket::REPLY_REFUSED);
         });
         assert_eq!(got, vec![(uid, b"1234".to_vec())]);
+    }
+
+    /// An API with a policy store, a recorder, and a prompt of user 1000 on `:1.1` for 1000.
+    fn authentication_setup() -> (Api, Recorder, TempDir, String) {
+        let tmp = TempDir::new().unwrap();
+        let (store, _admin) = store_with_admin(&tmp);
+        let (api, recorder) = audited_api(Config::new(vec![]));
+        let mut api = api.with_user_policy_store(Some(store));
+        let id = prompt("p1");
+        api.open_prompt_from(on_peer(1000, ":1.1"), ":1.1", &id, Some(1000))
+            .unwrap();
+        (api, recorder, tmp, id)
+    }
+
+    #[test]
+    fn authenticate_for_another_users_prompt_is_denied() {
+        let (mut api, recorder, _tmp, id) = authentication_setup();
+        let other_user = on_peer(1001, ":1.2");
+        let other_connection = on_peer(1000, ":1.3");
+        let nothing = prompt("nothing");
+        for (caller, what) in [
+            (other_user, &id),
+            (other_connection, &id),
+            (on_peer(1000, ":1.1"), &nothing),
+        ] {
+            assert!(matches!(
+                api.begin_authentication(caller, what, "login"),
+                Err(ApiError::Denied)
+            ));
+        }
+        assert_eq!(recorder.events().len(), 3, "each refusal is audited once");
+        // A prompt opened for nobody in particular has no subject to authenticate.
+        let none = prompt("none");
+        api.open_prompt_from(on_peer(0, ":1.9"), ":1.9", &none, None)
+            .unwrap();
+        assert!(matches!(
+            api.begin_authentication(on_peer(0, ":1.9"), &none, "login"),
+            Err(ApiError::Denied)
+        ));
+    }
+
+    #[test]
+    fn authenticate_checks_its_arguments() {
+        let (mut api, _recorder, _tmp, id) = authentication_setup();
+        let opener = on_peer(1000, ":1.1");
+        for context in ["", "Login", "root", "login ", "logins"] {
+            assert!(matches!(
+                api.begin_authentication(opener, &id, context),
+                Err(ApiError::InvalidArgument)
+            ));
+        }
+        assert!(matches!(
+            api.begin_authentication(opener, "not an id", "login"),
+            Err(ApiError::InvalidArgument)
+        ));
+        for context in ["login", "unlock", "sudo", "session"] {
+            let (mut api, _recorder, _tmp, id) = authentication_setup();
+            let start = api.begin_authentication(opener, &id, context).unwrap();
+            assert_eq!(start.subject, 1000);
+        }
+    }
+
+    #[test]
+    fn a_second_authenticate_is_refused_while_one_runs() {
+        let (mut api, _recorder, _tmp, id) = authentication_setup();
+        let opener = on_peer(1000, ":1.1");
+        let first = api.begin_authentication(opener, &id, "login").unwrap();
+        assert!(matches!(
+            api.begin_authentication(opener, &id, "sudo"),
+            Err(ApiError::LimitReached)
+        ));
+        // The end of the first frees the prompt.
+        let ended = Update::Result(Outcome::new(PromptResult::Failure));
+        api.agent_report(1000, &first.prompt, ended);
+        assert!(api.begin_authentication(opener, &id, "sudo").is_ok());
+    }
+
+    #[test]
+    fn closing_the_prompt_stops_its_authentication() {
+        let (mut api, _recorder, _tmp, id) = authentication_setup();
+        let opener = on_peer(1000, ":1.1");
+        let start = api.begin_authentication(opener, &id, "login").unwrap();
+        assert!(!start.stop.is_cancelled());
+        api.close_prompt(opener, &id).unwrap();
+        assert!(start.stop.is_cancelled());
+
+        // The opener leaving the bus does the same.
+        let id2 = prompt("p2");
+        api.open_prompt_from(on_peer(1000, ":1.5"), ":1.5", &id2, Some(1000))
+            .unwrap();
+        let start = api
+            .begin_authentication(on_peer(1000, ":1.5"), &id2, "login")
+            .unwrap();
+        api.peer_left(":1.5");
+        assert!(start.stop.is_cancelled());
+    }
+
+    #[test]
+    fn authenticate_without_a_policy_store_is_unavailable() {
+        let (mut api, _recorder) = audited_api(Config::new(vec![]));
+        let id = prompt("p1");
+        api.open_prompt_from(on_peer(1000, ":1.1"), ":1.1", &id, Some(1000))
+            .unwrap();
+        assert!(matches!(
+            api.begin_authentication(on_peer(1000, ":1.1"), &id, "login"),
+            Err(ApiError::Unavailable)
+        ));
+    }
+
+    #[test]
+    fn the_orchestrators_reports_become_signals_for_the_subscribers() {
+        let (mut api, _recorder, _tmp, id) = authentication_setup();
+        let opener = on_peer(1000, ":1.1");
+        api.subscribe(on_peer(1000, ":1.1"), ":1.7", &id).unwrap();
+        let start = api.begin_authentication(opener, &id, "login").unwrap();
+        let notes = api.agent_report(
+            1000,
+            &start.prompt,
+            Update::Active(vec![AuthMethod::Fingerprint]),
+        );
+        assert_eq!(notes.len(), 1);
+        assert_eq!(notes[0].signal, "ActiveMethods");
+        assert_eq!(notes[0].values, vec!["fingerprint".to_string()]);
+        // A report for a prompt that is gone changes nothing and sends nothing.
+        let gone = PromptId::parse(&prompt("gone")).unwrap();
+        assert!(api
+            .agent_report(1000, &gone, Update::State(PromptState::Idle))
+            .is_empty());
     }
 
     #[test]

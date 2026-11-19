@@ -64,6 +64,7 @@ Semantics: [policy-semantics.md](../architecture/policy-semantics.md). Tests liv
 | The caller's uid comes from the bus, not from the message | `a_prompt_for_another_user_is_refused_with_access_denied` |
 | A malformed prompt id, signal, value or peer name is refused before the state changes | `malformed_prompt_id_is_an_invalid_argument`, `bad_wire_values_are_refused_before_the_store_changes`, `invalid_peer_names_are_refused`, `malformed_requests_get_invalid_args_errors` |
 | No user can fill the store | `reporter_cannot_exceed_its_prompt_limit`, `subscriber_limit_is_enforced` |
+| Only the connection that opened a prompt can start its authentication (`Authenticate`, ADR-0023 amendment 2026-11-19), for the user the prompt is for, once at a time; closing the prompt or the opener leaving the bus stops it; the first method to succeed wins and the rest are cancelled | `authenticate_for_another_users_prompt_is_denied`, `a_second_authenticate_is_refused_while_one_runs`, `closing_the_prompt_stops_its_authentication`, `closing_the_prompt_cancels_a_running_authentication`, `the_first_success_wins_and_the_rest_are_cancelled`, *VM run:* `authenticate_ends_in_a_result_for_the_opener`, `another_user_cannot_authenticate_a_prompt_that_is_not_theirs` |
 
 ### User policy layer (Agent)
 

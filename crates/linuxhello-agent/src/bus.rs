@@ -20,11 +20,15 @@
 
 use futures_lite::StreamExt;
 use linuxhello_dbus::{
-    AGENT_BUS_NAME, AGENT_INTERFACE, AGENT_OBJECT_PATH, CAPABILITIES, INTERFACE_VERSION,
+    PromptId, PromptResult, AGENT_BUS_NAME, AGENT_INTERFACE, AGENT_OBJECT_PATH, CAPABILITIES,
+    INTERFACE_VERSION,
 };
 use std::time::Instant;
 
+use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::sync::mpsc::Sender;
 use std::sync::Arc;
+use std::time::Duration;
 use zbus::fdo;
 use zbus::message::Header;
 use zbus::names::{BusName, UniqueName};
@@ -32,12 +36,51 @@ use zbus::{connection, interface, Connection};
 
 use crate::api::{Api, ApiError, Caller, Notification, PeerName};
 use crate::audit::Audit;
+use crate::orchestrator::{Method, Orchestrator, Reporter};
 use crate::pinlock::service::PinLockService;
 use crate::pinsocket::PinSocket;
 use crate::policy::user_store::UserPolicyStore;
-use crate::state::Config;
+use crate::state::{Config, Outcome, Update};
 
 pub mod credentials;
+
+/// How long an authentication may take before it fails with `timeout`.
+const AUTH_DEADLINE: Duration = Duration::from_secs(60);
+
+/// Makes the methods an authentication runs, for the user being authenticated. The Agent has
+/// none yet (the fingerprint, face and PIN methods are later slices of #195), so the default makes
+/// no method and every authentication fails at once with no methods offered.
+pub type MethodFactory = Arc<dyn Fn(u32) -> Vec<Box<dyn Method>> + Send + Sync>;
+
+/// A report of the orchestrator for the prompt that `uid` opened, on its way to the state store.
+pub struct AgentUpdate {
+    /// The user who opened the prompt, which keys it in the store.
+    uid: u32,
+    /// The prompt.
+    prompt: PromptId,
+    /// What happened.
+    update: Update,
+}
+
+/// The reporter of an authentication: sends every update to the bus thread, which applies it.
+struct ChannelReporter {
+    /// Where the updates go.
+    updates: Sender<AgentUpdate>,
+    /// The user who opened the prompt.
+    uid: u32,
+    /// The prompt.
+    prompt: PromptId,
+}
+
+impl Reporter for ChannelReporter {
+    fn report(&mut self, update: Update) {
+        let _ = self.updates.send(AgentUpdate {
+            uid: self.uid,
+            prompt: self.prompt.clone(),
+            update,
+        });
+    }
+}
 
 /// The Agent's state API as a D-Bus object.
 pub struct AgentService {
@@ -47,6 +90,13 @@ pub struct AgentService {
     started: Instant,
     /// The PIN socket that `ExpectPin` announces a PIN to, when the Agent has one.
     pin_socket: Option<Arc<PinSocket>>,
+    /// Makes the methods that an authentication runs, for the user being authenticated.
+    methods: MethodFactory,
+    /// How long an authentication may take before it fails with `timeout`.
+    auth_deadline: Duration,
+    /// Where the orchestrator's reports go, to be applied to the state store on the bus thread;
+    /// `None` until the service is served.
+    updates: Option<Sender<AgentUpdate>>,
 }
 
 impl AgentService {
@@ -56,6 +106,9 @@ impl AgentService {
             api: Api::new(config),
             started: Instant::now(),
             pin_socket: None,
+            methods: Arc::new(|_| Vec::new()),
+            auth_deadline: AUTH_DEADLINE,
+            updates: None,
         }
     }
 
@@ -91,6 +144,9 @@ impl AgentService {
                 .with_audit(audit),
             started: Instant::now(),
             pin_socket: None,
+            methods: Arc::new(|_| Vec::new()),
+            auth_deadline: AUTH_DEADLINE,
+            updates: None,
         }
     }
 
@@ -162,18 +218,97 @@ pub async fn serve_with_pin_lock(
     pin_socket: Option<Arc<PinSocket>>,
     pin_lock: Option<PinLockService>,
 ) -> zbus::Result<Connection> {
+    let extras = Extras {
+        audit: Some(audit),
+        pin_socket,
+        pin_lock,
+        ..Extras::default()
+    };
+    serve_with_extras(builder, config, user_policies, extras).await
+}
+
+/// What the Agent has besides its configuration and its policy store.
+#[derive(Default)]
+pub struct Extras {
+    /// The audit trail of refusals and policy changes.
+    pub audit: Option<Audit>,
+    /// The PIN socket that `ExpectPin` announces a PIN to.
+    pub pin_socket: Option<Arc<PinSocket>>,
+    /// The PIN lock that `GetStatus` reads.
+    pub pin_lock: Option<PinLockService>,
+    /// Makes the methods an authentication runs; none by default.
+    pub methods: Option<MethodFactory>,
+    /// How long an authentication may take; a minute by default.
+    pub auth_deadline: Option<Duration>,
+}
+
+/// Serves the Agent's state API with everything in `extras`, and the thread that applies the
+/// orchestrator's reports to the state store and sends the signals.
+pub async fn serve_with_extras(
+    builder: connection::Builder<'_>,
+    config: Config,
+    user_policies: Option<UserPolicyStore>,
+    extras: Extras,
+) -> zbus::Result<Connection> {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let mut service = AgentService::with_audit(
+        config,
+        user_policies,
+        extras.audit.unwrap_or_else(Audit::none),
+    )
+    .with_pin_socket(extras.pin_socket)
+    .with_pin_lock(extras.pin_lock);
+    if let Some(methods) = extras.methods {
+        service.methods = methods;
+    }
+    if let Some(deadline) = extras.auth_deadline {
+        service.auth_deadline = deadline;
+    }
+    service.updates = Some(sender);
     let connection = builder
         .name(AGENT_BUS_NAME)
-        .serve_at(
-            AGENT_OBJECT_PATH,
-            AgentService::with_audit(config, user_policies, audit)
-                .with_pin_socket(pin_socket)
-                .with_pin_lock(pin_lock),
-        )
+        .serve_at(AGENT_OBJECT_PATH, service)
         .build()
         .await?;
     watch_departures(&connection).await?;
+    apply_updates(&connection, receiver)?;
     Ok(connection)
+}
+
+/// Applies the orchestrator's reports to the state store, one at a time, and sends the signals
+/// they cause. It runs on a thread of its own, because the orchestrator runs on threads and the
+/// store is behind the bus object; it ends when the service is dropped and the channel closes.
+fn apply_updates(
+    connection: &Connection,
+    receiver: std::sync::mpsc::Receiver<AgentUpdate>,
+) -> zbus::Result<()> {
+    let connection = connection.clone();
+    std::thread::Builder::new()
+        .name("linuxhello-agent-updates".to_string())
+        .spawn(move || {
+            futures_lite::future::block_on(async move {
+                while let Ok(report) = receiver.recv() {
+                    let Ok(service) = connection
+                        .object_server()
+                        .interface::<_, AgentService>(AGENT_OBJECT_PATH)
+                        .await
+                    else {
+                        continue;
+                    };
+                    let notes = {
+                        let mut service = service.get_mut().await;
+                        service
+                            .api
+                            .agent_report(report.uid, &report.prompt, report.update)
+                    };
+                    for note in &notes {
+                        send(&connection, note).await;
+                    }
+                }
+            });
+        })
+        .map_err(|e| zbus::Error::Failure(e.to_string()))?;
+    Ok(())
 }
 
 /// Whether the Agent's bus loop answers: a `Peer.Ping` to its own name goes through the bus daemon
@@ -515,6 +650,48 @@ impl AgentService {
     ) -> Result<String, AgentError> {
         let caller = caller_of(connection, header.sender()).await;
         self.api.get_user_policy(caller).map_err(to_bus)
+    }
+
+    /// Starts the authentication of a prompt for a context: the Agent runs the methods the
+    /// context allows and reports by the signals and `GetState`. Returns at once.
+    async fn authenticate(
+        &mut self,
+        prompt_id: &str,
+        context: &str,
+        #[zbus(header)] header: Header<'_>,
+        #[zbus(connection)] connection: &Connection,
+    ) -> Result<(), AgentError> {
+        self.tick();
+        let caller = caller_of(connection, header.sender()).await;
+        let start = self
+            .api
+            .begin_authentication(caller, prompt_id, context)
+            .map_err(to_bus)?;
+        let Some(updates) = self.updates.clone() else {
+            self.api.agent_report(
+                start.opener_uid,
+                &start.prompt,
+                Update::Result(Outcome::new(PromptResult::Failure)),
+            );
+            return Err(to_bus(ApiError::Unavailable));
+        };
+        let methods = (self.methods)(start.subject);
+        let deadline = self.auth_deadline;
+        std::thread::spawn(move || {
+            let mut reporter = ChannelReporter {
+                updates: updates.clone(),
+                uid: start.opener_uid,
+                prompt: start.prompt.clone(),
+            };
+            let ran = catch_unwind(AssertUnwindSafe(|| {
+                Orchestrator::run(&start.rule, methods, &mut reporter, deadline, &start.stop)
+            }));
+            if ran.is_err() {
+                // Whatever went wrong, the prompt must not stay "running" for ever.
+                reporter.report(Update::Result(Outcome::new(PromptResult::Failure)));
+            }
+        });
+        Ok(())
     }
 
     /// Announces that the caller, who opened the prompt, is about to send one PIN on the PIN
