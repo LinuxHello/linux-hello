@@ -49,6 +49,8 @@ sudo install -D -m755 $bin /usr/libexec/linuxhello/linuxhello-agent
 sudo install -D -m644 $sec/dbus/io.github.LinuxHello.Agent1.conf /usr/share/dbus-1/system.d/io.github.LinuxHello.Agent1.conf
 sudo install -D -m644 $sec/dbus/io.github.LinuxHello.Agent1.service /usr/share/dbus-1/system-services/io.github.LinuxHello.Agent1.service
 sudo install -m644 $sec/apparmor/linuxhello-agent /etc/apparmor.d/linuxhello-agent
+sudo install -D -m644 $sec/polkit/50-linuxhello-agent.rules /etc/polkit-1/rules.d/50-linuxhello-agent.rules
+sudo systemctl restart polkit; sleep 1
 sudo install -m644 $sec/systemd/linuxhello-agent.service /usr/lib/systemd/system/linuxhello-agent.service
 sudo apparmor_parser -r /etc/apparmor.d/linuxhello-agent
 sudo systemctl reload dbus; sudo systemctl daemon-reload
@@ -173,6 +175,9 @@ chmod 644 /tmp/auth_flow.py
 check "authenticate_ends_in_a_result_for_the_opener" 'sudo -u lh python3 /tmp/auth_flow.py $LHUID | grep -q "^RESULT failure"'
 check "another_user_cannot_authenticate_a_prompt_that_is_not_theirs" 'call nobody $N $P $N Authenticate ss $ID login | grep -q "not allowed"'
 check "authenticate_refuses_an_unknown_context" 'call lh $N $P $N Authenticate ss $ID root | grep -q "invalid argument"'
+# fprintd is not installed in the test VM (nothing is downloaded for this check), so the method is
+# unavailable and the denials check below shows whether the profile lets the Agent try to reach it.
+check "polkit_loads_the_agents_rule_without_an_error" 'sudo journalctl -u polkit --no-pager --since "-5min" > /tmp/polkit.log; grep -q "Finished loading" /tmp/polkit.log && ! grep -Eqi "error|syntax" /tmp/polkit.log'
 check "the_layer_is_a_private_file_of_the_agents_user" '[ "$(sudo stat -c "%U %a" /var/lib/linuxhello/users/$LHUID/policy.toml)" = "linuxhello 600" ]'
 
 # A subscriber hears the Agent's real signal; a bystander and two forgers cause nothing.
