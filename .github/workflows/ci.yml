@@ -75,6 +75,9 @@ jobs:
         with:
           toolchain: stable
           components: clippy
+      # tss-esapi (the TPM provider) builds against the system's TSS2 libraries.
+      - name: Install the TSS2 development libraries
+        run: sudo apt-get update -qq && sudo apt-get install --yes --no-install-recommends libtss2-dev clang libclang-dev pkg-config
       - run: cargo clippy --workspace --all-targets -- -D warnings
 
   test:
@@ -87,7 +90,16 @@ jobs:
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: stable
+      # tss-esapi (the TPM provider) builds against the system's TSS2 libraries.
+      - name: Install the TSS2 development libraries
+        run: sudo apt-get update -qq && sudo apt-get install --yes --no-install-recommends libtss2-dev clang libclang-dev pkg-config
+      # A software TPM and the tpm2-tools: the TPM tests run against a real TPM 2.0 implementation, and
+      # with LH_REQUIRE_SWTPM their absence is a failure, not a skip.
+      - name: Install a software TPM and the TPM tools
+        run: sudo apt-get install --yes --no-install-recommends swtpm swtpm-tools tpm2-tools
       - run: cargo test --workspace
+        env:
+          LH_REQUIRE_SWTPM: "1"
 
   cargo-deny:
     name: cargo-deny
@@ -222,6 +234,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: stable
+      # tss-esapi (the TPM provider) builds against the system's TSS2 libraries.
+      - name: Install the TSS2 development libraries
+        run: sudo apt-get update -qq && sudo apt-get install --yes --no-install-recommends libtss2-dev clang libclang-dev pkg-config
       # Missing doc comments fail clippy; this job adds what clippy cannot see (ADR-0008).
       - name: The documentation of every item builds without warnings
         env:
