@@ -29,6 +29,9 @@ use linuxhello_dbus::{AuthMethod, PromptReason, PromptResult, PromptState};
 use crate::policy::MethodRule;
 use crate::state::{Outcome, Update};
 
+/// How often the orchestrator looks at the caller's stop flag.
+const STOP_POLL: Duration = Duration::from_millis(50);
+
 /// How long the orchestrator waits for cancelled methods to stop before it returns anyway.
 const STOP_GRACE: Duration = Duration::from_secs(1);
 
@@ -55,8 +58,9 @@ impl Cancel {
         self.0.load(Ordering::SeqCst)
     }
 
-    /// Tells every holder of this flag to stop; only the orchestrator does this.
-    fn cancel(&self) {
+    /// Tells every holder of this flag to stop. The orchestrator does this to its methods; the
+    /// Agent does it to an authentication whose prompt was closed.
+    pub fn cancel(&self) {
         self.0.store(true, Ordering::SeqCst);
     }
 }
@@ -87,6 +91,9 @@ impl Orchestrator {
     /// Runs the methods that `rule` allows and that are available, until one succeeds, all end
     /// without success, or `deadline` passes.
     ///
+    /// `stop` is a flag of the caller: when it is set the attempt ends at once with the result
+    /// `cancelled` (the prompt was closed). It is looked at every 50 milliseconds.
+    ///
     /// Reports, in this order: `Methods` (the methods that run, none if none can), `Active`, the
     /// state, then, when the attempt ends, `Active` empty, `State(Idle)` and `Result`. An
     /// attempt that cannot start (more than one factor, an unsatisfiable context, no method)
@@ -96,6 +103,7 @@ impl Orchestrator {
         methods: Vec<Box<dyn Method>>,
         reporter: &mut dyn Reporter,
         deadline: Duration,
+        stop: &Cancel,
     ) -> Outcome {
         let mut chosen: Vec<Box<dyn Method>> = methods
             .into_iter()
@@ -143,10 +151,18 @@ impl Orchestrator {
         let mut running: Vec<(usize, AuthMethod)> = kinds.iter().copied().enumerate().collect();
         let mut last_failure: Option<PromptReason> = None;
         let outcome = loop {
+            if stop.is_cancelled() {
+                cancel.cancel();
+                wait_for_stop(&receiver, running.len());
+                break Outcome {
+                    reason: PromptReason::Cancelled,
+                    ..Outcome::new(PromptResult::Cancelled)
+                };
+            }
             let Some(left) = deadline.checked_sub(started.elapsed()) else {
                 break timed_out(&cancel, &receiver);
             };
-            match receiver.recv_timeout(left) {
+            match receiver.recv_timeout(left.min(STOP_POLL)) {
                 Ok((index, MethodEnd::Success)) if running.iter().any(|(i, _)| *i == index) => {
                     cancel.cancel();
                     wait_for_stop(&receiver, running.len().saturating_sub(1));
@@ -169,7 +185,7 @@ impl Orchestrator {
                     }
                     reporter.report(Update::Active(running.iter().map(|(_, k)| *k).collect()));
                 }
-                Err(RecvTimeoutError::Timeout) => break timed_out(&cancel, &receiver),
+                Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => {
                     break Outcome {
                         reason: last_failure.unwrap_or(PromptReason::None),

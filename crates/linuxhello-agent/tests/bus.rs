@@ -844,6 +844,240 @@ fn expect_pin_without_a_socket_is_unavailable_over_the_bus() {
     });
 }
 
+/// A fake method for the bus tests: succeeds after a delay, or runs until it is cancelled.
+struct Fake {
+    /// Which method it plays.
+    kind: linuxhello_dbus::AuthMethod,
+    /// Succeed after this many milliseconds; `None` runs until cancelled.
+    succeed_after: Option<u64>,
+    /// Set when it saw the cancel flag.
+    saw_cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl linuxhello_agent::orchestrator::Method for Fake {
+    fn kind(&self) -> linuxhello_dbus::AuthMethod {
+        self.kind
+    }
+
+    fn available(&self) -> bool {
+        true
+    }
+
+    fn run(
+        &mut self,
+        cancel: &linuxhello_agent::orchestrator::Cancel,
+    ) -> linuxhello_agent::orchestrator::MethodEnd {
+        use linuxhello_agent::orchestrator::MethodEnd;
+        let until = self
+            .succeed_after
+            .map(|ms| std::time::Instant::now() + std::time::Duration::from_millis(ms));
+        loop {
+            if cancel.is_cancelled() {
+                self.saw_cancel
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+                return MethodEnd::Cancelled;
+            }
+            if until.is_some_and(|t| std::time::Instant::now() >= t) {
+                return MethodEnd::Success;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+}
+
+/// Serves the Agent with a policy store and a factory that makes one fake fingerprint method.
+async fn serve_fakes(
+    daemon: &Daemon,
+    store: UserPolicyStore,
+    succeed_after: Option<u64>,
+    saw_cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) -> zbus::Connection {
+    use linuxhello_agent::bus::{serve_with_extras, Extras};
+    let factory: linuxhello_agent::bus::MethodFactory = std::sync::Arc::new(move |_subject| {
+        vec![Box::new(Fake {
+            kind: linuxhello_dbus::AuthMethod::Fingerprint,
+            succeed_after,
+            saw_cancel: std::sync::Arc::clone(&saw_cancel),
+        })]
+    });
+    serve_with_extras(
+        Builder::address(daemon.address.as_str()),
+        Config::new(vec![]),
+        Some(store),
+        Extras {
+            methods: Some(factory),
+            ..Extras::default()
+        },
+    )
+    .await
+    .expect("serve the Agent")
+}
+
+/// The result and reason of `GetState`, polled until a result is there or `seconds` pass.
+async fn result_of(client: &zbus::Connection, id: &str, seconds: u64) -> Option<(String, String)> {
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(seconds);
+    while std::time::Instant::now() < until {
+        let reply = call(client, "GetState", &(id,)).await.expect("get state");
+        let state: (Vec<String>, Vec<String>, String, String, String, u32) =
+            reply.body().deserialize().expect("the reply");
+        if !state.3.is_empty() {
+            return Some((state.3, state.4));
+        }
+        async_io::Timer::after(std::time::Duration::from_millis(20)).await;
+    }
+    None
+}
+
+#[test]
+fn authenticate_starts_the_methods_of_the_context() {
+    let daemon = Daemon::start();
+    let dir = tempfile::TempDir::new().unwrap();
+    run(async {
+        let _service = serve_fakes(
+            &daemon,
+            UserPolicyStore::new(dir.path()),
+            Some(50),
+            std::sync::Arc::default(),
+        )
+        .await;
+        let client = connect(&daemon).await;
+        let id = pid("p1");
+        call(&client, "OpenPrompt", &(id.as_str(), i64::from(my_uid())))
+            .await
+            .expect("open the prompt");
+        call(&client, "Subscribe", &(id.as_str(),))
+            .await
+            .expect("subscribe");
+        let mut heard = signals(&client, "Result").await;
+
+        call(&client, "Authenticate", &(id.as_str(), "login"))
+            .await
+            .expect("the opener may authenticate");
+        let signal = next_within(&mut heard, 3_000)
+            .await
+            .expect("a Result signal");
+        let (prompt, result, reason, seconds): (String, String, String, u32) =
+            signal.body().deserialize().expect("the signal");
+        assert_eq!(
+            (prompt.as_str(), result.as_str(), reason.as_str(), seconds),
+            (id.as_str(), "success", "", 0)
+        );
+        assert_eq!(
+            result_of(&client, &id, 2).await,
+            Some(("success".to_string(), String::new()))
+        );
+        // After the result the prompt can be authenticated again.
+        call(&client, "Authenticate", &(id.as_str(), "sudo"))
+            .await
+            .expect("a second authentication after the first ended");
+    });
+}
+
+#[test]
+fn authenticate_refuses_what_it_should_over_the_bus() {
+    let daemon = Daemon::start();
+    let dir = tempfile::TempDir::new().unwrap();
+    run(async {
+        let _service = serve_fakes(
+            &daemon,
+            UserPolicyStore::new(dir.path()),
+            None,
+            std::sync::Arc::default(),
+        )
+        .await;
+        let client = connect(&daemon).await;
+        let id = pid("p1");
+        call(&client, "OpenPrompt", &(id.as_str(), i64::from(my_uid())))
+            .await
+            .expect("open the prompt");
+        call(&client, "Authenticate", &(id.as_str(), "login"))
+            .await
+            .expect("start");
+        let second = call(&client, "Authenticate", &(id.as_str(), "login")).await;
+        assert!(is_error(&second, "io.github.LinuxHello.Error.LimitReached"));
+        let context = call(&client, "Authenticate", &(id.as_str(), "root")).await;
+        assert!(is_error(
+            &context,
+            "io.github.LinuxHello.Error.InvalidArgument"
+        ));
+        let other = connect(&daemon).await;
+        let stranger = call(&other, "Authenticate", &(id.as_str(), "login")).await;
+        assert!(is_error(&stranger, "io.github.LinuxHello.Error.Denied"));
+    });
+}
+
+#[test]
+fn closing_the_prompt_cancels_a_running_authentication() {
+    let daemon = Daemon::start();
+    let dir = tempfile::TempDir::new().unwrap();
+    let saw_cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    run(async {
+        let _service = serve_fakes(
+            &daemon,
+            UserPolicyStore::new(dir.path()),
+            None,
+            std::sync::Arc::clone(&saw_cancel),
+        )
+        .await;
+        let client = connect(&daemon).await;
+        let id = pid("p1");
+        call(&client, "OpenPrompt", &(id.as_str(), i64::from(my_uid())))
+            .await
+            .expect("open the prompt");
+        call(&client, "Authenticate", &(id.as_str(), "login"))
+            .await
+            .expect("start");
+        async_io::Timer::after(std::time::Duration::from_millis(100)).await;
+        assert!(!saw_cancel.load(std::sync::atomic::Ordering::SeqCst));
+        call(&client, "ClosePrompt", &(id.as_str(),))
+            .await
+            .expect("close");
+        for _ in 0..100 {
+            if saw_cancel.load(std::sync::atomic::Ordering::SeqCst) {
+                break;
+            }
+            async_io::Timer::after(std::time::Duration::from_millis(20)).await;
+        }
+        assert!(
+            saw_cancel.load(std::sync::atomic::Ordering::SeqCst),
+            "the method was cancelled"
+        );
+    });
+}
+
+#[test]
+fn without_any_method_authenticate_ends_in_a_failure() {
+    let daemon = Daemon::start();
+    let dir = tempfile::TempDir::new().unwrap();
+    run(async {
+        let _service = serve_with(
+            Builder::address(daemon.address.as_str()),
+            Config::new(vec![]),
+            Some(UserPolicyStore::new(dir.path())),
+        )
+        .await
+        .expect("serve the Agent");
+        let client = connect(&daemon).await;
+        let id = pid("p1");
+        call(&client, "OpenPrompt", &(id.as_str(), i64::from(my_uid())))
+            .await
+            .expect("open the prompt");
+        call(&client, "Authenticate", &(id.as_str(), "login"))
+            .await
+            .expect("start");
+        assert_eq!(
+            result_of(&client, &id, 3).await,
+            Some(("failure".to_string(), String::new()))
+        );
+    });
+}
+
+#[test]
+fn authenticate_is_listed_in_capabilities() {
+    assert!(linuxhello_dbus::CAPABILITIES.contains(&"Authenticate"));
+    assert_eq!(linuxhello_dbus::METHOD_AUTHENTICATE, "Authenticate");
+}
+
 #[test]
 fn expect_pin_is_listed_in_capabilities() {
     assert!(linuxhello_dbus::CAPABILITIES.contains(&"ExpectPin"));

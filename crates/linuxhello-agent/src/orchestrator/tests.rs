@@ -149,6 +149,7 @@ fn go(
         methods,
         &mut reporter,
         Duration::from_millis(deadline_ms),
+        &Cancel::default(),
     );
     (outcome, recorder.updates())
 }
@@ -348,4 +349,30 @@ fn a_panicking_method_is_a_failure_not_a_crash() {
     let (bad, _, _) = fake(AuthMethod::Face, Script::Panic);
     let (outcome, _) = go(&rule(), vec![bad], 5_000);
     assert_eq!(outcome, Outcome::new(PromptResult::Failure));
+}
+
+#[test]
+fn an_outside_stop_cancels_everything_and_says_cancelled() {
+    let (face, cancelled, _) = fake(AuthMethod::Face, Script::UntilCancelled);
+    let stop = Cancel::default();
+    let recorder = Recorder::default();
+    let mut reporter = recorder.clone();
+    let outcome = std::thread::scope(|scope| {
+        let run = scope.spawn(|| {
+            Orchestrator::run(
+                &rule(),
+                vec![face],
+                &mut reporter,
+                Duration::from_secs(30),
+                &stop,
+            )
+        });
+        sleep(Duration::from_millis(100));
+        stop.cancel();
+        run.join().unwrap()
+    });
+    assert_eq!(outcome.result, PromptResult::Cancelled);
+    assert_eq!(outcome.reason, PromptReason::Cancelled);
+    assert!(cancelled.load(Ordering::SeqCst));
+    assert_eq!(results(&recorder.updates()).len(), 1);
 }

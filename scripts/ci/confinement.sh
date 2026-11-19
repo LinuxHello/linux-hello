@@ -148,6 +148,31 @@ PY
 chmod 644 /tmp/pin_flow.py
 check "the_opener_may_send_one_pin_after_expect_pin" '[ "$(sudo -u lh python3 /tmp/pin_flow.py $LHUID | tail -1)" = "REPLIES 1 0 1" ]'
 check "another_user_cannot_expect_a_pin_for_a_prompt_that_is_not_theirs" 'call nobody $N $P $N ExpectPin s $ID | grep -q "not allowed"'
+
+# Authenticate (ADR-0023 amendment 2026-11-19). No real method exists yet, so the Agent starts the
+# orchestrator with none and the prompt ends in a failure at once; what is checked on a real bus is
+# who may call it and that the result arrives. One process opens, authenticates and reads the state.
+cat > /tmp/auth_flow.py <<'PY'
+import hashlib, sys, time, dbus
+N, P = "io.github.LinuxHello.Agent1", "/io/github/LinuxHello/Agent1"
+d = hashlib.sha256(); d.update(b"io.github.LinuxHello.PromptId1")
+for a in ["vmtest", "tty4", "authflow"]:
+    d.update(len(a).to_bytes(8, "big")); d.update(a.encode())
+prompt = d.hexdigest()
+agent = dbus.Interface(dbus.SystemBus().get_object(N, P), N)
+agent.OpenPrompt(prompt, dbus.Int64(int(sys.argv[1])))
+agent.Authenticate(prompt, "login")
+for _ in range(50):
+    state = agent.GetState(prompt)
+    if str(state[3]):
+        print("RESULT", str(state[3]), repr(str(state[4])))
+        break
+    time.sleep(0.1)
+PY
+chmod 644 /tmp/auth_flow.py
+check "authenticate_ends_in_a_result_for_the_opener" 'sudo -u lh python3 /tmp/auth_flow.py $LHUID | grep -q "^RESULT failure"'
+check "another_user_cannot_authenticate_a_prompt_that_is_not_theirs" 'call nobody $N $P $N Authenticate ss $ID login | grep -q "not allowed"'
+check "authenticate_refuses_an_unknown_context" 'call lh $N $P $N Authenticate ss $ID root | grep -q "invalid argument"'
 check "the_layer_is_a_private_file_of_the_agents_user" '[ "$(sudo stat -c "%U %a" /var/lib/linuxhello/users/$LHUID/policy.toml)" = "linuxhello 600" ]'
 
 # A subscriber hears the Agent's real signal; a bystander and two forgers cause nothing.
