@@ -37,7 +37,10 @@ pub struct Server {
 }
 
 impl Server {
-    /// Binds the socket at `path`, to serve the user `agent_uid` with `tpm`. The directory that
+    /// Binds the socket at `path`, to serve the user `agent_uid` with `tpm`. The socket belongs to
+    /// the group `agent_gid` (the Agent's) and is open to that group and its owner only (mode 0660),
+    /// so that the kernel refuses every other user at the door, before the peer credentials are asked.
+    /// The provider must be a member of that group. The directory that
     /// holds it must be owned by `owner_uid` and writable by nobody else; a stale socket of an
     /// earlier run is removed, and anything else at `path` is refused.
     ///
@@ -45,7 +48,13 @@ impl Server {
     ///
     /// An error when the directory is not safe, `path` holds something that is not a socket, or
     /// binding fails.
-    pub fn bind(path: &Path, owner_uid: u32, agent_uid: u32, tpm: Tpm) -> io::Result<Self> {
+    pub fn bind(
+        path: &Path,
+        owner_uid: u32,
+        agent_uid: u32,
+        agent_gid: u32,
+        tpm: Tpm,
+    ) -> io::Result<Self> {
         let parent = path
             .parent()
             .filter(|p| !p.as_os_str().is_empty())
@@ -71,8 +80,10 @@ impl Server {
             Err(error) => return Err(error),
         }
         let listener = UnixListener::bind(path)?;
-        // Everyone may connect; only the Agent's user is served.
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o666))?;
+        // The Agent's group and nobody else may connect; and of those only the Agent's user is
+        // served, by the peer credentials.
+        std::os::unix::fs::chown(path, None, Some(agent_gid))?;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o660))?;
         Ok(Self {
             listener,
             tpm,
@@ -148,15 +159,16 @@ impl Server {
     }
 }
 
-/// The user id of the account `name` in the text of `/etc/passwd`; `None` for a name that has no
-/// line.
-pub fn uid_of(name: &str, passwd: &str) -> Option<u32> {
+/// The user id and the group id of the account `name` in the text of `/etc/passwd`; `None` for a
+/// name that has no line.
+pub fn ids_of(name: &str, passwd: &str) -> Option<(u32, u32)> {
     passwd.lines().find_map(|line| {
         let mut fields = line.split(':');
         let account = fields.next()?;
         let _password = fields.next()?;
-        let id: u32 = fields.next()?.parse().ok()?;
-        (account == name).then_some(id)
+        let uid: u32 = fields.next()?.parse().ok()?;
+        let gid: u32 = fields.next()?.parse().ok()?;
+        (account == name).then_some((uid, gid))
     })
 }
 
@@ -172,19 +184,20 @@ fn peer_uid(stream: &UnixStream) -> Option<u32> {
 
 #[cfg(test)]
 mod tests {
-    use super::uid_of;
+    use super::ids_of;
 
     #[test]
     fn an_account_is_found_by_name_in_the_passwd_text() {
-        let passwd = "root:x:0:0:root:/root:/bin/bash\nlinuxhello:x:988:988:Agent:/var/lib/linuxhello:/usr/sbin/nologin\n# n\nbroken\n";
-        assert_eq!(uid_of("linuxhello", passwd), Some(988));
-        assert_eq!(uid_of("root", passwd), Some(0));
+        let passwd = "root:x:0:0:root:/root:/bin/bash\nlinuxhello:x:988:987:Agent:/var/lib/linuxhello:/usr/sbin/nologin\n# n\nbroken\n";
+        assert_eq!(ids_of("linuxhello", passwd), Some((988, 987)));
+        assert_eq!(ids_of("root", passwd), Some((0, 0)));
         assert_eq!(
-            uid_of("linuxhell", passwd),
+            ids_of("linuxhell", passwd),
             None,
             "a prefix is not the name"
         );
-        assert_eq!(uid_of("nobody", passwd), None);
-        assert_eq!(uid_of("linuxhello", ""), None);
+        assert_eq!(ids_of("nobody", passwd), None);
+        assert_eq!(ids_of("linuxhello", ""), None);
+        assert_eq!(ids_of("linuxhello", "linuxhello:x:988\n"), None, "no group");
     }
 }

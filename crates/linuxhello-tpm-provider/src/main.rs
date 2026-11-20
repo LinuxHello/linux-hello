@@ -15,7 +15,7 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use linuxhello_tpm_provider::keys::Tpm;
-use linuxhello_tpm_provider::server::{uid_of, Server};
+use linuxhello_tpm_provider::server::{ids_of, Server};
 
 /// The socket the Agent connects to, in the runtime directory the unit creates.
 const SOCKET: &str = "/run/linuxhello-tpm/tpm.sock";
@@ -29,11 +29,11 @@ const TPM: &str = "device:/dev/tpmrm0";
 /// Starts the server and never returns unless starting fails.
 fn run() -> Result<(), String> {
     let passwd = std::fs::read_to_string("/etc/passwd").map_err(|e| format!("/etc/passwd: {e}"))?;
-    let agent =
-        uid_of(AGENT_USER, &passwd).ok_or_else(|| format!("no account named {AGENT_USER}"))?;
+    let (agent_uid, agent_gid) =
+        ids_of(AGENT_USER, &passwd).ok_or_else(|| format!("no account named {AGENT_USER}"))?;
     let own = rustix::process::getuid().as_raw();
     let tpm = Tpm::open(TPM).map_err(|e| format!("the TPM is not available: {e:?}"))?;
-    let server = Server::bind(Path::new(SOCKET), own, agent, tpm)
+    let server = Server::bind(Path::new(SOCKET), own, agent_uid, agent_gid, tpm)
         .map_err(|e| format!("the socket cannot be bound: {e}"))?;
     server.serve_forever();
     Ok(())

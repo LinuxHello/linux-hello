@@ -13,6 +13,11 @@ use linuxhello_tpm_provider::testing::SoftTpm;
 use linuxhello_tpm_provider::wire::{Auth, AUTH_BYTES};
 use zeroize::Zeroizing;
 
+/// The group id of this test, which stands for the Agent's group.
+fn my_gid() -> u32 {
+    std::os::unix::fs::MetadataExt::gid(&std::fs::metadata("/proc/self").unwrap())
+}
+
 /// The user id of this test, which owns the directory and is "the Agent".
 fn me() -> u32 {
     std::os::unix::fs::MetadataExt::uid(&std::fs::metadata("/proc/self").unwrap())
@@ -26,7 +31,7 @@ fn auth(b: u8) -> Auth {
 fn provider(soft: &SoftTpm, agent_uid: u32) -> (PathBuf, tempfile::TempDir, mpsc::Sender<()>) {
     let dir = tempfile::TempDir::new().unwrap();
     let path = dir.path().join("tpm.sock");
-    let mut server = Server::bind(&path, me(), agent_uid, soft.open()).unwrap();
+    let mut server = Server::bind(&path, me(), agent_uid, my_gid(), soft.open()).unwrap();
     let (stop, stopped) = mpsc::channel::<()>();
     std::thread::spawn(move || {
         // Serve until the test drops its end; one connection at a time, as in production.
@@ -114,4 +119,18 @@ fn some_blobs() -> linuxhello_tpm_provider::wire::Blobs {
         public: vec![1],
         private: vec![2],
     }
+}
+
+#[test]
+fn the_socket_is_open_to_the_agents_group_and_to_nobody_else() {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    let Some(soft) = SoftTpm::start() else { return };
+    let (path, _dir, _stop) = provider(&soft, me());
+    let meta = std::fs::metadata(&path).unwrap();
+    assert_eq!(
+        meta.permissions().mode() & 0o777,
+        0o660,
+        "no access for other users"
+    );
+    assert_eq!(meta.gid(), my_gid(), "the Agent's group owns it");
 }

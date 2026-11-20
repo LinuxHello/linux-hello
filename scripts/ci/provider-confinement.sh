@@ -64,6 +64,7 @@ PID=$(systemctl show -p MainPID --value linuxhello-tpm-provider)
 check "the_process_runs_confined_in_enforce_mode" 'sudo cat /proc/$PID/attr/current | grep -Eq "^linuxhello-tpm-provider(//&[a-z]+)? \(enforce\)$"'
 check "the_provider_runs_as_its_own_user" '[ "$(ps -o user= -p $PID)" = linuxhello-tpm ]'
 check "the_socket_is_the_providers_and_nobody_else_can_change_its_directory" '[ "$(stat -c "%U %a" /run/linuxhello-tpm)" = "linuxhello-tpm 755" ] && [ "$(stat -c "%U" /run/linuxhello-tpm/tpm.sock)" = linuxhello-tpm ]'
+check "the_socket_is_open_to_the_agents_group_only" '[ "$(stat -c "%U:%G %a" /run/linuxhello-tpm/tpm.sock)" = "linuxhello-tpm:linuxhello 660" ]'
 check "another_user_cannot_replace_the_socket" '! sudo -u lh rm /run/linuxhello-tpm/tpm.sock 2>/dev/null && [ -S /run/linuxhello-tpm/tpm.sock ]'
 
 # A client in Python: one request, one answer. The request is the operation byte and the fields, each a
@@ -114,7 +115,7 @@ elif role == "garbage":
 PY
 chmod 644 /tmp/tpm_client.py
 check "the_agents_user_gets_a_key_and_the_tpm_tells_a_right_pin_from_a_wrong_one" 'sudo -u linuxhello python3 /tmp/tpm_client.py enrol-and-verify | tr "\n" " " | grep -q "ENROL 0 RIGHT 0 WRONG 1"'
-check "another_user_is_not_served" '[ "$(sudo -u lh python3 /tmp/tpm_client.py enrol-only)" = "ENROL None" ]'
+check "another_user_cannot_even_connect" 'sudo -u lh python3 /tmp/tpm_client.py enrol-only 2>&1 | grep -q "PermissionError"'
 check "nonsense_gets_no_answer_and_the_provider_goes_on" 'sudo -u linuxhello python3 /tmp/tpm_client.py garbage | grep -q "ANSWER b..$" && sudo -u linuxhello python3 /tmp/tpm_client.py enrol-only | grep -q "ENROL 0"'
 check "the_provider_cannot_read_the_agents_state" 'sudo install -d -m700 -o linuxhello /var/lib/linuxhello && echo secret | sudo -u linuxhello tee /var/lib/linuxhello/probe >/dev/null; ! sudo -u linuxhello-tpm cat /var/lib/linuxhello/probe 2>/dev/null; sudo rm -f /var/lib/linuxhello/probe'
 

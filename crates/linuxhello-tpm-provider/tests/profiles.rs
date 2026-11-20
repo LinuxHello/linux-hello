@@ -66,8 +66,23 @@ fn the_provider_runs_as_its_own_user_with_no_privileges() {
     assert_eq!(only(&unit, "ProtectHome"), "yes");
     assert_eq!(only(&unit, "MemoryDenyWriteExecute"), "yes");
     assert_eq!(only(&unit, "LimitCORE"), "0");
+    // It is in the Agent's group, to give the socket to it, and in no other.
+    assert_eq!(only(&unit, "SupplementaryGroups"), "linuxhello");
     // The Agent's user is not the provider's: a compromise of one is not the other.
     assert_ne!(only(&unit, "User"), "linuxhello");
+}
+
+#[test]
+fn the_only_privileged_call_the_provider_gets_is_giving_its_socket_away() {
+    let filters = service().get("SystemCallFilter").cloned().unwrap();
+    assert_eq!(
+        filters,
+        [
+            "@system-service",
+            "~@privileged @resources",
+            "fchownat chown fchown"
+        ]
+    );
 }
 
 #[test]

@@ -18,6 +18,11 @@ fn me() -> u32 {
     std::fs::metadata("/proc/self").unwrap().uid()
 }
 
+/// The group id of this test, which stands for the Agent's group.
+fn my_gid() -> u32 {
+    std::fs::metadata("/proc/self").unwrap().gid()
+}
+
 /// A provider on a thread over a software TPM, and a verifier of this test's "Agent" that uses it.
 struct Stack {
     verifier: TpmVerifier,
@@ -32,7 +37,7 @@ fn stack() -> Option<Stack> {
     let dir = tempfile::TempDir::new().unwrap();
     let socket = dir.path().join("tpm.sock");
     let records = dir.path().join("users");
-    let mut server = Server::bind(&socket, me(), me(), soft.open()).unwrap();
+    let mut server = Server::bind(&socket, me(), me(), my_gid(), soft.open()).unwrap();
     let (stop, stopped) = mpsc::channel::<()>();
     std::thread::spawn(move || {
         while stopped.try_recv() != Err(mpsc::TryRecvError::Disconnected) {
