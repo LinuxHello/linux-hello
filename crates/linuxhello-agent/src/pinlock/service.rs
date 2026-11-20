@@ -61,6 +61,35 @@ impl Limits {
     }
 }
 
+/// How the TPM's own dictionary-attack limit lowered the Agent's limit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TpmCap {
+    /// Wrong tries after which the TPM locks every key, for every user.
+    pub tpm_tries: u32,
+    /// Wrong PINs the Agent allows instead of what the policy asks.
+    pub allowed: u32,
+}
+
+impl Limits {
+    /// These limits, with `max_attempts` lowered to half of `tpm_tries` when the policy asks for
+    /// more. The TPM counts wrong tries of every user together and locks all of them at its own
+    /// limit; keeping the Agent's limit at half of it lets the Agent's per-user lockout act first
+    /// (`the_agents_limit_stays_below_the_tpms`). Returns the cap when it changed anything.
+    pub fn capped_by_tpm(self, tpm_tries: u32) -> (Self, Option<TpmCap>) {
+        let allowed = (tpm_tries / 2).max(1);
+        if self.max_attempts <= allowed {
+            return (self, None);
+        }
+        (
+            Self {
+                max_attempts: allowed,
+                ..self
+            },
+            Some(TpmCap { tpm_tries, allowed }),
+        )
+    }
+}
+
 /// What the lock says about one user at one moment.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LockStatus {
@@ -100,6 +129,8 @@ pub struct PinLockService {
     slot: Arc<(Mutex<Slot>, Condvar)>,
     /// The writer thread; joined on drop so that nothing pending is lost.
     writer: Option<JoinHandle<()>>,
+    /// Set when the TPM's limit lowered the Agent's.
+    tpm_cap: Option<TpmCap>,
 }
 
 impl PinLockService {
@@ -131,7 +162,22 @@ impl PinLockService {
             state: Mutex::new(state),
             slot,
             writer: Some(writer),
+            tpm_cap: None,
         }
+    }
+
+    /// Like [`Self::start`], with the limit lowered when the TPM locks sooner than the policy
+    /// expects: `tpm_tries` is what the TPM reports, `None` when it could not be asked.
+    pub fn start_capped(file: PinLockFile, limits: Limits, tpm_tries: Option<u32>) -> Self {
+        let (limits, cap) = tpm_tries.map_or((limits, None), |tries| limits.capped_by_tpm(tries));
+        let mut service = Self::start(file, limits);
+        service.tpm_cap = cap;
+        service
+    }
+
+    /// The cap the TPM's limit put on the Agent's, if it did.
+    pub fn tpm_cap(&self) -> Option<TpmCap> {
+        self.tpm_cap
     }
 
     /// Locks the state, going on after a panic elsewhere: the counter is plain data.

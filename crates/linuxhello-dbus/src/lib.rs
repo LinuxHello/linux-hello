@@ -134,6 +134,19 @@ pub mod status {
     pub const PIN_LOCK_DAMAGED_SENTENCE: &str =
         "The record of failed PIN attempts cannot be trusted, so PIN sign-in is refused.";
 
+    /// The code of a TPM that locks after fewer wrong tries than the Agent's own limit needs: the
+    /// Agent lowered its limit so that its own lockout comes first (ADR-0021).
+    pub const TPM_LIMIT_LOW: &str = "tpm-dictionary-limit-low";
+
+    /// The sentence of [`TPM_LIMIT_LOW`]: the TPM's limit, and the number of wrong PINs the Agent
+    /// allows instead.
+    #[must_use]
+    pub fn tpm_limit_low_sentence(tpm_tries: u32, allowed: u32) -> String {
+        format!(
+            "The TPM locks every PIN after {tpm_tries} wrong tries, so Linux Hello allows only {allowed} wrong PINs before its own lockout."
+        )
+    }
+
     /// The sentence for an unsatisfiable `context`.
     #[must_use]
     pub fn context_unsatisfiable_sentence(context: &str) -> String {
