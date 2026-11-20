@@ -368,6 +368,7 @@ dependencies = [
  "async-io",
  "futures-lite",
  "linuxhello-dbus",
+ "linuxhello-tpm-provider",
  "rustix",
  "serde",
  "tempfile",
@@ -405,8 +406,11 @@ name = "linuxhello-tpm-provider"
 version = "0.0.0"
 dependencies = [
  "linuxhello-dbus",
+ "linuxhello-tpm-provider",
+ "rustix",
  "tempfile",
  "tss-esapi",
+ "zeroize",
 ]
 
 [[package]]

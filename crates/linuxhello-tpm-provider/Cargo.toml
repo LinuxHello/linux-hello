@@ -10,10 +10,23 @@ publish.workspace = true
 
 [dependencies]
 linuxhello-dbus = { path = "../linuxhello-dbus" }
-tss-esapi = "7.7"
+tss-esapi = { version = "7.7", optional = true }
+rustix = { version = "1", default-features = false, features = ["std", "net", "process"] }
+zeroize = "1"
+tempfile = { version = "3", optional = true }
+
+[features]
+# The TPM itself. Off for a client of the provider (the Agent), which must not link the TSS2 C
+# libraries: the Agent is a static, pure-Rust binary.
+default = ["tpm"]
+tpm = ["dep:tss-esapi"]
+# A software TPM for tests (swtpm); nothing but a test turns it on.
+testing = ["tpm", "dep:tempfile"]
 
 [lints]
 workspace = true
 
 [dev-dependencies]
 tempfile = "3"
+# Its own tests use the software TPM of the `testing` feature.
+linuxhello-tpm-provider = { path = ".", features = ["testing"] }

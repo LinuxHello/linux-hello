@@ -138,6 +138,7 @@ scripts/ci/fuzz.sh 60          # every cargo-fuzz target, 60 s each, pinned nigh
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --document-private-items
 bash scripts/ci/test-c4-docs.sh && bash scripts/ci/c4-docs.sh   # C4 tags (ADR-0008)
 bash scripts/ci/test-repo-hygiene.sh && bash scripts/ci/repo-hygiene.sh   # no tracked build output, no file over 1 MiB
+bash scripts/ci/agent-links-no-tpm.sh   # the Agent links no TPM library (it reaches the TPM through the provider)
 ```
 
 **Stage files by path.** `git add <path> ...`, never `git add -A` or `git add .`, and read `git status --short` and `git diff --cached --stat` before every commit. A new fuzz crate once went into `main` with its `target/` and `corpus/` (35 MiB of build output) because of `git add -A`; every new cargo-fuzz crate gets the `.gitignore` of the others (`target`, `corpus`, `artifacts`, `coverage`) when it is created. `repo-hygiene.sh` refuses tracked build output and files over 1 MiB (list one that belongs in `scripts/ci/large-files-allowed.txt`).

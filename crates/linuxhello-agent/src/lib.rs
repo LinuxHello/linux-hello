@@ -13,6 +13,7 @@ pub mod notify;
 pub mod orchestrator;
 pub mod pinkdf;
 pub mod pinlock;
+pub mod pinrecord;
 pub mod pinsocket;
 pub mod policy;
 pub mod state;

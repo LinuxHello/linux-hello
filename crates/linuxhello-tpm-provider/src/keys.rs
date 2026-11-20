@@ -33,8 +33,7 @@ use tss_esapi::traits::{Marshall, UnMarshall};
 use tss_esapi::utils::create_restricted_decryption_rsa_public;
 use tss_esapi::{Context, TctiNameConf};
 
-/// The bytes of an authorisation value: what the PIN stretching produces.
-pub const AUTH_BYTES: usize = 32;
+pub use crate::wire::{Blobs, AUTH_BYTES};
 
 /// Why a TPM operation did not give an answer about the PIN.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -45,15 +44,6 @@ pub enum TpmError {
     /// Anything else: no TPM, a refused command, a damaged blob. The text is the TPM stack's own and
     /// carries no PIN.
     Failed(String),
-}
-
-/// A root key as it is kept on disk: the two blobs that only the TPM that made them can open.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Blobs {
-    /// The public part, marshalled.
-    pub public: Vec<u8>,
-    /// The private part, wrapped by the TPM, marshalled.
-    pub private: Vec<u8>,
 }
 
 /// A connection to a TPM, with the storage primary the root keys hang under.

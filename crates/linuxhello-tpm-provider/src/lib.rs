@@ -12,4 +12,12 @@
 
 #![deny(unsafe_code)]
 
+pub mod client;
+pub mod wire;
+
+#[cfg(feature = "tpm")]
 pub mod keys;
+#[cfg(feature = "tpm")]
+pub mod server;
+#[cfg(feature = "testing")]
+pub mod testing;

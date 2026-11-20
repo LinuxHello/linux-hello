@@ -206,5 +206,7 @@ impl Method for PinMethod {
     }
 }
 
+pub mod tpm;
+
 #[cfg(test)]
 mod tests;
