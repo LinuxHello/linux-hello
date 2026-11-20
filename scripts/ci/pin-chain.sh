@@ -127,5 +127,14 @@ sudo tpm2_dictionarylockout --setup-parameters --max-tries=100 --recovery-time=1
 sudo systemctl stop linuxhello-agent; sudo rm -f /var/lib/linuxhello/pinlock.toml
 sudo systemctl restart linuxhello-tpm-provider; sleep 2; sudo systemctl start linuxhello-agent
 
+# A cleared TPM: the keys it made are gone (a clear gives it a new seed), and the status says so for
+# a user who has a PIN record, without any PIN being tried. This is last, because it ends the keys of
+# this run; the next run starts from a clean state.
+check "the_status_is_clean_while_the_tpm_holds_the_key" '! sudo -u lh2 /usr/bin/linuxhello-ctl status | grep -q tpm-cleared'
+sudo tpm2_clear >/dev/null 2>&1
+sudo systemctl restart linuxhello-tpm-provider; sleep 2
+check "a_cleared_tpm_is_reported_in_the_status" 'sudo -u lh2 /usr/bin/linuxhello-ctl status | grep -q tpm-cleared'
+check "a_user_without_a_record_is_not_told_the_tpm_was_cleared" '! sudo -u nobody /usr/bin/linuxhello-ctl status | grep -q tpm-cleared'
+
 echo
 if [[ $fail -eq 0 ]]; then echo "All checks passed."; else echo "$fail check(s) failed."; exit 1; fi
