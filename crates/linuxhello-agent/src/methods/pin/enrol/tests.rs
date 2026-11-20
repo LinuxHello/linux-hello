@@ -32,7 +32,7 @@ impl PinEnrolment for Memory {
         Ok(())
     }
 
-    fn change(&self, uid: u32, old: &[u8], new: &[u8]) -> Result<(), EnrolError> {
+    fn change(&self, uid: u32, old: &[u8], new: &[u8], _history: u32) -> Result<(), EnrolError> {
         *self.calls.lock().unwrap() += 1;
         let mut pins = self.pins.lock().unwrap();
         match pins.get_mut(&uid) {

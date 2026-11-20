@@ -80,8 +80,8 @@ fn describe(result: &str, reason: &str, seconds: u32) -> (String, u8) {
         ("failure", "not-recognised") => ("The current PIN is wrong.".to_string(), 1),
         ("failure", "timeout") => ("No PIN arrived in time.".to_string(), 1),
         _ => (
-            "The PIN was not accepted. It may be too short or too long (see the PIN rules), \
-             or the TPM did not answer."
+            "The PIN was not accepted. It may break the PIN rules (length, kinds of characters), \
+             be the same as the current PIN or one used before, or the TPM did not answer."
                 .to_string(),
             1,
         ),
