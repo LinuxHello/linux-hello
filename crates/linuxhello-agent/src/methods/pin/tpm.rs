@@ -155,12 +155,15 @@ fn authorisation(pin: &[u8], salt: &[u8; SALT_BYTES], params: &Params) -> Result
     Ok(Zeroizing::new(*stretched.as_bytes()))
 }
 
-/// A salt of random bytes from the system; `None` if it cannot be read.
+/// A salt of random bytes from the system; `None` if it cannot be read. The bytes come from the
+/// device and are collected, not written over a fixed array: a static analysis cannot then mistake a
+/// zero-filled buffer for a hard-coded salt.
 fn random_salt() -> Option<[u8; SALT_BYTES]> {
-    let mut salt = [0_u8; SALT_BYTES];
+    let mut bytes = Vec::with_capacity(SALT_BYTES);
     File::open("/dev/urandom")
         .ok()?
-        .read_exact(&mut salt)
+        .take(SALT_BYTES as u64)
+        .read_to_end(&mut bytes)
         .ok()?;
-    Some(salt)
+    bytes.try_into().ok()
 }
