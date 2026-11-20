@@ -15,21 +15,32 @@
 //! counter; the Agent keeps its own per-user counter in front of this (P-14) and never resets the
 //! TPM's.
 //!
-//! Not here yet: sessions with parameter encryption (the authorisation travels as a plain
-//! password session, over the local TPM interface), and persistent handles (the blobs are kept on
-//! disk, so a primary is made again, identically, from the owner hierarchy's seed, when needed).
+//! How the PIN-derived value is kept off the TPM interface: every command that carries or proves an
+//! authorisation value runs in a salted HMAC session with parameter encryption. The session key is
+//! agreed by encrypting a random salt to the storage primary, so someone who records the bytes
+//! between this process and the TPM cannot derive it. A value that is *sent* (a new key's, the new
+//! value of a change) is encrypted with that key; a value that is *proved* (the current one) is only
+//! the key of an HMAC and is never sent. A plain password session would put it on the interface
+//! in clear (`tpm_sessions_encrypt_the_authorisation_value` and its control).
+//!
+//! Not here yet: persistent handles (the blobs are kept on disk, so a primary is made again,
+//! identically, from the owner hierarchy's seed, when needed).
 //!
 //! C4 component: `tpmKeys` ([workspace.dsl](https://github.com/LinuxHello/linux-hello-architecture/blob/main/workspace.dsl))
 
 use std::str::FromStr;
 
+use tss_esapi::attributes::SessionAttributesBuilder;
 use tss_esapi::constants::response_code::Tss2ResponseCodeKind;
-use tss_esapi::constants::PropertyTag;
+use tss_esapi::constants::{PropertyTag, SessionType};
 use tss_esapi::handles::KeyHandle;
+use tss_esapi::interface_types::algorithm::HashingAlgorithm;
 use tss_esapi::interface_types::key_bits::RsaKeyBits;
 use tss_esapi::interface_types::resource_handles::Hierarchy;
 use tss_esapi::interface_types::session_handles::AuthSession;
-use tss_esapi::structures::{Auth, Private, Public, RsaExponent, SymmetricDefinitionObject};
+use tss_esapi::structures::{
+    Auth, Private, Public, RsaExponent, SymmetricDefinition, SymmetricDefinitionObject,
+};
 use tss_esapi::traits::{Marshall, UnMarshall};
 use tss_esapi::utils::create_restricted_decryption_rsa_public;
 use tss_esapi::{Context, TctiNameConf};
@@ -111,12 +122,12 @@ impl Tpm {
     pub fn enrol(&mut self, auth: &[u8; AUTH_BYTES]) -> Result<Blobs, TpmError> {
         let auth = auth_of(auth)?;
         let primary = self.primary;
-        let created = self
-            .context
-            .execute_with_nullauth_session(|c| {
-                c.create(primary, storage_template()?, Some(auth), None, None, None)
-            })
-            .map_err(classify)?;
+        let session = self.encrypted_session()?;
+        let created = self.context.execute_with_session(Some(session), |c| {
+            c.create(primary, storage_template()?, Some(auth), None, None, None)
+        });
+        self.end(session);
+        let created = created.map_err(classify)?;
         blobs_of(&created.out_public, &created.out_private)
     }
 
@@ -129,7 +140,14 @@ impl Tpm {
     /// not load or any other refusal. Neither is a wrong PIN.
     pub fn verify(&mut self, blobs: &Blobs, auth: &[u8; AUTH_BYTES]) -> Result<bool, TpmError> {
         let key = self.load(blobs)?;
-        let outcome = self.use_as_parent(key, auth);
+        let session = match self.encrypted_session() {
+            Ok(session) => session,
+            Err(error) => {
+                let _ = self.context.flush_context(key.into());
+                return Err(error);
+            }
+        };
+        let outcome = self.use_as_parent(key, auth, session);
         let _ = self.context.flush_context(key.into());
         match outcome {
             Ok(()) => Ok(true),
@@ -156,14 +174,18 @@ impl Tpm {
         let primary = self.primary;
         let old = auth_of(old)?;
         let new = auth_of(new)?;
-        let changed = self.context.tr_set_auth(key.into(), old).and_then(|()| {
-            self.context
-                .execute_with_session(Some(AuthSession::Password), |c| {
+        let session = self.encrypted_session();
+        let changed = session.and_then(|session| {
+            let changed = self.context.tr_set_auth(key.into(), old).and_then(|()| {
+                self.context.execute_with_session(Some(session), |c| {
                     c.object_change_auth(key.into(), primary.into(), new)
                 })
+            });
+            self.end(session);
+            changed.map_err(classify)
         });
         let _ = self.context.flush_context(key.into());
-        let private = changed.map_err(classify)?;
+        let private = changed?;
         let public = Public::unmarshall(&blobs.public).map_err(failed)?;
         blobs_of(&public, &private)
     }
@@ -184,14 +206,51 @@ impl Tpm {
         &mut self,
         key: KeyHandle,
         auth: &[u8; AUTH_BYTES],
+        session: AuthSession,
     ) -> Result<(), tss_esapi::Error> {
         let auth = Auth::try_from(auth.to_vec())?;
         self.context.tr_set_auth(key.into(), auth)?;
-        self.context
-            .execute_with_session(Some(AuthSession::Password), |c| {
+        let created = self
+            .context
+            .execute_with_session(Some(session), |c| {
                 c.create(key, storage_template()?, None, None, None, None)
             })
-            .map(|_| ())
+            .map(|_| ());
+        self.end(session);
+        created
+    }
+
+    /// A salted HMAC session whose parameters are encrypted both ways, with AES-128 in CFB mode and
+    /// SHA-256. The salt is encrypted to the storage primary, so the session key cannot be derived
+    /// from what crosses the TPM interface. One session serves one command; [`Self::end`] removes it.
+    fn encrypted_session(&mut self) -> Result<AuthSession, TpmError> {
+        let session = self
+            .context
+            .start_auth_session(
+                Some(self.primary),
+                None,
+                None,
+                SessionType::Hmac,
+                SymmetricDefinition::AES_128_CFB,
+                HashingAlgorithm::Sha256,
+            )
+            .map_err(classify)?
+            .ok_or_else(|| TpmError::Failed("the TPM gave no session".to_string()))?;
+        let (attributes, mask) = SessionAttributesBuilder::new()
+            .with_decrypt(true)
+            .with_encrypt(true)
+            .build();
+        self.context
+            .tr_sess_set_attributes(session, attributes, mask)
+            .map_err(failed)?;
+        Ok(session)
+    }
+
+    /// Removes a session that a command did not consume (a refused command leaves it). An error is
+    /// ignored: the TPM drops the oldest session when it runs out of slots.
+    fn end(&mut self, session: AuthSession) {
+        let handle: tss_esapi::handles::SessionHandle = session.into();
+        let _ = self.context.flush_context(handle.into());
     }
 }
 
