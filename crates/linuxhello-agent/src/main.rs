@@ -29,6 +29,7 @@ use linuxhello_agent::pinsocket::PinSocket;
 use linuxhello_agent::policy::load;
 use linuxhello_agent::policy::user_store::UserPolicyStore;
 use linuxhello_agent::state::Config;
+use linuxhello_tpm_provider::client::TpmClient;
 use zbus::connection::Builder;
 
 /// The root directory where user policy subdirectories are located.
@@ -82,9 +83,16 @@ const NO_USER_LAYER: &str = "/nonexistent/linuxhello/policy.toml";
 fn pin_lock() -> PinLockService {
     let owner = rustix::process::getuid().as_raw();
     let policy = load(Path::new(ADMIN_POLICY_DIR), Path::new(NO_USER_LAYER), 0);
-    PinLockService::start(
+    // The TPM locks every key after its own number of wrong tries; the Agent keeps its limit below
+    // it. Asked once, here: a provider that is not running yet leaves the policy's limit as it is.
+    let tpm_tries = TpmClient::new(TPM_SOCKET)
+        .limits()
+        .ok()
+        .map(|limits| limits.max_tries);
+    PinLockService::start_capped(
         PinLockFile::new(PIN_LOCK_FILE, owner),
         Limits::from_policy(&policy),
+        tpm_tries,
     )
 }
 
