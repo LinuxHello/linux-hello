@@ -68,7 +68,7 @@ sudo systemctl reload dbus; sudo systemctl daemon-reload
 sudo systemctl stop linuxhello-agent linuxhello-tpm-provider 2>/dev/null
 sudo systemctl reset-failed linuxhello-agent linuxhello-tpm-provider 2>/dev/null
 # A clean state: no PIN records from an earlier run.
-sudo rm -rf /var/lib/linuxhello/users
+sudo rm -rf /var/lib/linuxhello/users /var/lib/linuxhello/pinlock.toml
 # The provider first: the Agent asks it for the TPM's limit when it starts.
 sudo systemctl start linuxhello-tpm-provider; sleep 2
 sudo systemctl start linuxhello-agent
@@ -99,6 +99,33 @@ check "a_pin_without_a_digit_is_not_accepted_by_the_default_policy" 'pin change 
 check "the_pin_still_works_after_a_refused_change" 'pin change 333333 444444 444444 | grep -q "Done\.$"'
 check "the_current_pin_cannot_be_chosen_as_the_new_pin" 'pin change 444444 444444 444444 | grep -q "not accepted"'
 check "no_confinement_denial_in_the_log" '! sudo journalctl -k --no-pager --since "-10min" 2>/dev/null | grep -E "apparmor=\"DENIED\".*(linuxhello-agent|linuxhello-tpm-provider|linuxhello-ctl)" | head -3 | grep .'
+
+# P-14 on a real machine. The TPM counts wrong tries for every user together and locks all of them at
+# its own limit; here it allows three. The Agent reads that limit when it starts and keeps its own at
+# half of it (one), so one user's wrong PINs are stopped by the Agent before they reach the TPM and
+# leave the other user's PIN working.
+id lh2 >/dev/null 2>&1 || sudo useradd --create-home --shell /usr/sbin/nologin lh2
+pin_as() { # arguments: user, set|change, then the lines to type
+  local user=$1 cmd=$2; shift 2
+  printf '%s\n' "$@" | sudo -u "$user" /usr/bin/linuxhello-ctl pin "$cmd" 2>&1
+}
+sudo tpm2_dictionarylockout --clear-lockout >/dev/null 2>&1
+sudo tpm2_dictionarylockout --setup-parameters --max-tries=3 --recovery-time=10 --lockout-recovery-time=10 >/dev/null 2>&1
+# The provider reads the TPM's properties once, when it starts, and the Agent asks it when the Agent
+# starts: both restart, the provider first, to see the new limit.
+sudo systemctl restart linuxhello-tpm-provider; sleep 2
+sudo systemctl restart linuxhello-agent
+for _ in 1 2 3 4 5 6 7 8 9 10; do busctl --system list --no-pager 2>/dev/null | grep -q "^io.github.LinuxHello.Agent1 " && break; sleep 1; done
+check "the_status_says_the_tpm_lowered_the_pin_limit" 'sudo -u lh /usr/bin/linuxhello-ctl status | grep -q tpm-dictionary-limit-low'
+check "a_second_user_sets_a_pin" 'pin_as lh2 set 555555 555555 | grep -q "Done\.$"'
+check "one_users_wrong_pins_are_stopped_by_the_agent_not_the_tpm" 'pin_as lh change 000000 666666 666666 | grep -q "Too many wrong PINs" && pin_as lh change 000000 666666 666666 | grep -q "Too many wrong PINs" && pin_as lh change 000000 666666 666666 | grep -q "Too many wrong PINs"'
+check "the_other_users_pin_still_works_while_the_first_is_locked" 'pin_as lh2 change 555555 777777 777777 | grep -q "Done\.$"'
+check "the_tpm_itself_is_not_in_lockout" '! sudo tpm2_getcap properties-variable 2>/dev/null | grep -A1 TPM2_PT_PERMANENT | grep -q "inLockout: *1"'
+# Back to a TPM that tolerates repeated runs of this script, and a clean lock.
+sudo tpm2_dictionarylockout --clear-lockout >/dev/null 2>&1
+sudo tpm2_dictionarylockout --setup-parameters --max-tries=100 --recovery-time=10 --lockout-recovery-time=10 >/dev/null 2>&1
+sudo systemctl stop linuxhello-agent; sudo rm -f /var/lib/linuxhello/pinlock.toml
+sudo systemctl restart linuxhello-tpm-provider; sleep 2; sudo systemctl start linuxhello-agent
 
 echo
 if [[ $fail -eq 0 ]]; then echo "All checks passed."; else echo "$fail check(s) failed."; exit 1; fi
