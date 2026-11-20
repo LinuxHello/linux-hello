@@ -4,6 +4,7 @@
 
 #![forbid(unsafe_code)]
 
+mod agent_client;
 mod ask;
 mod policy;
 mod probe;
@@ -19,6 +20,38 @@ const USER_POLICY_ROOT: &str = "/var/lib/linuxhello/users";
 /// The Agent's admin policy directory (the same value as `ADMIN_POLICY_DIR` in the Agent's
 /// `main.rs`, which is private there).
 const ADMIN_POLICY_DIR: &str = "/etc/linuxhello/policy.d";
+
+/// The Agent's PIN socket (the same value as `PIN_SOCKET` in the Agent's `main.rs`, which is private
+/// there).
+const PIN_SOCKET: &str = "/run/linuxhello/pin.sock";
+
+/// `pin set` and `pin change`: the caller's own PIN, through the Agent on the system bus.
+fn pin_command(args: &[String], out: &mut dyn std::io::Write) -> u8 {
+    let change = match args.get(1).map(String::as_str) {
+        Some("set") => false,
+        Some("change") => true,
+        _ => {
+            let _ = writeln!(out, "usage: linuxhello-ctl pin set | pin change");
+            return 2;
+        }
+    };
+    if args.len() > 2 {
+        let _ = writeln!(out, "usage: linuxhello-ctl pin set | pin change");
+        return 2;
+    }
+    let Ok(connection) = futures_lite::future::block_on(zbus::Connection::system()) else {
+        let _ = writeln!(out, "The system bus is not available.");
+        return 1;
+    };
+    agent_client::run(
+        &connection,
+        std::path::Path::new(PIN_SOCKET),
+        rustix::process::getuid().as_raw(),
+        change,
+        &mut agent_client::Terminal,
+        out,
+    )
+}
 
 /// Without arguments prints the skeleton line; with arguments runs the command and exits with its
 /// code (0 done, 1 failed, 2 usage error).
@@ -40,7 +73,9 @@ fn main() -> ExitCode {
         std::io::stderr(),
     );
     let host = RealHost;
-    let code = if matches!(args[0].as_str(), "status" | "doctor") {
+    let code = if matches!(args.first().map(String::as_str), Some("pin")) {
+        pin_command(&args, &mut out)
+    } else if matches!(args[0].as_str(), "status" | "doctor") {
         status::run(
             &args,
             &host,
