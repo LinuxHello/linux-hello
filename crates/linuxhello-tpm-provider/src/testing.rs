@@ -1,19 +1,25 @@
-//! A software TPM (swtpm) for the tests: a real TPM 2.0 implementation, started with an empty state
-//! for each test, so the TPM's dictionary-attack counter of one test never reaches another. Without
-//! `swtpm` the tests say so and return; set `LH_REQUIRE_SWTPM=1` (CI does) to make its absence a
-//! failure.
-#![allow(dead_code)]
+//! A software TPM (swtpm) for tests, here so that the Agent's tests can use the same one as the
+//! provider's: a real TPM 2.0 implementation, started with an empty state for each test, so the
+//! dictionary-attack counter of one test never reaches another. Without `swtpm` the tests say so and
+//! return; set `LH_REQUIRE_SWTPM=1` (CI does) to make its absence a failure.
+//!
+//! Only with the cargo feature `testing`, which nothing but a test turns on.
+//!
+//! C4 component: `tpmKeys` ([workspace.dsl](https://github.com/LinuxHello/linux-hello-architecture/blob/main/workspace.dsl))
 
 use std::net::TcpListener;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-use linuxhello_tpm_provider::keys::Tpm;
+use crate::keys::Tpm;
 
 /// A running software TPM, stopped when dropped.
 pub struct SoftTpm {
+    /// The swtpm process.
     child: Child,
+    /// The port of its data channel; the control channel is the next one.
     pub port: u16,
+    /// Its state directory, removed with it.
     _state: tempfile::TempDir,
 }
 

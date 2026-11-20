@@ -2,3 +2,7 @@
 # /usr/lib/sysusers.d/linuxhello.conf. The group tss gives access to /dev/tpmrm0.
 u linuxhello - "Linux Hello Agent" /var/lib/linuxhello /usr/sbin/nologin
 m linuxhello tss
+# The user of the TPM provider, which runs the TPM commands for the Agent: no login, no shell, no
+# home. The group tss gives access to /dev/tpmrm0.
+u linuxhello-tpm - "Linux Hello TPM provider" - /usr/sbin/nologin
+m linuxhello-tpm tss

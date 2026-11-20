@@ -17,12 +17,14 @@ use std::sync::Arc;
 
 use linuxhello_agent::audit::Audit;
 use linuxhello_agent::bus::{bus_alive, serve_with_extras, Extras};
-use linuxhello_agent::methods::pin::{NoVerifier, PinInbox, PinMethod, PinVerifier};
+use linuxhello_agent::methods::pin::tpm::TpmVerifier;
+use linuxhello_agent::methods::pin::{PinInbox, PinMethod, PinVerifier};
 use linuxhello_agent::methods::{face::FaceMethod, fingerprint::FingerprintMethod, username_of};
 use linuxhello_agent::notify::{watchdog_interval, Notifier};
 use linuxhello_agent::orchestrator::Method;
 use linuxhello_agent::pinlock::service::{wall_clock_seconds, Limits, PinLockService};
 use linuxhello_agent::pinlock::store::PinLockFile;
+use linuxhello_agent::pinrecord::PinRecordStore;
 use linuxhello_agent::pinsocket::PinSocket;
 use linuxhello_agent::policy::load;
 use linuxhello_agent::policy::user_store::UserPolicyStore;
@@ -41,7 +43,7 @@ const PIN_SOCKET: &str = "/run/linuxhello/pin.sock";
 /// The methods an authentication of the user `subject` runs: face and fingerprint when the
 /// account has a name in `/etc/passwd` (a method that is not installed reports itself unavailable
 /// and is not offered), and the PIN. The PIN method is offered only when a verifier can check a PIN,
-/// and none can yet: the TPM side is not built.
+/// and none can yet: no user has a PIN record and the provider is not started by anything.
 fn methods_of(
     subject: u32,
     inbox: &Arc<PinInbox>,
@@ -62,6 +64,11 @@ fn methods_of(
     }
     methods
 }
+
+/// The socket of the TPM provider (ADR-0021): the Agent reaches the TPM through it and links no TPM
+/// library. Nothing serves it yet, so a PIN cannot be checked until the provider runs; and until a
+/// user has a record the PIN method is not offered to them at all.
+const TPM_SOCKET: &str = "/run/linuxhello-tpm/tpm.sock";
 
 /// The file that keeps the PIN lockout records across a restart, in the state directory.
 const PIN_LOCK_FILE: &str = "/var/lib/linuxhello/pinlock.toml";
@@ -112,7 +119,10 @@ fn serve_pin_socket(inbox: Arc<PinInbox>) -> Option<Arc<PinSocket>> {
 async fn run() -> zbus::Result<()> {
     let inbox = Arc::new(PinInbox::default());
     let lock = Arc::new(pin_lock());
-    let verifier: Arc<dyn PinVerifier> = Arc::new(NoVerifier);
+    let verifier: Arc<dyn PinVerifier> = Arc::new(TpmVerifier::new(
+        PinRecordStore::new(USER_POLICY_ROOT, rustix::process::getuid().as_raw()),
+        TPM_SOCKET,
+    ));
     let pin_socket = serve_pin_socket(Arc::clone(&inbox));
     let store = UserPolicyStore::new(USER_POLICY_ROOT).with_admin_layer(ADMIN_POLICY_DIR, 0);
     let extras = Extras {

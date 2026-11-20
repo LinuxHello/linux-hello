@@ -1,17 +1,15 @@
 //! The provider over its socket, with a software TPM behind it: what the Agent can do through the
 //! client, who is served, and what happens to a client that sends nonsense.
 
-mod common;
-
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::sync::mpsc;
 use std::time::Duration;
 
-use common::SoftTpm;
 use linuxhello_tpm_provider::client::{ClientError, TpmClient};
 use linuxhello_tpm_provider::server::Server;
+use linuxhello_tpm_provider::testing::SoftTpm;
 use linuxhello_tpm_provider::wire::{Auth, AUTH_BYTES};
 use zeroize::Zeroizing;
 
