@@ -377,3 +377,50 @@ fn private_tempdir() -> tempfile::TempDir {
         .tempdir()
         .expect("a temporary directory")
 }
+
+/// P-36 (and the rule of ADR-0021 that Linux Hello never changes the TPM's own anti-hammering
+/// settings): nothing in the Agent or the TPM provider calls the commands that set the dictionary
+/// attack parameters or clear its counter, and neither holds the lockout authorisation. The TPM's
+/// limit is the owner's to set; Linux Hello only reads it and keeps its own limit below it.
+#[test]
+fn agent_never_changes_tpm_lockout_parameters() {
+    let forbidden = [
+        "dictionary_attack_parameters",
+        "DictionaryAttackParameters",
+        "dictionary_attack_lock_reset",
+        "DictionaryAttackLockReset",
+        "Hierarchy::Lockout",
+        "lockout_auth",
+        "LockoutAuth",
+    ];
+    let crates = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let mut files = Vec::new();
+    for krate in ["linuxhello-agent", "linuxhello-tpm-provider"] {
+        let mut pending = vec![crates.join(krate).join("src")];
+        while let Some(dir) = pending.pop() {
+            for entry in std::fs::read_dir(&dir).unwrap().flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    pending.push(path);
+                } else if path.extension().is_some_and(|e| e == "rs") {
+                    files.push(path);
+                }
+            }
+        }
+    }
+    assert!(
+        files.len() > 20,
+        "the scan must see the sources, saw {}",
+        files.len()
+    );
+    for path in files {
+        let text = std::fs::read_to_string(&path).unwrap();
+        for word in forbidden {
+            assert!(
+                !text.contains(word),
+                "{} mentions {word}: Linux Hello must not change the TPM's lockout settings",
+                path.display()
+            );
+        }
+    }
+}

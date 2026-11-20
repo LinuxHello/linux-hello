@@ -4,12 +4,16 @@
 
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::PathBuf;
-use std::sync::mpsc;
+use std::sync::{mpsc, Arc};
 
 use linuxhello_agent::methods::pin::tpm::{EnrolError, TpmVerifier};
-use linuxhello_agent::methods::pin::{PinVerifier, VerifyError};
+use linuxhello_agent::methods::pin::{PinInbox, PinMethod, PinVerifier, VerifyError};
+use linuxhello_agent::orchestrator::{Cancel, Method, MethodEnd};
 use linuxhello_agent::pinkdf::Params;
+use linuxhello_agent::pinlock::service::{Limits, PinLockService};
+use linuxhello_agent::pinlock::store::PinLockFile;
 use linuxhello_agent::pinrecord::PinRecordStore;
+use linuxhello_tpm_provider::client::TpmClient;
 use linuxhello_tpm_provider::server::Server;
 use linuxhello_tpm_provider::testing::SoftTpm;
 
@@ -27,6 +31,8 @@ fn my_gid() -> u32 {
 struct Stack {
     verifier: TpmVerifier,
     records: PathBuf,
+    /// The provider's socket.
+    socket: PathBuf,
     _soft: SoftTpm,
     _dir: tempfile::TempDir,
     _stop: mpsc::Sender<()>,
@@ -49,6 +55,7 @@ fn stack() -> Option<Stack> {
     Some(Stack {
         verifier,
         records,
+        socket,
         _soft: soft,
         _dir: dir,
         _stop: stop,
@@ -368,4 +375,71 @@ fn private_tempdir() -> tempfile::TempDir {
         .permissions(std::fs::Permissions::from_mode(0o700))
         .tempdir()
         .expect("a temporary directory")
+}
+
+/// The time of the test below: second 1000.
+fn at_1000() -> u64 {
+    1_000
+}
+
+#[test]
+fn one_users_failed_pins_cannot_lock_out_another_user() {
+    let Some(s) = stack() else { return };
+    s.verifier.enrol(1000, b"pin-of-a").unwrap();
+    s.verifier.enrol(1001, b"pin-of-b").unwrap();
+    // The Agent's limit as the Agent derives it: the policy asks for five, the TPM allows what it
+    // allows (the software TPM's default is three) and the Agent keeps its own limit below it.
+    let tpm_tries = TpmClient::new(&s.socket).limits().unwrap().max_tries;
+    let (limits, _) = Limits {
+        max_attempts: 5,
+        lockout_secs: 600,
+        max_lockout_secs: 86_400,
+    }
+    .capped_by_tpm(tpm_tries);
+    let dir = private_tempdir();
+    let lock = Arc::new(PinLockService::start(
+        PinLockFile::new(dir.path().join("pinlock.toml"), me()),
+        limits,
+    ));
+    let inbox = Arc::new(PinInbox::default());
+    let verifier: Arc<dyn PinVerifier> = Arc::new(
+        TpmVerifier::new(PinRecordStore::new(&s.records, me()), &s.socket)
+            .with_params(Params::MINIMUM),
+    );
+    let mut method_a = PinMethod::new(
+        1000,
+        Arc::clone(&inbox),
+        Arc::clone(&lock),
+        Arc::clone(&verifier),
+        at_1000,
+    );
+    let mut method_b = PinMethod::new(
+        1001,
+        Arc::clone(&inbox),
+        Arc::clone(&lock),
+        Arc::clone(&verifier),
+        at_1000,
+    );
+    // User A keeps guessing, far more often than the TPM would stand.
+    let mut reached_the_tpm = 0;
+    let mut stopped_by_the_agent = false;
+    for _ in 0..(tpm_tries + 5) {
+        assert!(inbox.deliver(1000, zeroize::Zeroizing::new(b"wrong-guess".to_vec())));
+        match method_a.run(&Cancel::default()) {
+            MethodEnd::Failure(_) => reached_the_tpm += 1,
+            MethodEnd::LockedOut(_) => {
+                stopped_by_the_agent = true;
+                break;
+            }
+            other => panic!("unexpected end: {other:?}"),
+        }
+    }
+    assert!(stopped_by_the_agent, "the Agent's own counter must stop A");
+    assert!(
+        reached_the_tpm < tpm_tries,
+        "A made {reached_the_tpm} wrong tries at a TPM that locks everybody at {tpm_tries}"
+    );
+    // B's right PIN still opens B's key: the TPM is not locked out.
+    assert!(inbox.deliver(1001, zeroize::Zeroizing::new(b"pin-of-b".to_vec())));
+    assert_eq!(method_b.run(&Cancel::default()), MethodEnd::Success);
 }
