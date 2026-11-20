@@ -12,8 +12,8 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use crate::wire::{
-    decode_response, encode_request, read_frame, write_frame, Auth, Blobs, Request, STATUS_LOCKED,
-    STATUS_OK, STATUS_WRONG,
+    decode_limits, decode_response, encode_request, read_frame, write_frame, Auth, Blobs, Request,
+    TpmLimits, STATUS_LOCKED, STATUS_OK, STATUS_WRONG,
 };
 
 /// How long a call to the provider may take: a TPM command takes a fraction of a second, and a
@@ -86,8 +86,28 @@ impl TpmClient {
         }
     }
 
+    /// The limits the TPM reports for wrong authorisations.
+    ///
+    /// # Errors
+    ///
+    /// [`ClientError::Locked`] in lockout, [`ClientError::Failed`] otherwise.
+    pub fn limits(&self) -> Result<TpmLimits, ClientError> {
+        let answer = self.exchange(&Request::Limits)?;
+        match decode_limits(&answer) {
+            Some(Ok(limits)) => Ok(limits),
+            Some(Err(STATUS_LOCKED)) => Err(ClientError::Locked),
+            _ => Err(ClientError::Failed),
+        }
+    }
+
     /// One request, one answer, on a fresh connection.
     fn call(&self, request: &Request) -> Result<crate::wire::Response, ClientError> {
+        let answer = self.exchange(request)?;
+        decode_response(&answer).ok_or(ClientError::Failed)
+    }
+
+    /// The body the provider answers to `request`, on a fresh connection.
+    fn exchange(&self, request: &Request) -> Result<Vec<u8>, ClientError> {
         let body = encode_request(request).ok_or(ClientError::Failed)?;
         let mut stream = UnixStream::connect(&self.path).map_err(|_| ClientError::Failed)?;
         stream
@@ -98,6 +118,6 @@ impl TpmClient {
         let answer = read_frame(&mut stream)
             .map_err(|_| ClientError::Failed)?
             .ok_or(ClientError::Failed)?;
-        decode_response(&answer).ok_or(ClientError::Failed)
+        Ok(answer.to_vec())
     }
 }

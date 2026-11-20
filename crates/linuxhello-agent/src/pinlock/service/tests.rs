@@ -173,3 +173,61 @@ fn limits_are_the_defaults_without_an_admin_file_and_in_the_pin_only_state() {
     let broken = admin_with(&dir, &[("10.toml", "this is not a policy")]);
     assert_eq!(limits_of(&broken), defaults);
 }
+
+#[test]
+fn the_agents_limit_stays_below_the_tpms() {
+    let policy = Limits {
+        max_attempts: 5,
+        ..LIMITS
+    };
+    // A TPM that locks after 3 tries: the Agent allows 1, so its own lockout acts first.
+    assert_eq!(
+        policy.capped_by_tpm(3),
+        (
+            Limits {
+                max_attempts: 1,
+                ..policy
+            },
+            Some(TpmCap {
+                tpm_tries: 3,
+                allowed: 1
+            })
+        )
+    );
+    // 8 tries: the Agent allows 4, below the policy's 5.
+    assert_eq!(policy.capped_by_tpm(8).0.max_attempts, 4);
+    // 10 tries: half is 5, the policy's own, so nothing changes.
+    assert_eq!(policy.capped_by_tpm(10), (policy, None));
+    // A TPM that allows more, or a policy that asks for less, is left alone.
+    assert_eq!(policy.capped_by_tpm(200), (policy, None));
+    assert_eq!(LIMITS.capped_by_tpm(4), (LIMITS, None));
+    // A TPM that reports 0 or 1 never takes the limit below one try.
+    assert_eq!(policy.capped_by_tpm(0).0.max_attempts, 1);
+    assert_eq!(policy.capped_by_tpm(1).0.max_attempts, 1);
+}
+
+#[test]
+fn a_capped_service_locks_at_the_lowered_limit_and_says_so() {
+    let dir = TempDir::new().unwrap();
+    let policy = Limits {
+        max_attempts: 5,
+        ..LIMITS
+    };
+    let service = PinLockService::start_capped(file_in(&dir), policy, Some(4));
+    assert_eq!(
+        service.tpm_cap(),
+        Some(TpmCap {
+            tpm_tries: 4,
+            allowed: 2
+        })
+    );
+    assert_eq!(service.record_failure(1000, 1_000), Ok(0));
+    assert_eq!(
+        service.record_failure(1000, 1_000),
+        Ok(600),
+        "locked at 2, not 5"
+    );
+
+    let uncapped = PinLockService::start_capped(file_in(&TempDir::new().unwrap()), policy, None);
+    assert_eq!(uncapped.tpm_cap(), None);
+}

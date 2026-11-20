@@ -115,3 +115,41 @@ fn frames_have_a_length_and_a_limit() {
     assert!(write_frame(&mut Vec::new(), &[]).is_err());
     assert!(write_frame(&mut Vec::new(), &vec![0; MAX_FRAME + 1]).is_err());
 }
+
+#[test]
+fn limits_survive_encoding() {
+    let limits = TpmLimits {
+        max_tries: 3,
+        interval_secs: 1000,
+        recovery_secs: 1000,
+    };
+    let body = encode_limits(&limits);
+    assert_eq!(body.len(), 13);
+    assert_eq!(decode_limits(&body), Some(Ok(limits)));
+}
+
+#[test]
+fn a_limits_answer_that_is_not_exactly_one_answer_is_refused() {
+    let body = encode_limits(&TpmLimits {
+        max_tries: 3,
+        interval_secs: 1000,
+        recovery_secs: 1000,
+    });
+    for cut in 2..13 {
+        assert_eq!(decode_limits(&body[..cut]), None, "cut at {cut}");
+    }
+    let mut longer = body.clone();
+    longer.push(0);
+    assert_eq!(decode_limits(&longer), None);
+    assert_eq!(decode_limits(&[STATUS_LOCKED]), Some(Err(STATUS_LOCKED)));
+    assert_eq!(decode_limits(&[STATUS_OK]), None);
+    assert_eq!(decode_limits(&[9]), None);
+    assert_eq!(decode_limits(&[]), None);
+}
+
+#[test]
+fn a_limits_request_is_one_byte() {
+    assert_eq!(&**encode_request(&Request::Limits).unwrap(), &[4]);
+    assert!(matches!(decode_request(&[4]), Some(Request::Limits)));
+    assert!(decode_request(&[4, 0]).is_none());
+}

@@ -24,6 +24,7 @@
 use std::str::FromStr;
 
 use tss_esapi::constants::response_code::Tss2ResponseCodeKind;
+use tss_esapi::constants::PropertyTag;
 use tss_esapi::handles::KeyHandle;
 use tss_esapi::interface_types::key_bits::RsaKeyBits;
 use tss_esapi::interface_types::resource_handles::Hierarchy;
@@ -32,6 +33,8 @@ use tss_esapi::structures::{Auth, Private, Public, RsaExponent, SymmetricDefinit
 use tss_esapi::traits::{Marshall, UnMarshall};
 use tss_esapi::utils::create_restricted_decryption_rsa_public;
 use tss_esapi::{Context, TctiNameConf};
+
+use crate::wire::TpmLimits;
 
 pub use crate::wire::{Blobs, AUTH_BYTES};
 
@@ -79,6 +82,25 @@ impl Tpm {
             .map_err(failed)?
             .key_handle;
         Ok(Self { context, primary })
+    }
+
+    /// The limits the TPM reports for wrong authorisations. Only reads; changes nothing.
+    ///
+    /// # Errors
+    ///
+    /// [`TpmError::Failed`] when the TPM does not report a value.
+    pub fn limits(&mut self) -> Result<TpmLimits, TpmError> {
+        let mut read = |tag: PropertyTag, name: &str| -> Result<u32, TpmError> {
+            self.context
+                .get_tpm_property(tag)
+                .map_err(classify)?
+                .ok_or_else(|| TpmError::Failed(format!("the TPM does not report {name}")))
+        };
+        Ok(TpmLimits {
+            max_tries: read(PropertyTag::MaxAuthFail, "its attempt limit")?,
+            interval_secs: read(PropertyTag::LockoutInterval, "its lockout interval")?,
+            recovery_secs: read(PropertyTag::LockoutRecovery, "its lockout recovery")?,
+        })
     }
 
     /// Makes a root key whose authorisation is `auth`.

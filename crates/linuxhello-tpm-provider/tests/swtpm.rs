@@ -10,6 +10,7 @@ use std::process::{Command, Stdio};
 
 use linuxhello_tpm_provider::keys::{Blobs, TpmError, AUTH_BYTES};
 use linuxhello_tpm_provider::testing::SoftTpm;
+use linuxhello_tpm_provider::wire::TpmLimits;
 
 /// An authorisation value of 32 bytes made of `b`.
 fn auth(b: u8) -> [u8; AUTH_BYTES] {
@@ -99,6 +100,49 @@ fn damaged_blobs_are_an_error_and_not_a_wrong_pin() {
             Err(TpmError::Failed(_))
         ));
     }
+}
+
+/// Sets the dictionary-attack parameters of the TPM to `tries`, `interval` and `recovery` with the
+/// tools of tpm2-tools; `None` when they are not installed or refuse.
+fn set_limits(soft: &SoftTpm, tries: u32, interval: u32, recovery: u32) -> Option<()> {
+    let status = Command::new("tpm2_dictionarylockout")
+        .args([
+            "--setup-parameters".to_string(),
+            format!("--max-tries={tries}"),
+            format!("--recovery-time={interval}"),
+            format!("--lockout-recovery-time={recovery}"),
+        ])
+        .env(
+            "TPM2TOOLS_TCTI",
+            format!("swtpm:host=127.0.0.1,port={}", soft.port),
+        )
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .ok()?;
+    status.success().then_some(())
+}
+
+#[test]
+fn the_tpm_reports_its_own_dictionary_attack_limits() {
+    let Some(soft) = SoftTpm::start() else { return };
+    if set_limits(&soft, 7, 111, 222).is_none() {
+        assert!(
+            std::env::var("LH_REQUIRE_SWTPM").is_err(),
+            "tpm2-tools are required here"
+        );
+        eprintln!("SKIPPED: tpm2_dictionarylockout is not installed or refused");
+        return;
+    }
+    let mut tpm = soft.open();
+    assert_eq!(
+        tpm.limits(),
+        Ok(TpmLimits {
+            max_tries: 7,
+            interval_secs: 111,
+            recovery_secs: 222
+        })
+    );
 }
 
 /// Sets the dictionary-attack parameters of the TPM so that three wrong authorisations lock it, with

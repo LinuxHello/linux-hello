@@ -790,8 +790,9 @@ impl Api {
     /// The work of [`Api::get_status`], with the detail kept.
     fn status_unaudited(&self, caller: &Caller) -> Result<Vec<StatusItem>, ApiError> {
         use linuxhello_dbus::status::{
-            context_unsatisfiable_on_the_bus, pin_locked_sentence, Severity, PIN_LOCKED,
-            PIN_LOCK_DAMAGED, PIN_LOCK_DAMAGED_SENTENCE, POLICY_PIN_ONLY, POLICY_PIN_ONLY_SENTENCE,
+            context_unsatisfiable_on_the_bus, pin_locked_sentence, tpm_limit_low_sentence,
+            Severity, PIN_LOCKED, PIN_LOCK_DAMAGED, PIN_LOCK_DAMAGED_SENTENCE, POLICY_PIN_ONLY,
+            POLICY_PIN_ONLY_SENTENCE, TPM_LIMIT_LOW,
         };
         let uid = caller.uid.ok_or(ApiError::Denied)?;
         let policy = self.policy_of(uid)?;
@@ -820,6 +821,14 @@ impl Api {
                     detail: Some(format!("the context {context}")),
                 });
             }
+        }
+        if let Some(cap) = self.pin_lock.as_ref().and_then(|lock| lock.tpm_cap()) {
+            items.push(StatusItem {
+                code: TPM_LIMIT_LOW.to_string(),
+                severity: Severity::Warning,
+                sentence: tpm_limit_low_sentence(cap.tpm_tries, cap.allowed),
+                detail: None,
+            });
         }
         if let Some(lock) = &self.pin_lock {
             match lock.status_of(uid, (self.clock)()) {
@@ -1621,6 +1630,37 @@ mod tests {
             assert_eq!(status[0].1, "severe");
             assert!(!format!("{status:?}").contains("pinlock"), "no file name");
         }
+    }
+
+    #[test]
+    fn status_says_when_the_tpm_lowered_the_pin_limit() {
+        use crate::pinlock::service::{Limits, PinLockService};
+        use crate::pinlock::store::PinLockFile;
+        let tmp = TempDir::new().unwrap();
+        let (store, _admin) = store_with_admin(&tmp);
+        let uid = rustix::process::getuid().as_raw();
+        let limits = Limits {
+            max_attempts: 5,
+            lockout_secs: 900,
+            max_lockout_secs: 86_400,
+        };
+        let lock = PinLockService::start_capped(
+            PinLockFile::new(tmp.path().join("pinlock.toml"), uid),
+            limits,
+            Some(3),
+        );
+        let api = Api::new(Config::new(vec![]))
+            .with_user_policy_store(Some(store))
+            .with_pin_lock(Some(lock))
+            .with_clock(at_1000);
+        let status = api.get_status(status_caller(1000)).unwrap();
+        assert_eq!(status.len(), 1, "{status:?}");
+        assert_eq!(status[0].0, "tpm-dictionary-limit-low");
+        assert_eq!(status[0].1, "warning");
+        assert!(
+            status[0].2.contains('3') && status[0].2.contains('1'),
+            "{status:?}"
+        );
     }
 
     #[test]

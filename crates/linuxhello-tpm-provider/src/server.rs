@@ -19,8 +19,8 @@ use std::time::Duration;
 
 use crate::keys::{Tpm, TpmError};
 use crate::wire::{
-    decode_request, encode_response, read_frame, write_frame, Blobs, Request, Response,
-    STATUS_FAILED, STATUS_LOCKED, STATUS_OK, STATUS_WRONG,
+    decode_request, encode_limits, encode_response, read_frame, write_frame, Blobs, Request,
+    Response, STATUS_FAILED, STATUS_LOCKED, STATUS_OK, STATUS_WRONG,
 };
 
 /// How long a client may take to send its request: a slow or silent one is dropped.
@@ -126,6 +126,15 @@ impl Server {
         let Some(request) = decode_request(&body) else {
             return;
         };
+        if matches!(request, Request::Limits) {
+            let body = match self.tpm.limits() {
+                Ok(limits) => encode_limits(&limits),
+                Err(TpmError::Locked) => vec![STATUS_LOCKED],
+                Err(TpmError::Failed(_)) => vec![STATUS_FAILED],
+            };
+            let _ = write_frame(&mut stream, &body);
+            return;
+        }
         let answer = self.answer(request);
         if let Some(body) = encode_response(&answer) {
             let _ = write_frame(&mut stream, &body);
@@ -135,6 +144,7 @@ impl Server {
     /// What the TPM says to a request.
     fn answer(&mut self, request: Request) -> Response {
         let outcome = match request {
+            Request::Limits => Err(TpmError::Failed("limits are answered elsewhere".into())),
             Request::Enrol { auth } => self.tpm.enrol(&auth).map(Some).map(|b| (STATUS_OK, b)),
             Request::Verify { blobs, auth } => self
                 .tpm

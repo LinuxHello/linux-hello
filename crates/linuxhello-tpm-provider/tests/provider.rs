@@ -63,6 +63,18 @@ fn the_agent_enrols_verifies_and_changes_the_pin_through_the_socket() {
 }
 
 #[test]
+fn the_agent_reads_the_tpms_limits_through_the_socket() {
+    let Some(soft) = SoftTpm::start() else { return };
+    let (path, _dir, _stop) = provider(&soft, me());
+    let limits = TpmClient::new(&path).limits().unwrap();
+    assert!(
+        limits.max_tries > 0,
+        "a TPM that never locks reports no limit here"
+    );
+    assert!(limits.interval_secs > 0 && limits.recovery_secs > 0);
+}
+
+#[test]
 fn a_user_who_is_not_the_agent_is_not_served() {
     let Some(soft) = SoftTpm::start() else { return };
     // The provider serves another user id; this test's connection is refused by closing it.
