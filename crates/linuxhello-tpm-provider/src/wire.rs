@@ -47,8 +47,22 @@ pub struct Blobs {
 /// An authorisation value, wiped when dropped.
 pub type Auth = Zeroizing<[u8; AUTH_BYTES]>;
 
+/// What the TPM says about its own dictionary-attack lockout: the limits it enforces on wrong
+/// authorisations, for every key at once.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TpmLimits {
+    /// How many wrong authorisations the TPM allows before it locks (`TPM2_PT_MAX_AUTH_FAIL`).
+    pub max_tries: u32,
+    /// Seconds after which one wrong authorisation stops counting (`TPM2_PT_LOCKOUT_INTERVAL`).
+    pub interval_secs: u32,
+    /// Seconds a lockout lasts (`TPM2_PT_LOCKOUT_RECOVERY`).
+    pub recovery_secs: u32,
+}
+
 /// What the Agent asks.
 pub enum Request {
+    /// The TPM's own lockout limits. Changes nothing.
+    Limits,
     /// Make a root key whose authorisation is `auth`.
     Enrol {
         /// The authorisation of the new key.
@@ -86,6 +100,8 @@ const OP_ENROL: u8 = 1;
 const OP_VERIFY: u8 = 2;
 /// The operation byte of [`Request::ChangeAuth`].
 const OP_CHANGE_AUTH: u8 = 3;
+/// The operation byte of [`Request::Limits`].
+const OP_LIMITS: u8 = 4;
 
 /// A cursor over a body: takes length-prefixed fields and says when there are none left.
 struct Reader<'a>(&'a [u8]);
@@ -137,6 +153,7 @@ fn put(body: &mut Vec<u8>, field: &[u8]) -> Option<()> {
 pub fn encode_request(request: &Request) -> Option<Zeroizing<Vec<u8>>> {
     let mut body = Zeroizing::new(Vec::new());
     match request {
+        Request::Limits => body.push(OP_LIMITS),
         Request::Enrol { auth } => {
             body.push(OP_ENROL);
             put(&mut body, &**auth)?;
@@ -163,6 +180,7 @@ pub fn encode_request(request: &Request) -> Option<Zeroizing<Vec<u8>>> {
 pub fn decode_request(body: &[u8]) -> Option<Request> {
     let mut reader = Reader(body);
     let request = match reader.byte()? {
+        OP_LIMITS => Request::Limits,
         OP_ENROL => Request::Enrol {
             auth: reader.auth()?,
         },
@@ -204,6 +222,34 @@ pub fn decode_response(body: &[u8]) -> Option<Response> {
         Some(reader.blobs()?)
     };
     reader.done().then_some(Response { status, blobs })
+}
+
+/// The body of an answer to [`Request::Limits`]: [`STATUS_OK`] and the three numbers, four bytes each.
+pub fn encode_limits(limits: &TpmLimits) -> Vec<u8> {
+    let mut body = vec![STATUS_OK];
+    for number in [limits.max_tries, limits.interval_secs, limits.recovery_secs] {
+        body.extend_from_slice(&number.to_be_bytes());
+    }
+    body
+}
+
+/// The answer to [`Request::Limits`] in `body`: the limits, or the status when it is a refusal.
+/// `None` for anything that is not exactly one such answer.
+pub fn decode_limits(body: &[u8]) -> Option<Result<TpmLimits, u8>> {
+    match body {
+        [STATUS_OK, rest @ ..] if rest.len() == 12 => {
+            let number = |at: usize| {
+                u32::from_be_bytes([rest[at], rest[at + 1], rest[at + 2], rest[at + 3]])
+            };
+            Some(Ok(TpmLimits {
+                max_tries: number(0),
+                interval_secs: number(4),
+                recovery_secs: number(8),
+            }))
+        }
+        [status @ (STATUS_WRONG | STATUS_LOCKED | STATUS_FAILED)] => Some(Err(*status)),
+        _ => None,
+    }
 }
 
 /// Reads one frame. `None` for a length of zero or over [`MAX_FRAME`], and an error for a stream that
