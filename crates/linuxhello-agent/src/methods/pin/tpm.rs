@@ -21,6 +21,7 @@ use linuxhello_tpm_provider::client::{ClientError, TpmClient};
 use linuxhello_tpm_provider::wire::Auth;
 use zeroize::Zeroizing;
 
+use super::enrol::PinEnrolment;
 use super::{PinVerifier, VerifyError};
 use crate::pinkdf::{stretch, KdfError, Params, SALT_BYTES};
 use crate::pinrecord::{PinRecord, PinRecordStore, RecordError};
@@ -166,4 +167,18 @@ fn random_salt() -> Option<[u8; SALT_BYTES]> {
         .read_to_end(&mut bytes)
         .ok()?;
     bytes.try_into().ok()
+}
+
+impl PinEnrolment for TpmVerifier {
+    fn has_pin(&self, uid: u32) -> bool {
+        matches!(self.records.load(uid), Ok(Some(_)))
+    }
+
+    fn set(&self, uid: u32, pin: &[u8]) -> Result<(), EnrolError> {
+        self.enrol(uid, pin)
+    }
+
+    fn change(&self, uid: u32, old: &[u8], new: &[u8]) -> Result<(), EnrolError> {
+        self.change_pin(uid, old, new)
+    }
 }

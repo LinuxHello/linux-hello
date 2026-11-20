@@ -16,7 +16,7 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 use linuxhello_agent::audit::Audit;
-use linuxhello_agent::bus::{bus_alive, serve_with_extras, Extras};
+use linuxhello_agent::bus::{bus_alive, serve_with_extras, Extras, PinChange};
 use linuxhello_agent::methods::pin::tpm::TpmVerifier;
 use linuxhello_agent::methods::pin::{PinInbox, PinMethod, PinVerifier};
 use linuxhello_agent::methods::{face::FaceMethod, fingerprint::FingerprintMethod, username_of};
@@ -127,16 +127,21 @@ fn serve_pin_socket(inbox: Arc<PinInbox>) -> Option<Arc<PinSocket>> {
 async fn run() -> zbus::Result<()> {
     let inbox = Arc::new(PinInbox::default());
     let lock = Arc::new(pin_lock());
-    let verifier: Arc<dyn PinVerifier> = Arc::new(TpmVerifier::new(
+    let tpm = Arc::new(TpmVerifier::new(
         PinRecordStore::new(USER_POLICY_ROOT, rustix::process::getuid().as_raw()),
         TPM_SOCKET,
     ));
+    let verifier: Arc<dyn PinVerifier> = tpm.clone();
     let pin_socket = serve_pin_socket(Arc::clone(&inbox));
     let store = UserPolicyStore::new(USER_POLICY_ROOT).with_admin_layer(ADMIN_POLICY_DIR, 0);
     let extras = Extras {
         audit: Some(Audit::journal()),
         pin_socket,
         pin_lock: Some(Arc::clone(&lock)),
+        pin_change: Some(PinChange {
+            inbox: Arc::clone(&inbox),
+            enrolment: tpm,
+        }),
         methods: Some(Arc::new(move |subject| {
             methods_of(subject, &inbox, &lock, &verifier)
         })),

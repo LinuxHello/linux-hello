@@ -394,7 +394,9 @@ fn pin_is_never_a_dbus_message_body() {
         // nothing else is: `GetPinRules` returns the rules a PIN must follow (length and character
         // classes), never a PIN (ADR-0014, amendment 2026-11-17, point 3), and `ExpectPin`
         // announces that the opener of a prompt is about to send one on the PIN socket; it carries
-        // a prompt id and nothing secret (ADR-0021, amendment 2026-11-18).
+        // a prompt id and nothing secret (ADR-0021, amendment 2026-11-18); `SetPin` and `ChangePin`
+        // start setting and changing the caller's PIN and carry a prompt id alone: the PINs go on
+        // the socket (ADR-0021, amendment 2026-11-20).
         let names_only = {
             let mut text = xml.clone();
             while let (Some(start), Some(end)) = (text.find("<!--"), text.find("-->")) {
@@ -403,7 +405,7 @@ fn pin_is_never_a_dbus_message_body() {
             text
         };
         for name in names_only.split(['"', '\'']).skip(1).step_by(2) {
-            if name == "GetPinRules" || name == "ExpectPin" {
+            if ["GetPinRules", "ExpectPin", "SetPin", "ChangePin"].contains(&name) {
                 continue;
             }
             for word in words_of(name) {

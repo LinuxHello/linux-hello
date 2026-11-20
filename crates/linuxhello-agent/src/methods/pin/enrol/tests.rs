@@ -1,0 +1,192 @@
+//! Tests of setting and changing a PIN with a stand-in for the TPM and a real lock on disk.
+
+use std::collections::HashMap;
+use std::sync::Mutex;
+
+use tempfile::TempDir;
+
+use super::*;
+use crate::pinlock::service::Limits;
+use crate::pinlock::store::PinLockFile;
+
+/// A stand-in that keeps one PIN per user in memory and counts its calls.
+#[derive(Default)]
+struct Memory {
+    pins: Mutex<HashMap<u32, Vec<u8>>>,
+    calls: Mutex<u32>,
+}
+
+impl PinEnrolment for Memory {
+    fn has_pin(&self, uid: u32) -> bool {
+        self.pins.lock().unwrap().contains_key(&uid)
+    }
+
+    fn set(&self, uid: u32, pin: &[u8]) -> Result<(), EnrolError> {
+        *self.calls.lock().unwrap() += 1;
+        let mut pins = self.pins.lock().unwrap();
+        if pins.contains_key(&uid) {
+            return Err(EnrolError::AlreadyEnrolled);
+        }
+        pins.insert(uid, pin.to_vec());
+        Ok(())
+    }
+
+    fn change(&self, uid: u32, old: &[u8], new: &[u8]) -> Result<(), EnrolError> {
+        *self.calls.lock().unwrap() += 1;
+        let mut pins = self.pins.lock().unwrap();
+        match pins.get_mut(&uid) {
+            None => Err(EnrolError::NotEnrolled),
+            Some(current) if current.as_slice() != old => Err(EnrolError::WrongPin),
+            Some(current) => {
+                *current = new.to_vec();
+                Ok(())
+            }
+        }
+    }
+}
+
+/// Two wrong PINs start a lockout of ten minutes.
+const LIMITS: Limits = Limits {
+    max_attempts: 2,
+    lockout_secs: 600,
+    max_lockout_secs: 86_400,
+};
+
+/// The time of every test.
+fn at_1000() -> u64 {
+    1_000
+}
+
+/// Everything a test needs.
+struct Setup {
+    inbox: Arc<PinInbox>,
+    memory: Memory,
+    lock: PinLockService,
+    wait: PinWait,
+    _dir: TempDir,
+}
+
+fn setup() -> Setup {
+    let dir = TempDir::new().unwrap();
+    let uid = std::fs::metadata(dir.path())
+        .map(|m| std::os::unix::fs::MetadataExt::uid(&m))
+        .unwrap();
+    let lock = PinLockService::start(
+        PinLockFile::new(dir.path().join("pinlock.toml"), uid),
+        LIMITS,
+    );
+    let inbox = Arc::new(PinInbox::default());
+    let wait = inbox.wait_for(1000);
+    Setup {
+        inbox,
+        memory: Memory::default(),
+        lock,
+        wait,
+        _dir: dir,
+    }
+}
+
+impl Setup {
+    fn job(&self) -> Job<'_> {
+        Job {
+            subject: 1000,
+            length: (4, 8),
+            wait: Duration::from_millis(300),
+            lock: &self.lock,
+            enrolment: &self.memory,
+            clock: at_1000,
+        }
+    }
+
+    fn send(&self, pin: &[u8]) {
+        assert!(self.inbox.deliver(1000, Zeroizing::new(pin.to_vec())));
+    }
+}
+
+#[test]
+fn set_pin_makes_the_pin_work() {
+    let s = setup();
+    s.send(b"1234");
+    let outcome = run_set(&s.job(), &s.wait, &Cancel::default());
+    assert_eq!(outcome, Outcome::new(PromptResult::Success));
+    assert!(s.memory.has_pin(1000));
+}
+
+#[test]
+fn set_pin_without_a_pin_times_out_and_writes_nothing() {
+    let s = setup();
+    let outcome = run_set(&s.job(), &s.wait, &Cancel::default());
+    assert_eq!(outcome.result, PromptResult::Failure);
+    assert_eq!(outcome.reason, PromptReason::Timeout);
+    assert_eq!(*s.memory.calls.lock().unwrap(), 0);
+}
+
+#[test]
+fn a_pin_outside_the_policys_length_is_refused_before_the_tpm_is_asked() {
+    for pin in [&b"123"[..], &b"123456789"[..]] {
+        let s = setup();
+        s.send(pin);
+        let outcome = run_set(&s.job(), &s.wait, &Cancel::default());
+        assert_eq!(outcome.result, PromptResult::Failure);
+        assert_eq!(*s.memory.calls.lock().unwrap(), 0);
+    }
+}
+
+#[test]
+fn a_closed_prompt_stops_the_wait() {
+    let s = setup();
+    let cancel = Cancel::default();
+    cancel.cancel();
+    let started = Instant::now();
+    let mut job = s.job();
+    job.wait = Duration::from_secs(30);
+    assert_eq!(
+        run_set(&job, &s.wait, &cancel).result,
+        PromptResult::Failure
+    );
+    assert!(started.elapsed() < Duration::from_secs(5));
+}
+
+#[test]
+fn change_pin_replaces_the_pin() {
+    let s = setup();
+    s.memory.set(1000, b"1234").unwrap();
+    s.send(b"1234");
+    s.send(b"5678");
+    let outcome = run_change(&s.job(), &s.wait, &Cancel::default());
+    assert_eq!(outcome, Outcome::new(PromptResult::Success));
+    assert_eq!(s.memory.pins.lock().unwrap()[&1000], b"5678");
+}
+
+#[test]
+fn change_pin_with_a_wrong_current_pin_changes_nothing_and_counts() {
+    let s = setup();
+    s.memory.set(1000, b"1234").unwrap();
+    s.send(b"0000");
+    s.send(b"5678");
+    let outcome = run_change(&s.job(), &s.wait, &Cancel::default());
+    assert_eq!(outcome.result, PromptResult::Failure);
+    assert_eq!(outcome.reason, PromptReason::NotRecognised);
+    assert_eq!(s.memory.pins.lock().unwrap()[&1000], b"1234");
+    // The second wrong current PIN reaches the limit of two and locks the user.
+    s.send(b"0000");
+    s.send(b"5678");
+    let locked = run_change(&s.job(), &s.wait, &Cancel::default());
+    assert_eq!(locked.result, PromptResult::LockedOut);
+    assert_eq!(locked.retry_after, 600);
+}
+
+#[test]
+fn change_pin_while_locked_is_refused_without_asking_the_tpm() {
+    let s = setup();
+    s.memory.set(1000, b"1234").unwrap();
+    s.lock.record_failure(1000, 1_000).unwrap();
+    s.lock.record_failure(1000, 1_000).unwrap();
+    let before = *s.memory.calls.lock().unwrap();
+    s.send(b"1234");
+    s.send(b"5678");
+    let outcome = run_change(&s.job(), &s.wait, &Cancel::default());
+    assert_eq!(outcome.result, PromptResult::LockedOut);
+    assert_eq!(*s.memory.calls.lock().unwrap(), before);
+    assert_eq!(s.memory.pins.lock().unwrap()[&1000], b"1234");
+}
