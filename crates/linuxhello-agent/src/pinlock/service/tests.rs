@@ -29,7 +29,7 @@ fn file_in(dir: &TempDir) -> PinLockFile {
 
 #[test]
 fn a_lockout_survives_a_restart() {
-    let dir = TempDir::new().unwrap();
+    let dir = crate::private_tempdir();
     let first = PinLockService::start(file_in(&dir), LIMITS);
     assert_eq!(first.record_failure(1000, 1_000), Ok(0));
     assert_eq!(first.record_failure(1000, 1_000), Ok(600));
@@ -49,7 +49,7 @@ fn a_lockout_survives_a_restart() {
 
 #[test]
 fn a_correct_pin_is_saved_too() {
-    let dir = TempDir::new().unwrap();
+    let dir = crate::private_tempdir();
     let first = PinLockService::start(file_in(&dir), LIMITS);
     first.record_failure(1000, 1_000).unwrap();
     first.record_failure(1000, 1_000).unwrap();
@@ -61,7 +61,7 @@ fn a_correct_pin_is_saved_too() {
 
 #[test]
 fn a_missing_file_is_a_first_start() {
-    let dir = TempDir::new().unwrap();
+    let dir = crate::private_tempdir();
     let service = PinLockService::start(file_in(&dir), LIMITS);
     assert_eq!(service.status_of(1000, 5), LockStatus::Unlocked);
     assert_eq!(service.check(1000, 5), Ok(()));
@@ -69,7 +69,7 @@ fn a_missing_file_is_a_first_start() {
 
 #[test]
 fn a_file_that_cannot_be_trusted_refuses_every_attempt_of_the_service() {
-    let dir = TempDir::new().unwrap();
+    let dir = crate::private_tempdir();
     let path = dir.path().join("pinlock.toml");
     fs::write(&path, "broken").unwrap();
     fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
@@ -108,7 +108,7 @@ fn the_writer_does_not_block_the_caller() {
 
 #[test]
 fn one_users_failures_do_not_show_in_another_users_status() {
-    let dir = TempDir::new().unwrap();
+    let dir = crate::private_tempdir();
     let service = PinLockService::start(file_in(&dir), LIMITS);
     service.record_failure(1000, 1_000).unwrap();
     service.record_failure(1000, 1_000).unwrap();
@@ -140,7 +140,7 @@ fn limits_of(admin: &Path) -> Limits {
 
 #[test]
 fn limits_come_from_the_admin_layers() {
-    let dir = TempDir::new().unwrap();
+    let dir = crate::private_tempdir();
     let admin = admin_with(
         &dir,
         &[(
@@ -169,7 +169,7 @@ fn limits_are_the_defaults_without_an_admin_file_and_in_the_pin_only_state() {
         limits_of(Path::new("/nonexistent/linuxhello/policy.d")),
         defaults
     );
-    let dir = TempDir::new().unwrap();
+    let dir = crate::private_tempdir();
     let broken = admin_with(&dir, &[("10.toml", "this is not a policy")]);
     assert_eq!(limits_of(&broken), defaults);
 }
@@ -208,7 +208,7 @@ fn the_agents_limit_stays_below_the_tpms() {
 
 #[test]
 fn a_capped_service_locks_at_the_lowered_limit_and_says_so() {
-    let dir = TempDir::new().unwrap();
+    let dir = crate::private_tempdir();
     let policy = Limits {
         max_attempts: 5,
         ..LIMITS
@@ -228,6 +228,6 @@ fn a_capped_service_locks_at_the_lowered_limit_and_says_so() {
         "locked at 2, not 5"
     );
 
-    let uncapped = PinLockService::start_capped(file_in(&TempDir::new().unwrap()), policy, None);
+    let uncapped = PinLockService::start_capped(file_in(&crate::private_tempdir()), policy, None);
     assert_eq!(uncapped.tpm_cap(), None);
 }

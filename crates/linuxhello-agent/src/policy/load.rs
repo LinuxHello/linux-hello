@@ -312,7 +312,7 @@ mod tests {
     /// A temporary admin directory (mode 0o755) and a user file path outside it,
     /// and the current user's uid, which owns both.
     fn setup() -> (TempDir, PathBuf, PathBuf, u32) {
-        let tmp = TempDir::new().unwrap();
+        let tmp = crate::private_tempdir();
         // The parent of the admin directory is checked too; a umask may leave it group-writable.
         fs::set_permissions(tmp.path(), fs::Permissions::from_mode(0o755)).unwrap();
         let admin_dir = tmp.path().join("admin.d");
@@ -493,7 +493,7 @@ mod tests {
             b"[methods]\nbiometrics_allowed = false",
             0o644,
         );
-        let outside = TempDir::new().unwrap();
+        let outside = crate::private_tempdir();
         let user_file = outside.path().join(user_file.file_name().unwrap());
         fs::set_permissions(tmp.path(), fs::Permissions::from_mode(0o000)).unwrap();
         let policy = load(&admin_dir, &user_file, uid);

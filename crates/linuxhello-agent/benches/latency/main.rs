@@ -170,7 +170,7 @@ fn ms(duration: Duration) -> String {
 /// Runs every situation and prints the table.
 fn main() -> ExitCode {
     let daemon = Daemon::start();
-    let store_dir = tempfile::TempDir::new().expect("a temporary directory");
+    let store_dir = private_tempdir();
     let _service = run(serve_with(
         Builder::address(daemon.address.as_str()),
         Config::new(vec![]),
@@ -216,4 +216,14 @@ fn main() -> ExitCode {
         eprintln!("the budget of 5 ms at p99 is not met");
     }
     ExitCode::from(code)
+}
+
+/// A temporary directory that only its owner can use, whatever the umask of the shell that runs the
+/// tests (the code under test refuses a directory that others can write).
+fn private_tempdir() -> tempfile::TempDir {
+    use std::os::unix::fs::PermissionsExt;
+    tempfile::Builder::new()
+        .permissions(std::fs::Permissions::from_mode(0o700))
+        .tempdir()
+        .expect("a temporary directory")
 }

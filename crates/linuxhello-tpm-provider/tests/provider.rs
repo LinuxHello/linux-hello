@@ -29,7 +29,7 @@ fn auth(b: u8) -> Auth {
 
 /// A provider serving user `agent_uid` on a thread; returns its socket path and what keeps it alive.
 fn provider(soft: &SoftTpm, agent_uid: u32) -> (PathBuf, tempfile::TempDir, mpsc::Sender<()>) {
-    let dir = tempfile::TempDir::new().unwrap();
+    let dir = private_tempdir();
     let path = dir.path().join("tpm.sock");
     let mut server = Server::bind(&path, me(), agent_uid, my_gid(), soft.open()).unwrap();
     let (stop, stopped) = mpsc::channel::<()>();
@@ -117,7 +117,7 @@ fn a_client_that_sends_nonsense_is_dropped_and_the_next_one_is_served() {
 
 #[test]
 fn a_provider_that_is_not_there_is_a_failure_not_a_hang() {
-    let dir = tempfile::TempDir::new().unwrap();
+    let dir = private_tempdir();
     let client = TpmClient::new(dir.path().join("nothing.sock"));
     assert_eq!(
         client.verify(some_blobs(), auth(1)),
@@ -145,4 +145,14 @@ fn the_socket_is_open_to_the_agents_group_and_to_nobody_else() {
         "no access for other users"
     );
     assert_eq!(meta.gid(), my_gid(), "the Agent's group owns it");
+}
+
+/// A temporary directory that only its owner can use, whatever the umask of the shell that runs the
+/// tests (the code under test refuses a directory that others can write).
+fn private_tempdir() -> tempfile::TempDir {
+    use std::os::unix::fs::PermissionsExt;
+    tempfile::Builder::new()
+        .permissions(std::fs::Permissions::from_mode(0o700))
+        .tempdir()
+        .expect("a temporary directory")
 }

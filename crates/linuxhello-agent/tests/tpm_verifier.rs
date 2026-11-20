@@ -34,7 +34,7 @@ struct Stack {
 
 fn stack() -> Option<Stack> {
     let soft = SoftTpm::start()?;
-    let dir = tempfile::TempDir::new().unwrap();
+    let dir = private_tempdir();
     let socket = dir.path().join("tpm.sock");
     let records = dir.path().join("users");
     let mut server = Server::bind(&socket, me(), me(), my_gid(), soft.open()).unwrap();
@@ -189,7 +189,7 @@ fn a_record_that_cannot_be_trusted_is_never_replaced_or_used() {
 
 #[test]
 fn a_provider_that_is_not_there_is_not_a_wrong_pin() {
-    let dir = tempfile::TempDir::new().unwrap();
+    let dir = private_tempdir();
     let verifier = TpmVerifier::new(
         PinRecordStore::new(dir.path().join("users"), me()),
         dir.path().join("none.sock"),
@@ -207,7 +207,7 @@ fn a_provider_that_goes_away_is_not_a_wrong_pin_when_a_pin_is_checked() {
     let Some(s) = stack() else { return };
     s.verifier.enrol(1000, b"1234").unwrap();
     // The same records, with nobody behind the socket.
-    let dir = tempfile::TempDir::new().unwrap();
+    let dir = private_tempdir();
     let down = TpmVerifier::new(
         PinRecordStore::new(&s.records, me()),
         dir.path().join("none.sock"),
@@ -358,4 +358,12 @@ fn a_change_that_fails_leaves_the_history_alone() {
         Err(EnrolError::Reused)
     );
     assert_eq!(record_text(&s), before);
+/// A temporary directory that only its owner can use, whatever the umask of the shell that runs the
+/// tests (the code under test refuses a directory that others can write).
+fn private_tempdir() -> tempfile::TempDir {
+    use std::os::unix::fs::PermissionsExt;
+    tempfile::Builder::new()
+        .permissions(std::fs::Permissions::from_mode(0o700))
+        .tempdir()
+        .expect("a temporary directory")
 }

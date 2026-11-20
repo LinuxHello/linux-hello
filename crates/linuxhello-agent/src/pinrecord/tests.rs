@@ -37,7 +37,7 @@ fn store(dir: &TempDir) -> PinRecordStore {
 
 #[test]
 fn a_saved_record_comes_back_and_is_private() {
-    let dir = TempDir::new().unwrap();
+    let dir = crate::private_tempdir();
     let store = store(&dir);
     assert_eq!(store.load(1000), Ok(None), "no file is no PIN yet");
     store.save(1000, &record()).unwrap();
@@ -58,7 +58,7 @@ fn a_saved_record_comes_back_and_is_private() {
 
 #[test]
 fn a_save_replaces_the_record_and_leaves_nothing_behind() {
-    let dir = TempDir::new().unwrap();
+    let dir = crate::private_tempdir();
     let store = store(&dir);
     store.save(1000, &record()).unwrap();
     let mut newer = record();
@@ -74,7 +74,7 @@ fn a_save_replaces_the_record_and_leaves_nothing_behind() {
 
 #[test]
 fn a_record_that_cannot_be_trusted_is_refused_and_left_alone() {
-    let dir = TempDir::new().unwrap();
+    let dir = crate::private_tempdir();
     let store = store(&dir);
     store.save(1000, &record()).unwrap();
     let path = store.path(1000);
@@ -119,7 +119,7 @@ fn a_record_that_cannot_be_trusted_is_refused_and_left_alone() {
 
 #[test]
 fn a_file_owned_by_someone_else_is_refused() {
-    let dir = TempDir::new().unwrap();
+    let dir = crate::private_tempdir();
     let store = PinRecordStore::new(dir.path(), me() + 1);
     store.save(1000, &record()).unwrap();
     assert_eq!(store.load(1000), Err(RecordError::Untrusted));

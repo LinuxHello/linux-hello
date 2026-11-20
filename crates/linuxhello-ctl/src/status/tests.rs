@@ -27,7 +27,7 @@ struct Tree {
 
 /// Builds the tree: parent 0755, admin directory 0755, state directory 0755.
 fn tree() -> Tree {
-    let tmp = TempDir::new().unwrap();
+    let tmp = crate::private_tempdir();
     fs::set_permissions(tmp.path(), fs::Permissions::from_mode(0o755)).unwrap();
     let admin = tmp.path().join("admin.d");
     fs::create_dir(&admin).unwrap();

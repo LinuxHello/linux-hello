@@ -1377,7 +1377,7 @@ mod tests {
 
     #[test]
     fn user_cannot_set_another_users_policy() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = crate::private_tempdir();
         let store = UserPolicyStore::new(tmp.path());
         let mut api = Api::new(Config::new(vec![990])).with_user_policy_store(Some(store));
 
@@ -1403,7 +1403,7 @@ mod tests {
 
     #[test]
     fn unparseable_user_policy_is_refused_on_write() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = crate::private_tempdir();
         let store = UserPolicyStore::new(tmp.path());
         let mut api = Api::new(Config::new(vec![990])).with_user_policy_store(Some(store));
 
@@ -1423,7 +1423,7 @@ mod tests {
 
     #[test]
     fn oversized_user_policy_is_refused_on_write() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = crate::private_tempdir();
         let store = UserPolicyStore::new(tmp.path());
         let mut api = Api::new(Config::new(vec![990])).with_user_policy_store(Some(store));
 
@@ -1444,7 +1444,7 @@ mod tests {
 
     #[test]
     fn user_policy_without_peer_credentials_is_refused() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = crate::private_tempdir();
         let mut api = Api::new(Config::new(vec![990]))
             .with_user_policy_store(Some(UserPolicyStore::new(tmp.path())));
         let tighter = "[methods]\nbiometrics_allowed = false\n";
@@ -1507,7 +1507,7 @@ mod tests {
     #[test]
     fn pin_only_fallback_is_audited_with_its_reason() {
         use std::os::unix::fs::PermissionsExt;
-        let tmp = TempDir::new().unwrap();
+        let tmp = crate::private_tempdir();
         let (store, admin) = store_with_admin(&tmp);
         let (api, recorder) = audited_api(Config::new(vec![]));
         let api = api.with_user_policy_store(Some(store));
@@ -1538,7 +1538,7 @@ mod tests {
         // A damaged user layer with sound admin layers: blamed on the user layer.
         std::fs::remove_file(&file).unwrap();
         let user_dir = tmp.path().join("users").join("1000");
-        std::fs::create_dir_all(&user_dir).unwrap();
+        crate::private_dirs(&user_dir);
         std::fs::write(user_dir.join("policy.toml"), "also not a policy").unwrap();
         let Ok(Policy::PinOnly(pin_only)) = api.policy_of(1000) else {
             panic!("a damaged user layer must give the PIN-only state");
@@ -1553,9 +1553,10 @@ mod tests {
     /// ADR-0014 amendment, point 3: a caller reads what applies to them, and nothing else.
     #[test]
     fn a_user_reads_only_its_own_effective_policy() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = crate::private_tempdir();
         let (store, admin) = store_with_admin(&tmp);
-        std::fs::write(admin.join("zz-site-layer.toml"), "[pin]\nmin_length = 10\n").unwrap();
+        crate::write_admin_file(admin.join("zz-site-layer.toml"), "[pin]\nmin_length = 10\n")
+            .unwrap();
         let mut api = Api::new(Config::new(vec![])).with_user_policy_store(Some(store));
         let user = |uid| Caller {
             uid: Some(uid),
@@ -1582,9 +1583,9 @@ mod tests {
 
     #[test]
     fn the_pin_rules_name_the_required_and_disallowed_classes() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = crate::private_tempdir();
         let (store, admin) = store_with_admin(&tmp);
-        std::fs::write(
+        crate::write_admin_file(
             admin.join("pin.toml"),
             "[pin]\nmin_length = 10\nmax_length = 40\ndigits = \"required\"\nspecial = \"disallowed\"\n",
         )
@@ -1603,7 +1604,7 @@ mod tests {
 
     #[test]
     fn the_policy_readers_refuse_a_caller_without_a_uid_and_need_a_store() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = crate::private_tempdir();
         let (store, _admin) = store_with_admin(&tmp);
         let anonymous = || Caller {
             uid: None,
@@ -1641,7 +1642,7 @@ mod tests {
     fn status_tells_a_locked_user_the_minutes_left() {
         use crate::pinlock::service::{Limits, PinLockService};
         use crate::pinlock::store::PinLockFile;
-        let tmp = TempDir::new().unwrap();
+        let tmp = crate::private_tempdir();
         let (store, _admin) = store_with_admin(&tmp);
         let uid = rustix::process::getuid().as_raw();
         // One wrong PIN starts a lockout of 7 minutes 10 seconds.
@@ -1682,7 +1683,7 @@ mod tests {
         use crate::pinlock::service::{Limits, PinLockService};
         use crate::pinlock::store::PinLockFile;
         use std::os::unix::fs::PermissionsExt;
-        let tmp = TempDir::new().unwrap();
+        let tmp = crate::private_tempdir();
         let (store, _admin) = store_with_admin(&tmp);
         let uid = rustix::process::getuid().as_raw();
         let file = tmp.path().join("pinlock.toml");
@@ -1711,7 +1712,7 @@ mod tests {
     fn status_says_when_the_tpm_lowered_the_pin_limit() {
         use crate::pinlock::service::{Limits, PinLockService};
         use crate::pinlock::store::PinLockFile;
-        let tmp = TempDir::new().unwrap();
+        let tmp = crate::private_tempdir();
         let (store, _admin) = store_with_admin(&tmp);
         let uid = rustix::process::getuid().as_raw();
         let limits = Limits {
@@ -1740,12 +1741,12 @@ mod tests {
 
     #[test]
     fn status_is_scoped_to_the_caller() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = crate::private_tempdir();
         let (store, admin) = store_with_admin(&tmp);
-        std::fs::write(admin.join("strict.toml"), TOO_STRICT).unwrap();
+        crate::write_admin_file(admin.join("strict.toml"), TOO_STRICT).unwrap();
         // User 1001's own layer is damaged; user 1000's is fine.
         let damaged = store.path(1001);
-        std::fs::create_dir_all(damaged.parent().unwrap()).unwrap();
+        crate::private_dirs(damaged.parent().unwrap());
         std::fs::write(&damaged, "not a policy").unwrap();
         let api = Api::new(Config::new(vec![])).with_user_policy_store(Some(store));
 
@@ -1768,9 +1769,9 @@ mod tests {
 
     #[test]
     fn status_never_carries_a_file_name() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = crate::private_tempdir();
         let (store, admin) = store_with_admin(&tmp);
-        std::fs::write(admin.join("broken-file.toml"), "this is not a policy").unwrap();
+        crate::write_admin_file(admin.join("broken-file.toml"), "this is not a policy").unwrap();
         let api = Api::new(Config::new(vec![])).with_user_policy_store(Some(store));
         let status = api.get_status(status_caller(1000)).unwrap();
         assert!(status.iter().any(|(code, _, _)| code == "policy-pin-only"));
@@ -1782,9 +1783,9 @@ mod tests {
 
     #[test]
     fn status_details_are_for_root_only() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = crate::private_tempdir();
         let (store, admin) = store_with_admin(&tmp);
-        std::fs::write(admin.join("broken-file.toml"), "this is not a policy").unwrap();
+        crate::write_admin_file(admin.join("broken-file.toml"), "this is not a policy").unwrap();
         let api = Api::new(Config::new(vec![])).with_user_policy_store(Some(store));
 
         let details = api.get_status_details(status_caller(0)).unwrap();
@@ -1808,11 +1809,11 @@ mod tests {
     #[test]
     fn status_codes_are_a_closed_set() {
         use linuxhello_dbus::status::{Severity, CODES, CONTEXTS, OTHER_CONTEXT};
-        let tmp = TempDir::new().unwrap();
+        let tmp = crate::private_tempdir();
         let (store, admin) = store_with_admin(&tmp);
         // The schema accepts only the four contexts of `CONTEXTS`, so a name from a file cannot
         // reach a client (`linuxhello_dbus::status` keeps `other` for one that ever could).
-        std::fs::write(admin.join("odd.toml"), TOO_STRICT).unwrap();
+        crate::write_admin_file(admin.join("odd.toml"), TOO_STRICT).unwrap();
         let api = Api::new(Config::new(vec![])).with_user_policy_store(Some(store));
         let status = api.get_status(status_caller(1000)).unwrap();
         assert!(!status.is_empty(), "{status:?}");
@@ -1844,7 +1845,7 @@ mod tests {
 
     /// An API with a recorder, and a PIN socket in a temporary directory.
     fn pin_setup() -> (Api, Recorder, PinSocket, std::path::PathBuf, TempDir) {
-        let dir = TempDir::new().unwrap();
+        let dir = crate::private_tempdir();
         let path = dir.path().join("pin.sock");
         let uid = rustix::process::getuid().as_raw();
         let socket = PinSocket::bind(&path, uid).unwrap();
@@ -1999,7 +2000,7 @@ mod tests {
 
     /// An API with a policy store, a recorder, and a prompt of user 1000 on `:1.1` for 1000.
     fn authentication_setup() -> (Api, Recorder, TempDir, String) {
-        let tmp = TempDir::new().unwrap();
+        let tmp = crate::private_tempdir();
         let (store, _admin) = store_with_admin(&tmp);
         let (api, recorder) = audited_api(Config::new(vec![]));
         let mut api = api.with_user_policy_store(Some(store));
@@ -2127,7 +2128,7 @@ mod tests {
 
     #[test]
     fn a_sound_policy_is_not_audited() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = crate::private_tempdir();
         let (store, _admin) = store_with_admin(&tmp);
         let (api, recorder) = audited_api(Config::new(vec![]));
         let api = api.with_user_policy_store(Some(store));
@@ -2144,7 +2145,7 @@ mod tests {
 
     #[test]
     fn a_layer_that_is_stored_but_not_synced_counts_as_stored() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = crate::private_tempdir();
         let store = UserPolicyStore::new(tmp.path()).with_dir_sync(std::sync::Arc::new(|_| {
             Err(std::io::Error::other("the disk is gone"))
         }));
@@ -2158,9 +2159,9 @@ mod tests {
 
     #[test]
     fn a_damaged_layer_is_reported_as_damaged_and_can_be_replaced() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = crate::private_tempdir();
         let store = UserPolicyStore::new(tmp.path());
-        std::fs::create_dir_all(store.path(1000).parent().unwrap()).unwrap();
+        crate::private_dirs(store.path(1000).parent().unwrap());
         std::fs::write(store.path(1000), [0xff, 0xfe]).unwrap();
         let (api, recorder) = audited_api(Config::new(vec![]));
         let mut api = api.with_user_policy_store(Some(store));
@@ -2314,7 +2315,7 @@ mod tests {
 
     #[test]
     fn user_policy_change_is_audited_without_its_text() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = crate::private_tempdir();
         let (api, recorder) = audited_api(Config::new(vec![]));
         let mut api = api.with_user_policy_store(Some(UserPolicyStore::new(tmp.path())));
         let marker = "MARKER".repeat(3);
@@ -2383,7 +2384,7 @@ mod tests {
 
     #[test]
     fn a_journal_that_cannot_be_written_does_not_change_the_answer() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = crate::private_tempdir();
         let audit = Audit::new(Box::new(crate::audit::JournalSink::at(
             "/nonexistent/journal",
         )));

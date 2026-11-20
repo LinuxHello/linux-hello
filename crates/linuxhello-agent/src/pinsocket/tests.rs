@@ -21,7 +21,7 @@ fn me() -> Process {
 
 /// A socket in a private directory, and the directory.
 fn socket() -> (PinSocket, PathBuf, TempDir) {
-    let dir = TempDir::new().unwrap();
+    let dir = crate::private_tempdir();
     let path = dir.path().join("pin.sock");
     let socket = PinSocket::bind(&path, me().uid).unwrap();
     (socket, path, dir)
@@ -116,7 +116,7 @@ fn a_control_call_is_used_once() {
 
 #[test]
 fn a_control_call_expires() {
-    let dir = TempDir::new().unwrap();
+    let dir = crate::private_tempdir();
     let path = dir.path().join("pin.sock");
     let socket = PinSocket::bind(&path, me().uid)
         .unwrap()
@@ -199,7 +199,7 @@ fn every_refusal_is_the_same_single_byte() {
 #[test]
 fn the_directory_must_be_private_to_the_agent() {
     // Another owner: refused.
-    let dir = TempDir::new().unwrap();
+    let dir = crate::private_tempdir();
     let wrong_owner = me().uid.wrapping_add(1);
     assert!(PinSocket::bind(&dir.path().join("pin.sock"), wrong_owner).is_err());
     // Writable by group or others: refused.
@@ -217,7 +217,7 @@ fn the_directory_must_be_private_to_the_agent() {
 
 #[test]
 fn a_stale_socket_is_replaced_and_anything_else_is_not() {
-    let dir = TempDir::new().unwrap();
+    let dir = crate::private_tempdir();
     let path = dir.path().join("pin.sock");
     drop(PinSocket::bind(&path, me().uid).unwrap());
     // The file of the earlier run is still there; a new socket takes its place.

@@ -51,7 +51,7 @@ struct Setup {
 }
 
 fn setup(broken: bool) -> Setup {
-    let dir = TempDir::new().unwrap();
+    let dir = crate::private_tempdir();
     let uid = std::fs::metadata(dir.path())
         .map(|m| std::os::unix::fs::MetadataExt::uid(&m))
         .unwrap();
@@ -128,7 +128,7 @@ fn a_locked_user_is_refused_without_reaching_the_verifier() {
 
 #[test]
 fn an_untrusted_lock_makes_the_method_unavailable_and_the_verifier_is_not_asked() {
-    let dir = TempDir::new().unwrap();
+    let dir = crate::private_tempdir();
     let path = dir.path().join("pinlock.toml");
     std::fs::write(&path, "broken").unwrap();
     std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o644)).unwrap();

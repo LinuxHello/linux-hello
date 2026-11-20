@@ -85,7 +85,7 @@ struct Setup {
 }
 
 fn setup() -> Setup {
-    let dir = TempDir::new().unwrap();
+    let dir = crate::private_tempdir();
     let uid = std::fs::metadata(dir.path())
         .map(|m| std::os::unix::fs::MetadataExt::uid(&m))
         .unwrap();

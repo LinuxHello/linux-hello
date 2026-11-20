@@ -4,7 +4,6 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use linuxhello_dbus::PromptReason;
-use tempfile::TempDir;
 
 use super::*;
 
@@ -43,7 +42,7 @@ fn a_program_that_cannot_start_is_unavailable() {
 
 #[test]
 fn cancelling_ends_the_child() {
-    let dir = TempDir::new().unwrap();
+    let dir = crate::private_tempdir();
     let marker = dir.path().join("still-running");
     // Touches the marker every 50 ms for as long as it lives.
     let script = format!(
@@ -72,7 +71,7 @@ fn cancelling_ends_the_child() {
 
 #[test]
 fn the_child_gets_an_empty_environment_and_no_input() {
-    let dir = TempDir::new().unwrap();
+    let dir = crate::private_tempdir();
     let out = dir.path().join("env");
     // Records the variables it sees and succeeds only if standard input is empty.
     let script = format!("env > {}; test -z \"$(cat)\"", out.display());
@@ -87,7 +86,7 @@ fn the_child_gets_an_empty_environment_and_no_input() {
 
 #[test]
 fn the_method_is_available_only_when_howdy_is_there() {
-    let dir = TempDir::new().unwrap();
+    let dir = crate::private_tempdir();
     let script: PathBuf = dir.path().join("compare.py");
     let method = FaceMethod::with_command("/bin/true", vec![], &script);
     assert!(!method.available());

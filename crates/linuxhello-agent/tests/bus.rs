@@ -218,7 +218,7 @@ fn the_interface_is_the_one_registered_in_adr_0012() {
 #[test]
 fn user_policy_is_set_and_read_over_the_bus() {
     let daemon = Daemon::start();
-    let tmp = tempfile::TempDir::new().unwrap();
+    let tmp = private_tempdir();
     let store = UserPolicyStore::new(tmp.path());
     run(async {
         let _service = serve_with(
@@ -562,7 +562,7 @@ const ERROR_PREFIX: &str = "io.github.LinuxHello.Error.";
 #[test]
 fn every_error_has_a_fixed_name_and_text() {
     let daemon = Daemon::start();
-    let tmp = tempfile::TempDir::new().unwrap();
+    let tmp = private_tempdir();
     // A layer the store cannot read: not UTF-8. Same file layout as the store's own tests.
     let damaged = tmp.path().join(my_uid().to_string());
     std::fs::create_dir_all(&damaged).unwrap();
@@ -637,7 +637,7 @@ fn every_error_has_a_fixed_name_and_text() {
 #[test]
 fn invalid_user_policy_names_the_offending_key() {
     let daemon = Daemon::start();
-    let tmp = tempfile::TempDir::new().unwrap();
+    let tmp = private_tempdir();
     run(async {
         let _service = serve_with(
             Builder::address(daemon.address.as_str()),
@@ -677,7 +677,7 @@ fn invalid_user_policy_names_the_offending_key() {
 #[test]
 fn the_policy_readers_answer_over_the_bus() {
     let daemon = Daemon::start();
-    let tmp = tempfile::TempDir::new().unwrap();
+    let tmp = private_tempdir();
     let store = UserPolicyStore::new(tmp.path());
     run(async {
         let _service = serve_with(
@@ -717,7 +717,7 @@ fn the_policy_readers_answer_over_the_bus() {
 #[test]
 fn a_user_and_root_get_their_status_over_the_bus() {
     let daemon = Daemon::start();
-    let tmp = tempfile::TempDir::new().unwrap();
+    let tmp = private_tempdir();
     let store = UserPolicyStore::new(tmp.path());
     run(async {
         let _service = serve_with(
@@ -775,7 +775,7 @@ fn a_pin_is_accepted_only_after_expect_pin_by_the_prompt_opener() {
     use linuxhello_agent::bus::serve_with_pin_socket;
     use linuxhello_agent::pinsocket::{PinSocket, REPLY_ACCEPTED, REPLY_REFUSED};
     let daemon = Daemon::start();
-    let dir = tempfile::TempDir::new().unwrap();
+    let dir = private_tempdir();
     let path = dir.path().join("pin.sock");
     let socket = std::sync::Arc::new(PinSocket::bind(&path, my_uid()).unwrap());
     let (sent, received) = std::sync::mpsc::channel();
@@ -933,7 +933,7 @@ async fn result_of(client: &zbus::Connection, id: &str, seconds: u64) -> Option<
 #[test]
 fn authenticate_starts_the_methods_of_the_context() {
     let daemon = Daemon::start();
-    let dir = tempfile::TempDir::new().unwrap();
+    let dir = private_tempdir();
     run(async {
         let _service = serve_fakes(
             &daemon,
@@ -978,7 +978,7 @@ fn authenticate_starts_the_methods_of_the_context() {
 #[test]
 fn authenticate_refuses_what_it_should_over_the_bus() {
     let daemon = Daemon::start();
-    let dir = tempfile::TempDir::new().unwrap();
+    let dir = private_tempdir();
     run(async {
         let _service = serve_fakes(
             &daemon,
@@ -1011,7 +1011,7 @@ fn authenticate_refuses_what_it_should_over_the_bus() {
 #[test]
 fn closing_the_prompt_cancels_a_running_authentication() {
     let daemon = Daemon::start();
-    let dir = tempfile::TempDir::new().unwrap();
+    let dir = private_tempdir();
     let saw_cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     run(async {
         let _service = serve_fakes(
@@ -1050,7 +1050,7 @@ fn closing_the_prompt_cancels_a_running_authentication() {
 #[test]
 fn without_any_method_authenticate_ends_in_a_failure() {
     let daemon = Daemon::start();
-    let dir = tempfile::TempDir::new().unwrap();
+    let dir = private_tempdir();
     run(async {
         let _service = serve_with(
             Builder::address(daemon.address.as_str()),
@@ -1159,4 +1159,14 @@ fn a_result_signal_carries_the_reason_and_the_seconds() {
             (id, vec!["face".to_string(), "fingerprint".to_string()])
         );
     });
+}
+
+/// A temporary directory that only its owner can use, whatever the umask of the shell that runs the
+/// tests (the code under test refuses a directory that others can write).
+fn private_tempdir() -> tempfile::TempDir {
+    use std::os::unix::fs::PermissionsExt;
+    tempfile::Builder::new()
+        .permissions(std::fs::Permissions::from_mode(0o700))
+        .tempdir()
+        .expect("a temporary directory")
 }
