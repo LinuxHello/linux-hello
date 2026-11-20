@@ -145,6 +145,10 @@ impl Server {
     fn answer(&mut self, request: Request) -> Response {
         let outcome = match request {
             Request::Limits => Err(TpmError::Failed("limits are answered elsewhere".into())),
+            Request::Loads { blobs } => self
+                .tpm
+                .root_key_loads(&blobs)
+                .map(|loads| (if loads { STATUS_OK } else { STATUS_WRONG }, None::<Blobs>)),
             Request::Enrol { auth } => self.tpm.enrol(&auth).map(Some).map(|b| (STATUS_OK, b)),
             Request::Verify { blobs, auth } => self
                 .tpm

@@ -185,3 +185,34 @@ fn the_tpms_lockout_is_told_apart_from_a_wrong_pin() {
     // The TPM is now in lockout: even the right PIN gets no answer, and that is not "wrong".
     assert_eq!(tpm.verify(&blobs, &auth(1)), Err(TpmError::Locked));
 }
+
+#[test]
+fn a_key_from_a_tpm_that_was_cleared_is_told_apart_from_a_wrong_pin() {
+    let Some(first) = SoftTpm::start() else {
+        return;
+    };
+    let Some(second) = SoftTpm::start() else {
+        return;
+    };
+    let blobs = first.open().enrol(&auth(1)).unwrap();
+    // The same TPM still loads it; another TPM state (a cleared one has a new seed) does not.
+    assert_eq!(first.open().root_key_loads(&blobs), Ok(true));
+    assert_eq!(second.open().root_key_loads(&blobs), Ok(false));
+    // That is not a wrong PIN and not a lockout: nothing was counted.
+    let mut other = second.open();
+    assert!(matches!(
+        other.verify(&blobs, &auth(1)),
+        Err(TpmError::Failed(_))
+    ));
+}
+
+#[test]
+fn a_damaged_blob_is_not_a_cleared_tpm_but_does_not_load_either() {
+    let Some(soft) = SoftTpm::start() else { return };
+    let mut tpm = soft.open();
+    let mut blobs = tpm.enrol(&auth(1)).unwrap();
+    let last = blobs.private.len() - 1;
+    blobs.private[last] ^= 0xff;
+    // The check cannot tell the two apart, and says so by answering "does not load".
+    assert_eq!(tpm.root_key_loads(&blobs), Ok(false));
+}

@@ -190,6 +190,37 @@ impl Tpm {
         blobs_of(&public, &private)
     }
 
+    /// Whether the root key of `blobs` loads under this TPM's storage primary. It does not when the
+    /// TPM was cleared since the key was made (a cleared TPM has a new seed, so the primary is
+    /// another one and the wrapped blob fails its integrity check), when the TPM was replaced, and
+    /// when the blob is damaged; the check cannot tell these apart. Needs no PIN and counts nothing
+    /// in the dictionary-attack counter.
+    ///
+    /// # Errors
+    ///
+    /// [`TpmError::Failed`] for a refusal that is not an integrity failure (no answer from the TPM,
+    /// a blob that is not a key at all); [`TpmError::Locked`] in lockout.
+    pub fn root_key_loads(&mut self, blobs: &Blobs) -> Result<bool, TpmError> {
+        let public = Public::unmarshall(&blobs.public).map_err(failed)?;
+        let private = Private::try_from(blobs.private.clone()).map_err(failed)?;
+        let primary = self.primary;
+        let loaded = self
+            .context
+            .execute_with_nullauth_session(|c| c.load(primary, private, public));
+        match loaded {
+            Ok(key) => {
+                let _ = self.context.flush_context(key.into());
+                Ok(true)
+            }
+            Err(tss_esapi::Error::Tss2Error(rc))
+                if rc.kind() == Some(Tss2ResponseCodeKind::Integrity) =>
+            {
+                Ok(false)
+            }
+            Err(error) => Err(classify(error)),
+        }
+    }
+
     /// Loads the root key of `blobs` under the primary.
     fn load(&mut self, blobs: &Blobs) -> Result<KeyHandle, TpmError> {
         let public = Public::unmarshall(&blobs.public).map_err(failed)?;

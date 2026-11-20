@@ -16,6 +16,7 @@ use std::sync::Arc;
 use linuxhello_dbus::{AuthMethod, PromptId, PromptReason, PromptResult, PromptState, SIGNALS};
 
 use crate::audit::{Audit, Event};
+use crate::methods::pin::KeyProbe;
 use crate::orchestrator::Cancel;
 use crate::pinlock::service::{wall_clock_seconds, LockStatus, PinLockService};
 use crate::pinsocket::{PinSocket, Process};
@@ -217,6 +218,8 @@ pub struct Api {
     running: HashMap<(u32, PromptId), Cancel>,
     /// The PIN lock, when the Agent has one.
     pin_lock: Option<Arc<PinLockService>>,
+    /// What says whether a user's PIN key is still in the TPM, when the Agent has one.
+    key_probe: Option<Arc<dyn KeyProbe>>,
     /// The time in seconds since the Unix epoch; the wall clock, replaced in tests.
     clock: fn() -> u64,
 }
@@ -230,6 +233,7 @@ impl Api {
             audit: Audit::none(),
             running: HashMap::new(),
             pin_lock: None,
+            key_probe: None,
             clock: wall_clock_seconds,
         }
     }
@@ -244,6 +248,12 @@ impl Api {
     #[must_use]
     pub fn with_shared_pin_lock(self, pin_lock: Option<Arc<PinLockService>>) -> Self {
         Self { pin_lock, ..self }
+    }
+
+    /// An API that asks `key_probe` whether a user's PIN key is still in the TPM, for the status.
+    #[must_use]
+    pub fn with_key_probe(self, key_probe: Option<Arc<dyn KeyProbe>>) -> Self {
+        Self { key_probe, ..self }
     }
 
     /// An API that reads the time from `clock` (seconds since the Unix epoch) instead of the wall
@@ -867,7 +877,7 @@ impl Api {
         use linuxhello_dbus::status::{
             context_unsatisfiable_on_the_bus, pin_locked_sentence, tpm_limit_low_sentence,
             Severity, PIN_LOCKED, PIN_LOCK_DAMAGED, PIN_LOCK_DAMAGED_SENTENCE, POLICY_PIN_ONLY,
-            POLICY_PIN_ONLY_SENTENCE, TPM_LIMIT_LOW,
+            POLICY_PIN_ONLY_SENTENCE, TPM_CLEARED, TPM_CLEARED_SENTENCE, TPM_LIMIT_LOW,
         };
         let uid = caller.uid.ok_or(ApiError::Denied)?;
         let policy = self.policy_of(uid)?;
@@ -896,6 +906,19 @@ impl Api {
                     detail: Some(format!("the context {context}")),
                 });
             }
+        }
+        if self
+            .key_probe
+            .as_ref()
+            .and_then(|probe| probe.key_loads(uid))
+            == Some(false)
+        {
+            items.push(StatusItem {
+                code: TPM_CLEARED.to_string(),
+                severity: Severity::Severe,
+                sentence: TPM_CLEARED_SENTENCE.to_string(),
+                detail: None,
+            });
         }
         if let Some(cap) = self.pin_lock.as_ref().and_then(|lock| lock.tpm_cap()) {
             items.push(StatusItem {
@@ -1705,6 +1728,33 @@ mod tests {
             assert_eq!(status[0].0, "pin-lock-damaged");
             assert_eq!(status[0].1, "severe");
             assert!(!format!("{status:?}").contains("pinlock"), "no file name");
+        }
+    }
+
+    /// A probe whose answer is fixed.
+    struct Fixed(Option<bool>);
+
+    impl crate::methods::pin::KeyProbe for Fixed {
+        fn key_loads(&self, _uid: u32) -> Option<bool> {
+            self.0
+        }
+    }
+
+    #[test]
+    fn status_says_when_the_tpm_no_longer_holds_the_pin_key() {
+        // Only a key that is known not to load is a condition; "yes" and "cannot tell" are not.
+        for (answer, expected) in [(Some(false), 1), (Some(true), 0), (None, 0)] {
+            let tmp = crate::private_tempdir();
+            let (store, _admin) = store_with_admin(&tmp);
+            let api = Api::new(Config::new(vec![]))
+                .with_user_policy_store(Some(store))
+                .with_key_probe(Some(std::sync::Arc::new(Fixed(answer))));
+            let status = api.get_status(status_caller(1000)).unwrap();
+            assert_eq!(status.len(), expected, "{answer:?}: {status:?}");
+            if expected == 1 {
+                assert_eq!(status[0].0, "tpm-cleared");
+                assert_eq!(status[0].1, "severe");
+            }
         }
     }
 

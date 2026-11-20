@@ -37,7 +37,7 @@ use zbus::{connection, interface, Connection};
 use crate::api::{Api, ApiError, Caller, Notification, PeerName};
 use crate::audit::Audit;
 use crate::methods::pin::enrol::{run_change, run_set, Job, PinEnrolment};
-use crate::methods::pin::PinInbox;
+use crate::methods::pin::{KeyProbe, PinInbox};
 use crate::orchestrator::{Method, Orchestrator, Reporter};
 use crate::pinlock::service::{wall_clock_seconds, PinLockService};
 use crate::pinsocket::PinSocket;
@@ -315,6 +315,8 @@ pub struct Extras {
     pub pin_lock: Option<Arc<PinLockService>>,
     /// What `SetPin` and `ChangePin` use; without it they are `Unavailable`.
     pub pin_change: Option<PinChange>,
+    /// What says whether a user's PIN key is still in the TPM, for `GetStatus` (`tpm-cleared`).
+    pub key_probe: Option<Arc<dyn KeyProbe>>,
     /// Makes the methods an authentication runs; none by default.
     pub methods: Option<MethodFactory>,
     /// How long an authentication may take; a minute by default.
@@ -338,6 +340,7 @@ pub async fn serve_with_extras(
     .with_pin_socket(extras.pin_socket)
     .with_pin_lock(extras.pin_lock);
     service.pin_change = extras.pin_change;
+    service.api = service.api.with_key_probe(extras.key_probe);
     if let Some(methods) = extras.methods {
         service.methods = methods;
     }
