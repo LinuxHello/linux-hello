@@ -382,9 +382,15 @@ dependencies = [
 name = "linuxhello-ctl"
 version = "0.0.0"
 dependencies = [
+ "async-io",
+ "futures-lite",
  "linuxhello-agent",
  "linuxhello-dbus",
+ "rustix",
+ "serde",
  "tempfile",
+ "zbus",
+ "zeroize",
 ]
 
 [[package]]
