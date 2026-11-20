@@ -358,6 +358,8 @@ fn a_change_that_fails_leaves_the_history_alone() {
         Err(EnrolError::Reused)
     );
     assert_eq!(record_text(&s), before);
+}
+
 /// A temporary directory that only its owner can use, whatever the umask of the shell that runs the
 /// tests (the code under test refuses a directory that others can write).
 fn private_tempdir() -> tempfile::TempDir {

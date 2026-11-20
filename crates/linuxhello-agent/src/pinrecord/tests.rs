@@ -136,7 +136,7 @@ fn hexadecimal_round_trips_and_refuses_bad_text() {
 
 #[test]
 fn a_history_comes_back_in_order() {
-    let dir = TempDir::new().unwrap();
+    let dir = crate::private_tempdir();
     let store = store(&dir);
     let mut with = record();
     with.history = vec![entry(3), entry(2), entry(1)];
@@ -146,7 +146,7 @@ fn a_history_comes_back_in_order() {
 
 #[test]
 fn an_old_record_without_a_history_is_read() {
-    let dir = TempDir::new().unwrap();
+    let dir = crate::private_tempdir();
     let store = store(&dir);
     store.save(1000, &record()).unwrap();
     // A record from before the history existed has no such key at all.
@@ -163,7 +163,7 @@ fn an_old_record_without_a_history_is_read() {
 
 #[test]
 fn a_record_with_a_malformed_history_is_untrusted() {
-    let dir = TempDir::new().unwrap();
+    let dir = crate::private_tempdir();
     let store = store(&dir);
     let mut with = record();
     with.history = vec![entry(1)];
@@ -186,7 +186,7 @@ fn a_record_with_a_malformed_history_is_untrusted() {
 
 #[test]
 fn an_entry_with_parameters_outside_the_accepted_range_is_untrusted() {
-    let dir = TempDir::new().unwrap();
+    let dir = crate::private_tempdir();
     let store = store(&dir);
     let mut with = record();
     let mut weak = entry(1);
@@ -202,7 +202,7 @@ fn an_entry_with_parameters_outside_the_accepted_range_is_untrusted() {
 
 #[test]
 fn more_entries_than_the_limit_are_untrusted_and_a_save_never_writes_them() {
-    let dir = TempDir::new().unwrap();
+    let dir = crate::private_tempdir();
     let store = store(&dir);
     let mut with = record();
     with.history = (0..40).map(|b| entry(b as u8)).collect();
