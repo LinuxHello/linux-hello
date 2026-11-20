@@ -64,7 +64,7 @@ struct World {
 
 async fn world() -> World {
     let daemon = Daemon::start();
-    let dir = tempfile::TempDir::new().unwrap();
+    let dir = private_tempdir();
     let socket_path = dir.path().join("pin.sock");
     let socket = Arc::new(PinSocket::bind(&socket_path, my_uid()).unwrap());
     let inbox = Arc::new(PinInbox::default());
@@ -200,4 +200,14 @@ fn wrong_pins_fail_and_then_lock_the_user_and_the_status_says_so() {
             "{status:?}"
         );
     });
+}
+
+/// A temporary directory that only its owner can use, whatever the umask of the shell that runs the
+/// tests (the code under test refuses a directory that others can write).
+fn private_tempdir() -> tempfile::TempDir {
+    use std::os::unix::fs::PermissionsExt;
+    tempfile::Builder::new()
+        .permissions(std::fs::Permissions::from_mode(0o700))
+        .tempdir()
+        .expect("a temporary directory")
 }

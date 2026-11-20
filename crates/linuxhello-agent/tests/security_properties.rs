@@ -345,7 +345,7 @@ fn every_unlock_signature_pin_change_and_reset_is_audited() {
 /// own text. It carries nothing of another user's layer, and no user number.
 #[test]
 fn an_invalid_policy_text_carries_nothing_of_other_users() {
-    let tmp = tempfile::TempDir::new().unwrap();
+    let tmp = private_tempdir();
     let mut api = Api::new(Config::new(vec![]))
         .with_user_policy_store(Some(UserPolicyStore::new(tmp.path())));
     let user = |uid| Caller {
@@ -366,4 +366,14 @@ fn an_invalid_policy_text_carries_nothing_of_other_users() {
             "the error text of user 1001 mentions {other:?}: {text}"
         );
     }
+}
+
+/// A temporary directory that only its owner can use, whatever the umask of the shell that runs the
+/// tests (the code under test refuses a directory that others can write).
+fn private_tempdir() -> tempfile::TempDir {
+    use std::os::unix::fs::PermissionsExt;
+    tempfile::Builder::new()
+        .permissions(std::fs::Permissions::from_mode(0o700))
+        .tempdir()
+        .expect("a temporary directory")
 }

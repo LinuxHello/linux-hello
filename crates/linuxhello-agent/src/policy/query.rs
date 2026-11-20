@@ -374,7 +374,7 @@ factors = 2
 
     #[test]
     fn pin_only_state_requires_tpm_and_reverify() {
-        let tmp = tempfile::TempDir::new().unwrap();
+        let tmp = crate::private_tempdir();
         let user_file = tmp.path().join("user.toml");
         std::fs::write(&user_file, "not toml").unwrap();
         let pol = crate::policy::load::load(&tmp.path().join("absent.d"), &user_file, 0);

@@ -98,7 +98,7 @@ struct World {
 fn world() -> World {
     futures_lite::future::block_on(async {
         let daemon = Daemon::start();
-        let dir = tempfile::TempDir::new().unwrap();
+        let dir = crate::private_tempdir();
         let uid = rustix::process::getuid().as_raw();
         let socket_path = dir.path().join("pin.sock");
         let socket = Arc::new(PinSocket::bind(&socket_path, uid).unwrap());

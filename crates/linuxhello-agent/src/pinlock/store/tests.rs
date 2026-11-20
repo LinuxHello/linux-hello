@@ -5,7 +5,7 @@ use tempfile::TempDir;
 
 /// A directory with a file name in it and the uid that owns the directory.
 fn setup() -> (TempDir, PinLockFile) {
-    let tmp = TempDir::new().unwrap();
+    let tmp = crate::private_tempdir();
     let uid = fs::metadata(tmp.path()).unwrap().uid();
     let file = PinLockFile::new(tmp.path().join("pinlock.toml"), uid);
     (tmp, file)

@@ -3,13 +3,11 @@
 use std::os::unix::net::UnixDatagram;
 use std::time::Duration;
 
-use tempfile::TempDir;
-
 use super::*;
 
 #[test]
 fn a_watchdog_ping_is_one_datagram_to_the_notify_socket() {
-    let dir = TempDir::new().unwrap();
+    let dir = crate::private_tempdir();
     let path = dir.path().join("notify");
     let server = UnixDatagram::bind(&path).unwrap();
     server

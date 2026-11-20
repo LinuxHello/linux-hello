@@ -91,3 +91,16 @@ fn main() -> ExitCode {
     };
     ExitCode::from(code)
 }
+
+/// A temporary directory that only its owner can use, whatever the umask of the shell that runs the
+/// tests: the code under test refuses a directory that others can write, and a developer's default
+/// umask (0002 on Ubuntu) would make every such test fail for a reason that says nothing about the
+/// code.
+#[cfg(test)]
+pub(crate) fn private_tempdir() -> tempfile::TempDir {
+    use std::os::unix::fs::PermissionsExt;
+    tempfile::Builder::new()
+        .permissions(std::fs::Permissions::from_mode(0o700))
+        .tempdir()
+        .expect("a temporary directory")
+}

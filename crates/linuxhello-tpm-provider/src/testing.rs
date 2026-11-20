@@ -29,7 +29,7 @@ impl SoftTpm {
     /// finds its swtpm gone (the port is taken), and tries again with another port.
     pub fn start() -> Option<Self> {
         for _ in 0..8 {
-            let state = tempfile::TempDir::new().unwrap();
+            let state = private_tempdir();
             let port = free_port();
             let child = Command::new("swtpm")
                 .args(["socket", "--tpm2", "--tpmstate"])
@@ -122,4 +122,14 @@ fn free_port() -> u16 {
             return port;
         }
     }
+}
+
+/// A temporary directory that only its owner can use, whatever the umask of the shell that runs the
+/// tests (the code under test refuses a directory that others can write).
+fn private_tempdir() -> tempfile::TempDir {
+    use std::os::unix::fs::PermissionsExt;
+    tempfile::Builder::new()
+        .permissions(std::fs::Permissions::from_mode(0o700))
+        .tempdir()
+        .expect("a temporary directory")
 }

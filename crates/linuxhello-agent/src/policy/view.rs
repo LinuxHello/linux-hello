@@ -269,7 +269,6 @@ mod tests {
     use crate::policy::load::load;
     use crate::policy::merge::merge;
     use crate::policy::schema::parse_layer;
-    use tempfile::TempDir;
 
     #[test]
     fn pin_rules_are_the_defaults_without_policy_files() {
@@ -299,7 +298,7 @@ mod tests {
 
     #[test]
     fn pin_only_state_has_the_default_pin_rules() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = crate::private_tempdir();
         let user_file = tmp.path().join("user.toml");
         std::fs::write(&user_file, "invalid = toml").unwrap();
         let pol = load(&tmp.path().join("absent.d"), &user_file, 0);
@@ -394,7 +393,7 @@ biometrics_allowed = true
 
     #[test]
     fn pin_only_view_carries_the_reason() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = crate::private_tempdir();
         let user_file = tmp.path().join("user.toml");
         std::fs::write(&user_file, "invalid = toml").unwrap();
         let pol = load(&tmp.path().join("absent.d"), &user_file, 0);
@@ -404,7 +403,7 @@ biometrics_allowed = true
     }
     #[test]
     fn pin_only_view_lists_the_pin_only_layer() {
-        let tmp = tempfile::TempDir::new().unwrap();
+        let tmp = crate::private_tempdir();
         let user_file = tmp.path().join("user.toml");
         std::fs::write(&user_file, "not toml").unwrap();
         let view = load(&tmp.path().join("absent.d"), &user_file, 0).effective();
