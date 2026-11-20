@@ -95,6 +95,7 @@ check "the_right_current_pin_changes_the_pin" 'pin change 111111 222222 222222 |
 check "after_a_change_the_old_pin_no_longer_works" 'pin change 111111 333333 333333 | grep -q "current PIN is wrong"'
 check "after_a_change_the_new_pin_works" 'pin change 222222 333333 333333 | grep -q "Done\.$"'
 check "a_pin_that_is_too_short_is_not_accepted" 'pin change 333333 1 1 | grep -q "not accepted"'
+check "a_pin_without_a_digit_is_not_accepted_by_the_default_policy" 'pin change 333333 abcdefgh abcdefgh | grep -q "not accepted"'
 check "the_pin_still_works_after_a_refused_change" 'pin change 333333 444444 444444 | grep -q "Done\.$"'
 check "no_confinement_denial_in_the_log" '! sudo journalctl -k --no-pager --since "-10min" 2>/dev/null | grep -E "apparmor=\"DENIED\".*(linuxhello-agent|linuxhello-tpm-provider|linuxhello-ctl)" | head -3 | grep .'
 

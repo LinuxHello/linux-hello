@@ -8,6 +8,7 @@ use tempfile::TempDir;
 use super::*;
 use crate::pinlock::service::Limits;
 use crate::pinlock::store::PinLockFile;
+use crate::policy::view::PinRules;
 
 /// A stand-in that keeps one PIN per user in memory and counts its calls.
 #[derive(Default)]
@@ -52,6 +53,22 @@ const LIMITS: Limits = Limits {
     max_lockout_secs: 86_400,
 };
 
+/// Rules of four to eight characters with a digit required and everything else allowed.
+fn rules() -> PinRules {
+    PinRules {
+        min_length: 4,
+        max_length: 8,
+        digits: "required".into(),
+        lowercase: "allowed".into(),
+        uppercase: "allowed".into(),
+        special: "allowed".into(),
+        history: 0,
+        expiry_days: None,
+        lockout_attempts: 5,
+        lockout_minutes: 15,
+    }
+}
+
 /// The time of every test.
 fn at_1000() -> u64 {
     1_000
@@ -63,6 +80,7 @@ struct Setup {
     memory: Memory,
     lock: PinLockService,
     wait: PinWait,
+    rules: PinRules,
     _dir: TempDir,
 }
 
@@ -82,6 +100,7 @@ fn setup() -> Setup {
         memory: Memory::default(),
         lock,
         wait,
+        rules: rules(),
         _dir: dir,
     }
 }
@@ -90,7 +109,7 @@ impl Setup {
     fn job(&self) -> Job<'_> {
         Job {
             subject: 1000,
-            length: (4, 8),
+            rules: &self.rules,
             wait: Duration::from_millis(300),
             lock: &self.lock,
             enrolment: &self.memory,
@@ -189,4 +208,72 @@ fn change_pin_while_locked_is_refused_without_asking_the_tpm() {
     assert_eq!(outcome.result, PromptResult::LockedOut);
     assert_eq!(*s.memory.calls.lock().unwrap(), before);
     assert_eq!(s.memory.pins.lock().unwrap()[&1000], b"1234");
+}
+
+/// The default rules with one kind of character set to `rule`.
+fn with(kind: &str, rule: &str) -> PinRules {
+    let mut rules = rules();
+    rules.min_length = 1;
+    rules.digits = "allowed".into();
+    match kind {
+        "digits" => rules.digits = rule.into(),
+        "lowercase" => rules.lowercase = rule.into(),
+        "uppercase" => rules.uppercase = rule.into(),
+        _ => rules.special = rule.into(),
+    }
+    rules
+}
+
+#[test]
+fn each_kind_of_character_is_required_allowed_or_disallowed_as_the_policy_says() {
+    // (kind, rule, a PIN that has the kind, a PIN that has not)
+    let cases = [
+        ("digits", "a1", "ab"),
+        ("lowercase", "aB", "AB"),
+        ("uppercase", "Ab", "ab"),
+        ("special", "a!", "ab"),
+    ];
+    for (kind, has, lacks) in cases {
+        let required = with(kind, "required");
+        assert!(rules_ok(has.as_bytes(), &required), "{kind} required, has");
+        assert!(
+            !rules_ok(lacks.as_bytes(), &required),
+            "{kind} required, lacks"
+        );
+        let disallowed = with(kind, "disallowed");
+        assert!(
+            !rules_ok(has.as_bytes(), &disallowed),
+            "{kind} disallowed, has"
+        );
+        assert!(
+            rules_ok(lacks.as_bytes(), &disallowed),
+            "{kind} disallowed, lacks"
+        );
+        let allowed = with(kind, "allowed");
+        assert!(rules_ok(has.as_bytes(), &allowed) && rules_ok(lacks.as_bytes(), &allowed));
+    }
+}
+
+#[test]
+fn a_rule_the_agent_does_not_understand_lets_no_pin_through() {
+    assert!(!rules_ok(b"abcd1", &with("special", "sometimes")));
+}
+
+#[test]
+fn length_counts_characters_not_bytes() {
+    let mut rules = with("digits", "allowed");
+    rules.min_length = 4;
+    rules.max_length = 4;
+    // Four characters of two bytes each.
+    assert!(rules_ok("åäöü".as_bytes(), &rules));
+    assert!(!rules_ok("åäö".as_bytes(), &rules));
+}
+
+#[test]
+fn a_pin_without_the_required_digit_is_refused_before_the_tpm_is_asked() {
+    let s = setup();
+    s.send(b"abcdef");
+    let outcome = run_set(&s.job(), &s.wait, &Cancel::default());
+    assert_eq!(outcome.result, PromptResult::Failure);
+    assert_eq!(*s.memory.calls.lock().unwrap(), 0);
 }

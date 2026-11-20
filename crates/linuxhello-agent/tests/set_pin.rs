@@ -183,6 +183,24 @@ fn set_pin_enrols_the_user_and_set_pin_twice_is_refused() {
 }
 
 #[test]
+fn a_pin_that_breaks_the_policys_character_rules_ends_in_failure_and_writes_nothing() {
+    run(async {
+        let world = world().await;
+        let client = connect(&world.daemon).await;
+        open(&client, &world).await;
+        let mut heard = signals(&client, "Result").await;
+        // The default policy requires a digit.
+        call(&client, "SetPin", &(world.id.as_str(),))
+            .await
+            .expect("set a PIN");
+        announce_and_send(&client, &world, b"abcdefgh").await;
+        let outcome = result_of(&mut heard).await;
+        assert_eq!(outcome.0, "failure");
+        assert!(!world.memory.has_pin(my_uid()));
+    });
+}
+
+#[test]
 fn change_pin_needs_the_current_pin_and_counts_a_wrong_one() {
     run(async {
         let world = world().await;
