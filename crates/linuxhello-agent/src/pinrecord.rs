@@ -7,6 +7,10 @@
 //! user, `pin-root.toml` in the user's directory of the Agent's state, mode 0600, owned by the
 //! Agent's user.
 //!
+//! Besides these it keeps a short history: fingerprints of the PINs that were replaced, so that a
+//! change cannot go back to a former PIN (ADR-0021, amendment of 2026-11-20). An entry is the PIN
+//! stretched under a salt of its own, so it opens nothing.
+//!
 //! Fail closed: a missing file means the user has no PIN yet; a file that exists and cannot be
 //! trusted (not a regular file, readable by others, owned by someone else, too large, not TOML, a
 //! version or a salt that is not ours, stretching parameters outside the accepted range) is
@@ -34,6 +38,22 @@ const FILE_NAME: &str = "pin-root.toml";
 /// The largest record that is read, in bytes. A larger file is not trusted.
 const MAX_FILE_BYTES: u64 = 16 * 1024;
 
+/// The most earlier PINs a record remembers, whatever the policy says (ADR-0021, amendment of
+/// 2026-11-20, point 3).
+pub const MAX_HISTORY: usize = 24;
+
+/// A fingerprint of a PIN that was replaced: the Argon2id result of the PIN under a salt of its
+/// own, never the salt of a root key, so it is not the authorisation value of any key.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HistoryEntry {
+    /// The cost the fingerprint was made with.
+    pub params: Params,
+    /// The random salt of this entry.
+    pub salt: [u8; SALT_BYTES],
+    /// The 32 bytes of the stretching.
+    pub hash: [u8; 32],
+}
+
 /// What a user's PIN root key needs to be used again.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PinRecord {
@@ -43,6 +63,8 @@ pub struct PinRecord {
     pub salt: [u8; SALT_BYTES],
     /// The blobs of the root key.
     pub blobs: Blobs,
+    /// Fingerprints of the PINs that were replaced, newest first; at most [`MAX_HISTORY`].
+    pub history: Vec<HistoryEntry>,
 }
 
 /// Why a record could not be read.
@@ -70,6 +92,24 @@ struct FileText {
     public: String,
     /// The private blob, in hexadecimal.
     private: String,
+    /// The history, newest first; a record written before it existed has none.
+    #[serde(default)]
+    history: Vec<HistoryText>,
+}
+
+/// A history entry as TOML.
+#[derive(Serialize, Deserialize)]
+struct HistoryText {
+    /// Argon2 memory in KiB.
+    memory_kib: u32,
+    /// Argon2 passes.
+    passes: u32,
+    /// Argon2 lanes.
+    lanes: u32,
+    /// The salt, in hexadecimal.
+    salt: String,
+    /// The result, in hexadecimal.
+    hash: String,
 }
 
 /// The records of every user, under one root directory with a directory per user id.
@@ -127,6 +167,27 @@ impl PinRecordStore {
             unhex(&parsed.public).ok_or(RecordError::Untrusted)?,
             unhex(&parsed.private).ok_or(RecordError::Untrusted)?,
         );
+        if parsed.history.len() > MAX_HISTORY {
+            return Err(RecordError::Untrusted);
+        }
+        let history = parsed
+            .history
+            .iter()
+            .map(|entry| {
+                let params = Params {
+                    memory_kib: entry.memory_kib,
+                    passes: entry.passes,
+                    lanes: entry.lanes,
+                };
+                Some(HistoryEntry {
+                    params,
+                    salt: unhex(&entry.salt)?.try_into().ok()?,
+                    hash: unhex(&entry.hash)?.try_into().ok()?,
+                })
+            })
+            .collect::<Option<Vec<_>>>()
+            .filter(|entries| entries.iter().all(|e| e.params.acceptable()))
+            .ok_or(RecordError::Untrusted)?;
         if parsed.version != VERSION
             || !params.acceptable()
             || public.is_empty()
@@ -138,6 +199,7 @@ impl PinRecordStore {
             params,
             salt,
             blobs: Blobs { public, private },
+            history,
         }))
     }
 
@@ -162,6 +224,18 @@ impl PinRecordStore {
             salt: hex(&record.salt),
             public: hex(&record.blobs.public),
             private: hex(&record.blobs.private),
+            history: record
+                .history
+                .iter()
+                .take(MAX_HISTORY)
+                .map(|entry| HistoryText {
+                    memory_kib: entry.params.memory_kib,
+                    passes: entry.params.passes,
+                    lanes: entry.params.lanes,
+                    salt: hex(&entry.salt),
+                    hash: hex(&entry.hash),
+                })
+                .collect(),
         })
         .map_err(io::Error::other)?;
         let temporary = dir.join(format!(".{FILE_NAME}.{}", std::process::id()));

@@ -24,7 +24,7 @@ use zeroize::Zeroizing;
 use super::enrol::PinEnrolment;
 use super::{PinVerifier, VerifyError};
 use crate::pinkdf::{stretch, KdfError, Params, SALT_BYTES};
-use crate::pinrecord::{PinRecord, PinRecordStore, RecordError};
+use crate::pinrecord::{HistoryEntry, PinRecord, PinRecordStore, RecordError, MAX_HISTORY};
 
 /// Why a PIN could not be set or changed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -35,6 +35,8 @@ pub enum EnrolError {
     NotEnrolled,
     /// The current PIN is wrong.
     WrongPin,
+    /// The new PIN is the current one or one of the last PINs that were replaced.
+    Reused,
     /// The PIN is empty, not text or too long.
     BadPin(KdfError),
     /// The record cannot be trusted or written.
@@ -91,19 +93,31 @@ impl TpmVerifier {
                     params: self.params,
                     salt,
                     blobs,
+                    history: Vec::new(),
                 },
             )
             .map_err(|_| EnrolError::Record)
     }
 
     /// Changes the PIN of `uid` from `old` to `new` in place: the TPM changes the key's
-    /// authorisation, a new salt is made, and the record is replaced.
+    /// authorisation, a new salt is made, and the record is replaced. The new PIN may not be the
+    /// current one nor one of the last `history` PINs that were replaced (at most
+    /// [`MAX_HISTORY`]); the replaced PIN is then remembered as a fingerprint (ADR-0021, amendment
+    /// of 2026-11-20).
     ///
     /// # Errors
     ///
     /// [`EnrolError`]; the record is replaced only after the TPM changed the key, and a wrong `old`
-    /// changes nothing.
-    pub fn change_pin(&self, uid: u32, old: &[u8], new: &[u8]) -> Result<(), EnrolError> {
+    /// changes nothing. [`EnrolError::Reused`] is answered only after the TPM has accepted `old`,
+    /// so that nobody without the current PIN learns whether a PIN is a former one; a new PIN equal
+    /// to the `old` one supplied is refused at once, which tells nothing about the real PIN.
+    pub fn change_pin(
+        &self,
+        uid: u32,
+        old: &[u8],
+        new: &[u8],
+        history: u32,
+    ) -> Result<(), EnrolError> {
         let record = match self.records.load(uid) {
             Ok(Some(record)) => record,
             Ok(None) => return Err(EnrolError::NotEnrolled),
@@ -111,8 +125,42 @@ impl TpmVerifier {
         };
         let old_auth =
             authorisation(old, &record.salt, &record.params).map_err(EnrolError::BadPin)?;
+        // The same PIN as the one supplied as current, in whatever form: refused without the TPM.
+        let again = authorisation(new, &record.salt, &record.params).map_err(EnrolError::BadPin)?;
+        if same(&again, &old_auth) {
+            return Err(EnrolError::Reused);
+        }
+        let keep = usize::try_from(history)
+            .unwrap_or(MAX_HISTORY)
+            .min(MAX_HISTORY);
+        if keep > 0 && !record.history.is_empty() {
+            // Only now is the history asked: the TPM must first accept the current PIN.
+            match self.client.verify(record.blobs.clone(), old_auth.clone()) {
+                Ok(true) => {}
+                Ok(false) => return Err(EnrolError::WrongPin),
+                Err(other) => return Err(EnrolError::Tpm(other)),
+            }
+            for entry in record.history.iter().take(keep) {
+                let hash = stretch(new, &entry.salt, &entry.params).map_err(EnrolError::BadPin)?;
+                if same(hash.as_bytes(), &entry.hash) {
+                    return Err(EnrolError::Reused);
+                }
+            }
+        }
         let new_salt = random_salt().ok_or(EnrolError::Record)?;
         let new_auth = authorisation(new, &new_salt, &self.params).map_err(EnrolError::BadPin)?;
+        // The fingerprint of the PIN that is being replaced, under a salt that is not any key's.
+        let remembered = if keep > 0 {
+            let salt = random_salt().ok_or(EnrolError::Record)?;
+            let hash = stretch(old, &salt, &record.params).map_err(EnrolError::BadPin)?;
+            Some(HistoryEntry {
+                params: record.params,
+                salt,
+                hash: *hash.as_bytes(),
+            })
+        } else {
+            None
+        };
         let blobs = self
             .client
             .change_auth(record.blobs, old_auth, new_auth)
@@ -121,6 +169,11 @@ impl TpmVerifier {
                 ClientError::Failed => EnrolError::WrongPin,
                 other => EnrolError::Tpm(other),
             })?;
+        let history: Vec<HistoryEntry> = remembered
+            .into_iter()
+            .chain(record.history)
+            .take(keep)
+            .collect();
         self.records
             .save(
                 uid,
@@ -128,10 +181,19 @@ impl TpmVerifier {
                     params: self.params,
                     salt: new_salt,
                     blobs,
+                    history,
                 },
             )
             .map_err(|_| EnrolError::Record)
     }
+}
+
+/// Whether two 32-byte values are equal, comparing every byte.
+fn same(a: &[u8; 32], b: &[u8; 32]) -> bool {
+    a.iter()
+        .zip(b)
+        .fold(0_u8, |difference, (x, y)| difference | (x ^ y))
+        == 0
 }
 
 impl PinVerifier for TpmVerifier {
@@ -178,7 +240,7 @@ impl PinEnrolment for TpmVerifier {
         self.enrol(uid, pin)
     }
 
-    fn change(&self, uid: u32, old: &[u8], new: &[u8]) -> Result<(), EnrolError> {
-        self.change_pin(uid, old, new)
+    fn change(&self, uid: u32, old: &[u8], new: &[u8], history: u32) -> Result<(), EnrolError> {
+        self.change_pin(uid, old, new, history)
     }
 }

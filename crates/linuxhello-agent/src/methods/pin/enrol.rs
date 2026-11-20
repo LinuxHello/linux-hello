@@ -37,12 +37,13 @@ pub trait PinEnrolment: Send + Sync {
     /// [`EnrolError`]; nothing is written unless the key was made.
     fn set(&self, uid: u32, pin: &[u8]) -> Result<(), EnrolError>;
 
-    /// Changes the PIN of `uid` from `old` to `new`.
+    /// Changes the PIN of `uid` from `old` to `new`, which may not be the current PIN nor one of the
+    /// last `history` PINs that were replaced.
     ///
     /// # Errors
     ///
     /// [`EnrolError`]; a wrong `old` changes nothing.
-    fn change(&self, uid: u32, old: &[u8], new: &[u8]) -> Result<(), EnrolError>;
+    fn change(&self, uid: u32, old: &[u8], new: &[u8], history: u32) -> Result<(), EnrolError>;
 }
 
 /// The registration that makes the PIN socket hand `uid`'s PINs to a job. Made before the call
@@ -173,7 +174,10 @@ pub fn run_change(job: &Job<'_>, wait: &PinWait, cancel: &Cancel) -> Outcome {
     if !rules_ok(&new, job.rules) {
         return failure(PromptReason::None);
     }
-    match job.enrolment.change(job.subject, &old, &new) {
+    match job
+        .enrolment
+        .change(job.subject, &old, &new, job.rules.history)
+    {
         Ok(()) => match job.lock.record_pin_success(job.subject) {
             Ok(()) => Outcome::new(PromptResult::Success),
             Err(_) => failure(PromptReason::None),
