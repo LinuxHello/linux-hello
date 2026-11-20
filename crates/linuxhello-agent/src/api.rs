@@ -164,6 +164,20 @@ pub struct AuthStart {
     pub stop: Cancel,
 }
 
+/// What a started `SetPin` or `ChangePin` needs to run.
+pub struct PinStart {
+    /// The user who opened the prompt, which keys it in the store.
+    pub opener_uid: u32,
+    /// The prompt.
+    pub prompt: PromptId,
+    /// The user whose PIN it is: always the caller.
+    pub subject: u32,
+    /// The shortest and longest PIN the policy allows, in characters.
+    pub length: (u32, u32),
+    /// Set when the prompt closes; the job stops at once.
+    pub stop: Cancel,
+}
+
 /// One condition of `GetStatus`, with the detail only root sees.
 struct StatusItem {
     /// The code, from the closed set of `linuxhello_dbus::status`.
@@ -643,6 +657,66 @@ impl Api {
             prompt,
             subject,
             rule,
+            stop,
+        })
+    }
+
+    /// Starts `SetPin` (`change` false) or `ChangePin` (`change` true), ADR-0021 amendment
+    /// 2026-11-20. Only the connection that opened the prompt may ask, and only for its own user:
+    /// a PIN is its owner's secret, so root cannot set or change another user's.
+    /// `has_pin` says whether that user already has one.
+    ///
+    /// # Errors
+    ///
+    /// [`ApiError::Denied`] without a caller uid or connection name, for a prompt that is not the
+    /// caller's, one that does not exist, and a prompt for another user (one text for all);
+    /// [`ApiError::InvalidArgument`] for a malformed id, for `SetPin` when a PIN is set and for
+    /// `ChangePin` when none is; [`ApiError::LimitReached`] while a job of this prompt runs;
+    /// [`ApiError::Unavailable`] without a policy store.
+    pub fn begin_pin_change(
+        &mut self,
+        caller: Caller,
+        prompt_id: &str,
+        change: bool,
+        has_pin: bool,
+    ) -> Result<PinStart, ApiError> {
+        let result = self.begin_pin_change_unaudited(&caller, prompt_id, change, has_pin);
+        self.audited(&caller, result)
+    }
+
+    /// The work of [`Api::begin_pin_change`], without the audit record.
+    fn begin_pin_change_unaudited(
+        &mut self,
+        caller: &Caller,
+        prompt_id: &str,
+        change: bool,
+        has_pin: bool,
+    ) -> Result<PinStart, ApiError> {
+        let uid = caller.uid.ok_or(ApiError::Denied)?;
+        let prompt = parse_prompt(prompt_id)?;
+        let peer = Peer(caller.peer.ok_or(ApiError::Denied)?.as_str().to_string());
+        let subject = self
+            .store
+            .subject_of(uid, &prompt, Some(&peer))?
+            .ok_or(ApiError::Denied)?;
+        if subject != uid {
+            return Err(ApiError::Denied);
+        }
+        // `SetPin` needs no PIN yet, `ChangePin` needs one.
+        if has_pin != change {
+            return Err(ApiError::InvalidArgument);
+        }
+        if self.running.contains_key(&(uid, prompt.clone())) {
+            return Err(ApiError::LimitReached);
+        }
+        let rules = self.policy_of(subject)?.pin_rules();
+        let stop = Cancel::default();
+        self.running.insert((uid, prompt.clone()), stop.clone());
+        Ok(PinStart {
+            opener_uid: uid,
+            prompt,
+            subject,
+            length: (rules.min_length, rules.max_length),
             stop,
         })
     }

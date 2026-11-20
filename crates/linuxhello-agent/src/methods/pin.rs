@@ -85,7 +85,10 @@ impl PinInbox {
     }
 
     /// Registers a method that waits for `subject`; the registration ends with the returned guard.
-    fn expect(self: &Arc<Self>, subject: u32) -> (Waiting, Receiver<Zeroizing<Vec<u8>>>) {
+    pub(crate) fn expect(
+        self: &Arc<Self>,
+        subject: u32,
+    ) -> (Waiting, Receiver<Zeroizing<Vec<u8>>>) {
         let (sender, receiver) = channel();
         self.waiting
             .lock()
@@ -102,7 +105,7 @@ impl PinInbox {
 }
 
 /// A registration in the inbox; dropping it removes it.
-struct Waiting {
+pub(crate) struct Waiting {
     /// The inbox it is in.
     inbox: Arc<PinInbox>,
     /// Who the method waits for.
@@ -206,6 +209,7 @@ impl Method for PinMethod {
     }
 }
 
+pub mod enrol;
 pub mod tpm;
 
 #[cfg(test)]

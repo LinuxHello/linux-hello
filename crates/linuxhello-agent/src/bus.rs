@@ -36,8 +36,10 @@ use zbus::{connection, interface, Connection};
 
 use crate::api::{Api, ApiError, Caller, Notification, PeerName};
 use crate::audit::Audit;
+use crate::methods::pin::enrol::{run_change, run_set, Job, PinEnrolment};
+use crate::methods::pin::PinInbox;
 use crate::orchestrator::{Method, Orchestrator, Reporter};
-use crate::pinlock::service::PinLockService;
+use crate::pinlock::service::{wall_clock_seconds, PinLockService};
 use crate::pinsocket::PinSocket;
 use crate::policy::user_store::UserPolicyStore;
 use crate::state::{Config, Outcome, Update};
@@ -90,6 +92,10 @@ pub struct AgentService {
     started: Instant,
     /// The PIN socket that `ExpectPin` announces a PIN to, when the Agent has one.
     pin_socket: Option<Arc<PinSocket>>,
+    /// Where the PIN socket hands PINs to `SetPin` and `ChangePin`, and what they call.
+    pin_change: Option<PinChange>,
+    /// The PIN lock, which `ChangePin` counts a wrong current PIN in.
+    lock: Option<Arc<PinLockService>>,
     /// Makes the methods that an authentication runs, for the user being authenticated.
     methods: MethodFactory,
     /// How long an authentication may take before it fails with `timeout`.
@@ -106,6 +112,8 @@ impl AgentService {
             api: Api::new(config),
             started: Instant::now(),
             pin_socket: None,
+            pin_change: None,
+            lock: None,
             methods: Arc::new(|_| Vec::new()),
             auth_deadline: AUTH_DEADLINE,
             updates: None,
@@ -144,6 +152,8 @@ impl AgentService {
                 .with_audit(audit),
             started: Instant::now(),
             pin_socket: None,
+            pin_change: None,
+            lock: None,
             methods: Arc::new(|_| Vec::new()),
             auth_deadline: AUTH_DEADLINE,
             updates: None,
@@ -154,9 +164,63 @@ impl AgentService {
     #[must_use]
     pub fn with_pin_lock(self, pin_lock: Option<Arc<PinLockService>>) -> Self {
         Self {
+            lock: pin_lock.clone(),
             api: self.api.with_shared_pin_lock(pin_lock),
             ..self
         }
+    }
+
+    /// Starts the job of `SetPin` or `ChangePin` on a thread of its own.
+    async fn start_pin_job(
+        &mut self,
+        prompt_id: &str,
+        change: bool,
+        header: &Header<'_>,
+        connection: &Connection,
+    ) -> Result<(), AgentError> {
+        self.tick();
+        let caller = caller_of(connection, header.sender()).await;
+        let (Some(pin_change), Some(lock), Some(updates)) = (
+            self.pin_change.clone(),
+            self.lock.clone(),
+            self.updates.clone(),
+        ) else {
+            return Err(to_bus(ApiError::Unavailable));
+        };
+        let has_pin = caller
+            .uid
+            .is_some_and(|uid| pin_change.enrolment.has_pin(uid));
+        let start = self
+            .api
+            .begin_pin_change(caller, prompt_id, change, has_pin)
+            .map_err(to_bus)?;
+        // Registered before the call returns, so that a PIN sent right after it is not lost.
+        let wait = pin_change.inbox.wait_for(start.subject);
+        std::thread::spawn(move || {
+            let job = Job {
+                subject: start.subject,
+                length: start.length,
+                wait: PIN_WAIT,
+                lock: &lock,
+                enrolment: &*pin_change.enrolment,
+                clock: wall_clock_seconds,
+            };
+            let ran = catch_unwind(AssertUnwindSafe(|| {
+                if change {
+                    run_change(&job, &wait, &start.stop)
+                } else {
+                    run_set(&job, &wait, &start.stop)
+                }
+            }));
+            // Whatever went wrong, the prompt must not stay "running" for ever.
+            let outcome = ran.unwrap_or_else(|_| Outcome::new(PromptResult::Failure));
+            let _ = updates.send(AgentUpdate {
+                uid: start.opener_uid,
+                prompt: start.prompt,
+                update: Update::Result(outcome),
+            });
+        });
+        Ok(())
     }
 
     /// The same service with the PIN socket that `ExpectPin` announces to.
@@ -227,6 +291,19 @@ pub async fn serve_with_pin_lock(
     serve_with_extras(builder, config, user_policies, extras).await
 }
 
+/// What `SetPin` and `ChangePin` need: the inbox the PIN socket fills, and what makes the keys.
+#[derive(Clone)]
+pub struct PinChange {
+    /// Where the PIN socket hands PINs.
+    pub inbox: Arc<PinInbox>,
+    /// What sets and changes a PIN.
+    pub enrolment: Arc<dyn PinEnrolment>,
+}
+
+/// How long `SetPin` and `ChangePin` wait for each PIN after the call: the socket's own window and
+/// a margin for the client to send it.
+const PIN_WAIT: Duration = Duration::from_secs(60);
+
 /// What the Agent has besides its configuration and its policy store.
 #[derive(Default)]
 pub struct Extras {
@@ -236,6 +313,8 @@ pub struct Extras {
     pub pin_socket: Option<Arc<PinSocket>>,
     /// The PIN lock that `GetStatus` reads.
     pub pin_lock: Option<Arc<PinLockService>>,
+    /// What `SetPin` and `ChangePin` use; without it they are `Unavailable`.
+    pub pin_change: Option<PinChange>,
     /// Makes the methods an authentication runs; none by default.
     pub methods: Option<MethodFactory>,
     /// How long an authentication may take; a minute by default.
@@ -258,6 +337,7 @@ pub async fn serve_with_extras(
     )
     .with_pin_socket(extras.pin_socket)
     .with_pin_lock(extras.pin_lock);
+    service.pin_change = extras.pin_change;
     if let Some(methods) = extras.methods {
         service.methods = methods;
     }
@@ -692,6 +772,31 @@ impl AgentService {
             }
         });
         Ok(())
+    }
+
+    /// Starts setting the caller's first PIN: the Agent waits for one PIN on the PIN socket and
+    /// reports the outcome as the prompt's `Result`. Returns at once (ADR-0021, amendment
+    /// 2026-11-20).
+    async fn set_pin(
+        &mut self,
+        prompt_id: &str,
+        #[zbus(header)] header: Header<'_>,
+        #[zbus(connection)] connection: &Connection,
+    ) -> Result<(), AgentError> {
+        self.start_pin_job(prompt_id, false, &header, connection)
+            .await
+    }
+
+    /// Starts changing the caller's PIN: the Agent waits for the current PIN and then the new one
+    /// on the PIN socket and reports the outcome as the prompt's `Result`. Returns at once.
+    async fn change_pin(
+        &mut self,
+        prompt_id: &str,
+        #[zbus(header)] header: Header<'_>,
+        #[zbus(connection)] connection: &Connection,
+    ) -> Result<(), AgentError> {
+        self.start_pin_job(prompt_id, true, &header, connection)
+            .await
     }
 
     /// Announces that the caller, who opened the prompt, is about to send one PIN on the PIN

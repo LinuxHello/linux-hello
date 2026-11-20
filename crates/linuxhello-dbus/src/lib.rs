@@ -46,6 +46,7 @@ pub const INTERFACE_VERSION: u32 = 1;
 pub const CAPABILITIES: &[&str] = &[
     "ActiveMethods",
     "Authenticate",
+    "ChangePin",
     "Closed",
     "ExpectPin",
     "GetCapabilities",
@@ -54,6 +55,7 @@ pub const CAPABILITIES: &[&str] = &[
     "GetStatus",
     "GetStatusDetails",
     "GetUserPolicy",
+    "SetPin",
     "SetUserPolicy",
     "Unsubscribe",
 ];
