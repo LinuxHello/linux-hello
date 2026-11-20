@@ -63,6 +63,13 @@ pub struct TpmLimits {
 pub enum Request {
     /// The TPM's own lockout limits. Changes nothing.
     Limits,
+    /// Whether the root key in `blobs` loads in this TPM: [`STATUS_OK`] when it does,
+    /// [`STATUS_WRONG`] when it does not (the TPM was cleared or replaced, or the blob is damaged).
+    /// Needs no PIN and changes and counts nothing.
+    Loads {
+        /// The key.
+        blobs: Blobs,
+    },
     /// Make a root key whose authorisation is `auth`.
     Enrol {
         /// The authorisation of the new key.
@@ -102,6 +109,8 @@ const OP_VERIFY: u8 = 2;
 const OP_CHANGE_AUTH: u8 = 3;
 /// The operation byte of [`Request::Limits`].
 const OP_LIMITS: u8 = 4;
+/// The operation byte of [`Request::Loads`].
+const OP_LOADS: u8 = 5;
 
 /// A cursor over a body: takes length-prefixed fields and says when there are none left.
 struct Reader<'a>(&'a [u8]);
@@ -154,6 +163,11 @@ pub fn encode_request(request: &Request) -> Option<Zeroizing<Vec<u8>>> {
     let mut body = Zeroizing::new(Vec::new());
     match request {
         Request::Limits => body.push(OP_LIMITS),
+        Request::Loads { blobs } => {
+            body.push(OP_LOADS);
+            put(&mut body, &blobs.public)?;
+            put(&mut body, &blobs.private)?;
+        }
         Request::Enrol { auth } => {
             body.push(OP_ENROL);
             put(&mut body, &**auth)?;
@@ -181,6 +195,9 @@ pub fn decode_request(body: &[u8]) -> Option<Request> {
     let mut reader = Reader(body);
     let request = match reader.byte()? {
         OP_LIMITS => Request::Limits,
+        OP_LOADS => Request::Loads {
+            blobs: reader.blobs()?,
+        },
         OP_ENROL => Request::Enrol {
             auth: reader.auth()?,
         },

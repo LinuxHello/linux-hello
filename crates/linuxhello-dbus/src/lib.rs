@@ -149,6 +149,13 @@ pub mod status {
         )
     }
 
+    /// The code of a PIN key that the TPM no longer holds: the TPM was cleared or replaced since the
+    /// key was made, or the record is damaged. The PIN cannot be used until the enrolment is reset.
+    pub const TPM_CLEARED: &str = "tpm-cleared";
+    /// The sentence of [`TPM_CLEARED`].
+    pub const TPM_CLEARED_SENTENCE: &str =
+        "The TPM no longer holds the key that your PIN opens (it was cleared or replaced), so your PIN cannot be used until your enrolment is reset.";
+
     /// The sentence for an unsatisfiable `context`.
     #[must_use]
     pub fn context_unsatisfiable_sentence(context: &str) -> String {

@@ -75,6 +75,21 @@ fn the_agent_reads_the_tpms_limits_through_the_socket() {
 }
 
 #[test]
+fn the_agent_asks_whether_a_key_still_loads_through_the_socket() {
+    let Some(soft) = SoftTpm::start() else { return };
+    let (path, _dir, _stop) = provider(&soft, me());
+    let client = TpmClient::new(&path);
+    let blobs = client.enrol(auth(1)).unwrap();
+    assert_eq!(client.key_loads(blobs.clone()), Ok(true));
+    // A damaged blob does not load; nothing was counted as a wrong PIN.
+    let mut damaged = blobs.clone();
+    let last = damaged.private.len() - 1;
+    damaged.private[last] ^= 0xff;
+    assert_eq!(client.key_loads(damaged), Ok(false));
+    assert_eq!(client.verify(blobs, auth(1)), Ok(true));
+}
+
+#[test]
 fn a_user_who_is_not_the_agent_is_not_served() {
     let Some(soft) = SoftTpm::start() else { return };
     // The provider serves another user id; this test's connection is refused by closing it.

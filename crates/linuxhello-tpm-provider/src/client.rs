@@ -86,6 +86,23 @@ impl TpmClient {
         }
     }
 
+    /// Whether the root key in `blobs` loads in this TPM. `false` when the TPM was cleared or
+    /// replaced since the key was made, or the blob is damaged; no PIN is needed and nothing is
+    /// counted.
+    ///
+    /// # Errors
+    ///
+    /// [`ClientError::Locked`] in lockout, [`ClientError::Failed`] for anything that is not an
+    /// answer about the key.
+    pub fn key_loads(&self, blobs: Blobs) -> Result<bool, ClientError> {
+        match self.call(&Request::Loads { blobs })?.status {
+            STATUS_OK => Ok(true),
+            STATUS_WRONG => Ok(false),
+            STATUS_LOCKED => Err(ClientError::Locked),
+            _ => Err(ClientError::Failed),
+        }
+    }
+
     /// The limits the TPM reports for wrong authorisations.
     ///
     /// # Errors

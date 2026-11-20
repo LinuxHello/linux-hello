@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::sync::{mpsc, Arc};
 
 use linuxhello_agent::methods::pin::tpm::{EnrolError, TpmVerifier};
-use linuxhello_agent::methods::pin::{PinInbox, PinMethod, PinVerifier, VerifyError};
+use linuxhello_agent::methods::pin::{KeyProbe, PinInbox, PinMethod, PinVerifier, VerifyError};
 use linuxhello_agent::orchestrator::{Cancel, Method, MethodEnd};
 use linuxhello_agent::pinkdf::Params;
 use linuxhello_agent::pinlock::service::{Limits, PinLockService};
@@ -442,4 +442,40 @@ fn one_users_failed_pins_cannot_lock_out_another_user() {
     // B's right PIN still opens B's key: the TPM is not locked out.
     assert!(inbox.deliver(1001, zeroize::Zeroizing::new(b"pin-of-b".to_vec())));
     assert_eq!(method_b.run(&Cancel::default()), MethodEnd::Success);
+}
+
+#[test]
+fn a_pin_key_that_the_tpm_does_not_hold_is_told_apart_from_a_key_that_it_does() {
+    let (Some(first), Some(second)) = (stack(), stack()) else {
+        return;
+    };
+    // No record: nothing is claimed.
+    assert_eq!(first.verifier.key_loads(1000), None);
+    first.verifier.enrol(1000, b"pin-one").unwrap();
+    assert_eq!(first.verifier.key_loads(1000), Some(true));
+    // The same record on a machine whose TPM is another one (a cleared TPM has a new seed).
+    let theirs = second.records.join("1000");
+    std::fs::create_dir_all(&theirs).unwrap();
+    std::fs::set_permissions(&theirs, std::fs::Permissions::from_mode(0o700)).unwrap();
+    std::fs::copy(
+        first.records.join("1000").join("pin-root.toml"),
+        theirs.join("pin-root.toml"),
+    )
+    .unwrap();
+    assert_eq!(second.verifier.key_loads(1000), Some(false));
+    // Nothing was counted as a wrong PIN: the TPM still answers normally.
+    assert_eq!(second.verifier.verify(1000, b"pin-one"), Err(VerifyError));
+    assert_eq!(first.verifier.verify(1000, b"pin-one"), Ok(true));
+}
+
+#[test]
+fn a_provider_that_is_not_there_claims_nothing_about_the_key() {
+    let Some(s) = stack() else { return };
+    s.verifier.enrol(1000, b"pin-one").unwrap();
+    let dir = private_tempdir();
+    let down = TpmVerifier::new(
+        PinRecordStore::new(&s.records, me()),
+        dir.path().join("none.sock"),
+    );
+    assert_eq!(down.key_loads(1000), None, "unknown is not cleared");
 }

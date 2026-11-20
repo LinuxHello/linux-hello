@@ -153,3 +153,17 @@ fn a_limits_request_is_one_byte() {
     assert!(matches!(decode_request(&[4]), Some(Request::Limits)));
     assert!(decode_request(&[4, 0]).is_none());
 }
+
+#[test]
+fn a_loads_request_survives_encoding_and_is_exactly_one_request() {
+    match roundtrip(&Request::Loads { blobs: blobs() }) {
+        Request::Loads { blobs: b } => assert_eq!(b, blobs()),
+        _ => panic!("another request"),
+    }
+    let body = encode_request(&Request::Loads { blobs: blobs() }).unwrap();
+    assert_eq!(body[0], 5);
+    let mut longer = body.to_vec();
+    longer.push(0);
+    assert!(decode_request(&longer).is_none());
+    assert!(decode_request(&body[..body.len() - 1]).is_none());
+}

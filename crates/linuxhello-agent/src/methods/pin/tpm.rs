@@ -22,7 +22,7 @@ use linuxhello_tpm_provider::wire::Auth;
 use zeroize::Zeroizing;
 
 use super::enrol::PinEnrolment;
-use super::{PinVerifier, VerifyError};
+use super::{KeyProbe, PinVerifier, VerifyError};
 use crate::pinkdf::{stretch, KdfError, Params, SALT_BYTES};
 use crate::pinrecord::{HistoryEntry, PinRecord, PinRecordStore, RecordError, MAX_HISTORY};
 
@@ -242,5 +242,14 @@ impl PinEnrolment for TpmVerifier {
 
     fn change(&self, uid: u32, old: &[u8], new: &[u8], history: u32) -> Result<(), EnrolError> {
         self.change_pin(uid, old, new, history)
+    }
+}
+
+impl KeyProbe for TpmVerifier {
+    fn key_loads(&self, uid: u32) -> Option<bool> {
+        let Ok(Some(record)) = self.records.load(uid) else {
+            return None;
+        };
+        self.client.key_loads(record.blobs).ok()
     }
 }

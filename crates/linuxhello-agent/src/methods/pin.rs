@@ -51,6 +51,14 @@ pub trait PinVerifier: Send + Sync {
     fn verify(&self, uid: u32, pin: &[u8]) -> Result<bool, VerifyError>;
 }
 
+/// Whether a user's PIN key is still in the TPM, for the status (`tpm-cleared`).
+pub trait KeyProbe: Send + Sync {
+    /// `Some(false)` when the user has a PIN record but the TPM does not hold the key (it was
+    /// cleared or replaced, or the record is damaged); `Some(true)` when it does; `None` when there
+    /// is no record, or the TPM cannot be asked (nothing is claimed then).
+    fn key_loads(&self, uid: u32) -> Option<bool>;
+}
+
 /// The verifier of an Agent that has no way to check a PIN yet: always unavailable.
 pub struct NoVerifier;
 

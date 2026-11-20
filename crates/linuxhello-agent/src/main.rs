@@ -138,6 +138,7 @@ async fn run() -> zbus::Result<()> {
         audit: Some(Audit::journal()),
         pin_socket,
         pin_lock: Some(Arc::clone(&lock)),
+        key_probe: Some(tpm.clone()),
         pin_change: Some(PinChange {
             inbox: Arc::clone(&inbox),
             enrolment: tpm,
