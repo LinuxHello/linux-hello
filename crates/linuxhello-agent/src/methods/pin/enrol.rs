@@ -19,6 +19,7 @@ use super::{PinInbox, Waiting};
 use crate::orchestrator::Cancel;
 use crate::pinlock::service::PinLockService;
 use crate::pinlock::PinLockError;
+use crate::policy::view::PinRules;
 use crate::state::Outcome;
 
 /// How often a waiting job looks at whether its prompt was closed.
@@ -87,8 +88,8 @@ impl PinWait {
 pub struct Job<'a> {
     /// The user whose PIN it is.
     pub subject: u32,
-    /// The shortest and longest PIN the policy allows, in characters.
-    pub length: (u32, u32),
+    /// The PIN rules of the policy: length and the kinds of characters.
+    pub rules: &'a PinRules,
     /// How long each PIN may take to arrive.
     pub wait: Duration,
     /// The counter of wrong PINs.
@@ -107,12 +108,32 @@ fn failure(reason: PromptReason) -> Outcome {
     }
 }
 
-/// Whether `pin` has a length the policy allows; a PIN that is not text is left to the stretching.
-fn length_ok(pin: &[u8], (min, max): (u32, u32)) -> bool {
-    std::str::from_utf8(pin).map_or(true, |text| {
-        let length = u32::try_from(text.chars().count()).unwrap_or(u32::MAX);
-        (min..=max).contains(&length)
-    })
+/// Whether one kind of character is present as the rule demands: `required` needs one,
+/// `disallowed` needs none, `allowed` accepts either. A word that is none of the three is refused,
+/// so a rule the Agent does not understand never lets a PIN through.
+fn kind_ok(rule: &str, present: bool) -> bool {
+    match rule {
+        "required" => present,
+        "disallowed" => !present,
+        "allowed" => true,
+        _ => false,
+    }
+}
+
+/// Whether `pin` follows `rules`: its length in characters, and which kinds of characters it has.
+/// Digits are the ASCII digits, letters are letters of any alphabet that have a case, and a special
+/// character is any other that is not a letter or a digit (a space counts). A PIN that is not text
+/// is left to the stretching, which refuses it.
+pub fn rules_ok(pin: &[u8], rules: &PinRules) -> bool {
+    let Ok(text) = std::str::from_utf8(pin) else {
+        return true;
+    };
+    let length = u32::try_from(text.chars().count()).unwrap_or(u32::MAX);
+    (rules.min_length..=rules.max_length).contains(&length)
+        && kind_ok(&rules.digits, text.chars().any(|c| c.is_ascii_digit()))
+        && kind_ok(&rules.lowercase, text.chars().any(char::is_lowercase))
+        && kind_ok(&rules.uppercase, text.chars().any(char::is_uppercase))
+        && kind_ok(&rules.special, text.chars().any(|c| !c.is_alphanumeric()))
 }
 
 /// Sets the first PIN of the subject: waits for one PIN and makes the key.
@@ -120,7 +141,7 @@ pub fn run_set(job: &Job<'_>, wait: &PinWait, cancel: &Cancel) -> Outcome {
     let Some(pin) = wait.next(cancel, job.wait) else {
         return failure(PromptReason::Timeout);
     };
-    if !length_ok(&pin, job.length) {
+    if !rules_ok(&pin, job.rules) {
         return failure(PromptReason::None);
     }
     match job.enrolment.set(job.subject, &pin) {
@@ -149,7 +170,7 @@ pub fn run_change(job: &Job<'_>, wait: &PinWait, cancel: &Cancel) -> Outcome {
     let Some(new) = wait.next(cancel, job.wait) else {
         return failure(PromptReason::Timeout);
     };
-    if !length_ok(&new, job.length) {
+    if !rules_ok(&new, job.rules) {
         return failure(PromptReason::None);
     }
     match job.enrolment.change(job.subject, &old, &new) {

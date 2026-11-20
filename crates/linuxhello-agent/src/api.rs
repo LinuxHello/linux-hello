@@ -22,6 +22,7 @@ use crate::pinsocket::{PinSocket, Process};
 use crate::policy::load::Policy;
 use crate::policy::schema::parse_layer;
 use crate::policy::user_store::{StoreError, UserPolicyStore, MAX_POLICY_BYTES};
+use crate::policy::view::PinRules;
 use crate::policy::MethodRule;
 use crate::state::{Config, Error as StateError, Outcome, Peer, StateStore, Update};
 
@@ -172,8 +173,8 @@ pub struct PinStart {
     pub prompt: PromptId,
     /// The user whose PIN it is: always the caller.
     pub subject: u32,
-    /// The shortest and longest PIN the policy allows, in characters.
-    pub length: (u32, u32),
+    /// The PIN rules of the policy.
+    pub rules: PinRules,
     /// Set when the prompt closes; the job stops at once.
     pub stop: Cancel,
 }
@@ -716,7 +717,7 @@ impl Api {
             opener_uid: uid,
             prompt,
             subject,
-            length: (rules.min_length, rules.max_length),
+            rules,
             stop,
         })
     }

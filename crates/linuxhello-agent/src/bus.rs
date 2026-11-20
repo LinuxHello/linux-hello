@@ -199,7 +199,7 @@ impl AgentService {
         std::thread::spawn(move || {
             let job = Job {
                 subject: start.subject,
-                length: start.length,
+                rules: &start.rules,
                 wait: PIN_WAIT,
                 lock: &lock,
                 enrolment: &*pin_change.enrolment,
