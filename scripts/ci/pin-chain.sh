@@ -136,5 +136,12 @@ sudo systemctl restart linuxhello-tpm-provider; sleep 2
 check "a_cleared_tpm_is_reported_in_the_status" 'sudo -u lh2 /usr/bin/linuxhello-ctl status | grep -q tpm-cleared'
 check "a_user_without_a_record_is_not_told_the_tpm_was_cleared" '! sudo -u nobody /usr/bin/linuxhello-ctl status | grep -q tpm-cleared'
 
+# Leave the machine as the other VM checks expect it: no provider, no PIN records, and a TPM that
+# allows many tries (a clear resets the limit to the TPM's own default of three).
+sudo tpm2_dictionarylockout --clear-lockout >/dev/null 2>&1
+sudo tpm2_dictionarylockout --setup-parameters --max-tries=100 --recovery-time=10 --lockout-recovery-time=10 >/dev/null 2>&1
+sudo systemctl stop linuxhello-agent linuxhello-tpm-provider
+sudo rm -rf /var/lib/linuxhello/users /var/lib/linuxhello/pinlock.toml
+
 echo
 if [[ $fail -eq 0 ]]; then echo "All checks passed."; else echo "$fail check(s) failed."; exit 1; fi

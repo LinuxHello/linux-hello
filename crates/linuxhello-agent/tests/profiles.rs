@@ -298,8 +298,11 @@ fn agent_profile_receives_only_name_owner_changed_from_the_bus_and_the_scan_resu
         "{received:?}"
     );
     assert!(
+        // A signal carries the sender's unique name, so a peer given by its well-known name never
+        // matches it (the real fprintd showed it: `make vm-test-fingerprint`); the peer is named by
+        // its label, and the rule still names the one interface and the one member.
         received.iter().any(|r| r.contains("member=VerifyStatus")
-            && r.contains("name=net.reactivated.Fprint")
+            && r.contains("peer=(label=unconfined)")
             && r.contains("interface=net.reactivated.Fprint.Device")),
         "{received:?}"
     );
