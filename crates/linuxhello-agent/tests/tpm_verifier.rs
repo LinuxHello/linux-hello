@@ -396,7 +396,7 @@ fn one_users_failed_pins_cannot_lock_out_another_user() {
         max_lockout_secs: 86_400,
     }
     .capped_by_tpm(tpm_tries);
-    let dir = tempfile::TempDir::new().unwrap();
+    let dir = private_tempdir();
     let lock = Arc::new(PinLockService::start(
         PinLockFile::new(dir.path().join("pinlock.toml"), me()),
         limits,
