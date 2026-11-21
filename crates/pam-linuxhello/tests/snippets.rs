@@ -70,3 +70,26 @@ fn login_falls_through_to_the_account_password_when_linux_hello_is_unavailable()
         );
     }
 }
+
+/// Each snippet names its own context as the module argument: without one the module answers
+/// "unavailable" and Linux Hello would never be used (ADR-0023, amendment of 2026-11-21, point 4).
+#[test]
+fn every_snippet_names_its_context() {
+    for service in SERVICES {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("pam.d")
+            .join(service);
+        let text = std::fs::read_to_string(&path).unwrap();
+        let line = text
+            .lines()
+            .find(|l| l.starts_with("auth ") && l.contains("pam_linuxhello.so"))
+            .unwrap_or_else(|| panic!("{service}: no pam_linuxhello line"));
+        let args: Vec<&str> = line
+            .split("pam_linuxhello.so")
+            .nth(1)
+            .unwrap()
+            .split_whitespace()
+            .collect();
+        assert_eq!(args, [format!("context={service}")], "{service}");
+    }
+}
