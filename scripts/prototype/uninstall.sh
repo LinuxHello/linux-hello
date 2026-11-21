@@ -37,6 +37,12 @@ for file in /etc/pam.d/sudo /etc/pam.d/kde /etc/pam.d/login; do
 done
 
 sudo systemctl disable --now linuxhello-agent linuxhello-tpm-provider >/dev/null 2>&1 || true
+# What install.sh --face added: the unit's drop-in and the ACL on Howdy's models.
+sudo rm -f /etc/systemd/system/linuxhello-agent.service.d/50-face-prototype.conf
+sudo rmdir /etc/systemd/system/linuxhello-agent.service.d 2>/dev/null || true
+if [[ -d /lib/security/howdy/models ]] && command -v setfacl >/dev/null; then
+  sudo setfacl -R -x u:linuxhello /lib/security/howdy/models 2>/dev/null || true
+fi
 sudo apparmor_parser -R /etc/apparmor.d/linuxhello-agent /etc/apparmor.d/linuxhello-tpm-provider 2>/dev/null || true
 sudo rm -f /usr/lib/x86_64-linux-gnu/security/pam_linuxhello.so \
   /usr/libexec/linuxhello/linuxhello-agent /usr/libexec/linuxhello/linuxhello-tpm-provider \
