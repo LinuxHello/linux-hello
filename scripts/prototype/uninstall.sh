@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Removes the Linux Hello prototype that scripts/prototype/install.sh installed: the Linux Hello
-# lines in /etc/pam.d/sudo and /etc/pam.d/kde first, then the services and their files.
+# lines in /etc/pam.d/sudo, kde and login first, then the services and their files.
 #
 #   scripts/prototype/uninstall.sh            remove; keep the PIN records in /var/lib/linuxhello
 #   scripts/prototype/uninstall.sh --purge    also delete /var/lib/linuxhello (the PIN key blobs
@@ -22,7 +22,7 @@ done
 [[ $EUID -ne 0 ]] || { echo "run as your own user, not root" >&2; exit 1; }
 
 MARK="# linux-hello prototype"
-for file in /etc/pam.d/sudo /etc/pam.d/kde; do
+for file in /etc/pam.d/sudo /etc/pam.d/kde /etc/pam.d/login; do
   [[ -f "$file" ]] || continue
   if grep -qF "$MARK" "$file"; then
     tmp=$(mktemp)

@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
 # Installs the Linux Hello prototype on this machine: the Agent, the TPM provider, the CLI and the
 # PAM module, and adds Linux Hello to the PAM stack of sudo (and, with --lock-screen, of the Plasma
-# lock screen). Read docs/prototype.md first.
+# lock screen; with --console, of the text console's login). Read docs/prototype.md first.
 #
 #   scripts/prototype/install.sh                 build, install, enable for sudo
 #   scripts/prototype/install.sh --lock-screen   also enable for the Plasma lock screen (/etc/pam.d/kde)
+#   scripts/prototype/install.sh --console       also enable for login on a text console (/etc/pam.d/login)
 #   scripts/prototype/install.sh --no-build      install what target/ already holds
 #
 # It changes the machine: it creates two system users, installs files under /usr, /etc and /var,
-# loads two AppArmor profiles, enables and starts two units, and edits /etc/pam.d/sudo (and kde),
+# loads two AppArmor profiles, enables and starts two units, and edits /etc/pam.d/sudo (and kde, login),
 # keeping a copy of each original next to it. scripts/prototype/uninstall.sh undoes all of it.
 # Keep a root shell open while you try it: `sudo -s` in another terminal.
 #
@@ -21,12 +22,14 @@ cd "$(dirname "$0")/../.."
 root=$PWD
 
 lock=no
+console=no
 build=yes
 for arg in "$@"; do
   case "$arg" in
     --lock-screen) lock=yes ;;
+    --console) console=yes ;;
     --no-build) build=no ;;
-    -h|--help) sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown option: $arg" >&2; exit 2 ;;
   esac
 done
@@ -44,6 +47,7 @@ pam_line() { printf 'auth [success=done authinfo_unavail=ignore default=die] pam
 command -v systemctl >/dev/null || die "systemd is needed"
 [[ -f /etc/pam.d/sudo ]] || die "/etc/pam.d/sudo not found"
 if [[ $lock == yes ]]; then [[ -f /etc/pam.d/kde ]] || die "/etc/pam.d/kde not found: is Plasma's lock screen installed?"; fi
+if [[ $console == yes ]]; then [[ -f /etc/pam.d/login ]] || die "/etc/pam.d/login not found"; fi
 
 musl=$root/target/x86_64-unknown-linux-musl/release
 rel=$root/target/release
@@ -112,6 +116,7 @@ add_to_pam() { # file, context
 step "adding Linux Hello to PAM (the account password keeps working after it)"
 add_to_pam /etc/pam.d/sudo sudo
 if [[ $lock == yes ]]; then add_to_pam /etc/pam.d/kde unlock; fi
+if [[ $console == yes ]]; then add_to_pam /etc/pam.d/login login; fi
 
 cat <<'EOF'
 
