@@ -17,6 +17,10 @@ struct Script {
     calls: Vec<String>,
     refuse: Vec<&'static str>,
     signals: VecDeque<Option<Signal>>,
+    /// The answers to `GetPromptStatus`, one per call; `None` is a failed call. Calls are counted
+    /// in `asked_status`, not in `calls`.
+    status: VecDeque<Option<Vec<(String, String, String)>>>,
+    asked_status: Vec<String>,
 }
 
 impl Agent for Script {
@@ -38,6 +42,15 @@ impl Agent for Script {
 
     fn signal(&mut self, _prompt: &str, _deadline: Instant) -> Result<Option<Signal>, Fault> {
         Ok(self.signals.pop_front().flatten())
+    }
+
+    fn conditions(
+        &mut self,
+        prompt: &str,
+        context: &str,
+    ) -> Result<Vec<(String, String, String)>, Fault> {
+        self.asked_status.push(format!("{prompt},{context}"));
+        self.status.pop_front().flatten().ok_or(Fault)
     }
 }
 
@@ -429,9 +442,15 @@ fn pam_returns_within_its_deadline_when_the_agent_hangs() {
 fn a_signal_from_another_sender_is_ignored() {
     let (dir, path, listener) = listen();
     let server = fake_agent(listener, |peer| {
-        for _ in 0..3 {
+        // OpenPrompt, GetPromptStatus (nothing to tell), Subscribe, Authenticate.
+        for _ in 0..4 {
             let call = peer.read();
-            peer.reply(&call, vec![]);
+            let body = if call.member.as_deref() == Some("GetPromptStatus") {
+                vec![Value::Triples(vec![])]
+            } else {
+                vec![]
+            };
+            peer.reply(&call, body);
         }
         let prompt = |id: &str| Value::Str(id.to_string());
         // A forged success from a connection that is not the Agent, then the real refusal.
@@ -487,4 +506,129 @@ fn a_signal_from_another_sender_is_ignored() {
         ]
     );
     server.join().unwrap();
+}
+
+fn condition(code: &str, severity: &str, sentence: &str) -> (String, String, String) {
+    (code.into(), severity.into(), sentence.into())
+}
+
+#[test]
+fn the_conditions_are_shown_as_pam_messages() {
+    let mut agent = Script {
+        signals: [active(&["pin"]), result("success", "", 0)].into(),
+        status: [
+            Some(vec![
+                condition("tpm-cleared", "severe", "The TPM lost the key."),
+                condition(
+                    "context-unsatisfiable: sudo",
+                    "warning",
+                    "sudo cannot be unlocked.",
+                ),
+            ]),
+            // After the success: the expiry, and one already shown, which is not repeated.
+            Some(vec![
+                condition("tpm-cleared", "severe", "The TPM lost the key."),
+                condition("pin-expired", "warning", "Your PIN has expired."),
+            ]),
+        ]
+        .into(),
+        ..Script::default()
+    };
+    let mut socket = Socket {
+        accept: true,
+        ..Socket::default()
+    };
+    let mut person = Person {
+        answers: [Some("2468")].into(),
+        ..Person::default()
+    };
+    assert_eq!(go(&mut agent, &mut socket, &mut person), Code::Success);
+    assert_eq!(
+        person.shown,
+        [
+            "error: The TPM lost the key.",
+            "info: sudo cannot be unlocked.",
+            "info: Your PIN has expired."
+        ]
+    );
+    assert_eq!(agent.asked_status, ["p1,sudo", "p1,sudo"]);
+}
+
+#[test]
+fn the_conditions_after_sign_in_are_asked_only_after_a_success() {
+    let mut agent = Script {
+        signals: [active(&["pin"]), result("failure", "", 0)].into(),
+        status: [
+            Some(vec![]),
+            Some(vec![condition("pin-expired", "warning", "x")]),
+        ]
+        .into(),
+        ..Script::default()
+    };
+    let mut socket = Socket {
+        accept: true,
+        ..Socket::default()
+    };
+    let mut person = Person {
+        answers: [Some("1111")].into(),
+        ..Person::default()
+    };
+    assert_eq!(go(&mut agent, &mut socket, &mut person), Code::Denied);
+    assert_eq!(agent.asked_status.len(), 1);
+    assert_eq!(person.shown, ["error: Wrong PIN."]);
+}
+
+#[test]
+fn a_failed_status_call_changes_nothing() {
+    // The same sign-in, with the status call failing both times and with it answering nothing.
+    for status in [[None, None], [Some(vec![]), Some(vec![])]] {
+        let mut agent = Script {
+            signals: [active(&["pin"]), result("success", "", 0)].into(),
+            status: status.into(),
+            ..Script::default()
+        };
+        let mut socket = Socket {
+            accept: true,
+            ..Socket::default()
+        };
+        let mut person = Person {
+            answers: [Some("2468")].into(),
+            ..Person::default()
+        };
+        assert_eq!(go(&mut agent, &mut socket, &mut person), Code::Success);
+        assert!(person.shown.is_empty());
+        assert_eq!(person.asked, ["PIN: "]);
+        assert_eq!(
+            agent.calls,
+            [
+                "OpenPrompt(p1,1000)",
+                "Subscribe(p1)",
+                "Authenticate(p1,sudo)",
+                "ExpectPin(p1)",
+                "ClosePrompt(p1)"
+            ]
+        );
+    }
+}
+
+#[test]
+fn no_more_than_eight_conditions_are_shown() {
+    let many: Vec<_> = (0..20)
+        .map(|i| condition(&format!("c{i}"), "info", &format!("s{i}")))
+        .collect();
+    let mut agent = Script {
+        signals: [active(&["pin"]), result("success", "", 0)].into(),
+        status: [Some(many.clone()), Some(many)].into(),
+        ..Script::default()
+    };
+    let mut socket = Socket {
+        accept: true,
+        ..Socket::default()
+    };
+    let mut person = Person {
+        answers: [Some("2468")].into(),
+        ..Person::default()
+    };
+    assert_eq!(go(&mut agent, &mut socket, &mut person), Code::Success);
+    assert_eq!(person.shown.len(), 8);
 }

@@ -142,6 +142,17 @@ pub trait Agent {
     ///
     /// [`Fault`] when the connection fails.
     fn signal(&mut self, prompt: &str, deadline: Instant) -> Result<Option<Signal>, Fault>;
+    /// The conditions of the prompt's user that may be shown at the prompt in `context`, each as
+    /// code, severity and sentence (`GetPromptStatus`, ADR-0024 amendment of 2026-11-21).
+    ///
+    /// # Errors
+    ///
+    /// [`Fault`] when the call fails, is refused or the reply has another shape.
+    fn conditions(
+        &mut self,
+        prompt: &str,
+        context: &str,
+    ) -> Result<Vec<(String, String, String)>, Fault>;
 }
 
 /// The PIN socket as the flow uses it.
@@ -199,6 +210,25 @@ impl Agent for BusAgent {
             Instant::now() + self.call_limit,
         )?;
         Ok(())
+    }
+
+    fn conditions(
+        &mut self,
+        prompt: &str,
+        context: &str,
+    ) -> Result<Vec<(String, String, String)>, Fault> {
+        let body = self.bus.call(
+            AGENT_BUS_NAME,
+            AGENT_OBJECT_PATH,
+            AGENT_INTERFACE,
+            "GetPromptStatus",
+            &[Arg::Str(prompt), Arg::Str(context)],
+            Instant::now() + self.call_limit,
+        )?;
+        match <[Value; 1]>::try_from(body) {
+            Ok([Value::Triples(items)]) => Ok(items),
+            _ => Err(Fault),
+        }
     }
 
     fn signal(&mut self, prompt: &str, deadline: Instant) -> Result<Option<Signal>, Fault> {
@@ -324,10 +354,48 @@ pub fn run(
     {
         return Code::Unavailable;
     }
+    let mut told = Vec::new();
+    tell(agent, conversation, prompt, context, &mut told);
     let code = steps(agent, pins, conversation, prompt, context, limits, start)
         .unwrap_or(Code::Unavailable);
+    if code == Code::Success {
+        tell(agent, conversation, prompt, context, &mut told);
+    }
     let _ = agent.call("ClosePrompt", &[Arg::Str(prompt)]);
     code
+}
+
+/// The most conditions shown at one prompt; the Agent's closed set of codes is smaller.
+const MAX_CONDITIONS: usize = 8;
+
+/// Shows the Agent's conditions for the prompt's user as PAM messages, an error for `severe` and
+/// a text otherwise, each code once (`told` holds those already shown). A call that fails is
+/// ignored: the status never changes the answer and never asks anything
+/// (`the_conditions_are_shown_as_pam_messages`, `a_failed_status_call_changes_nothing`).
+fn tell(
+    agent: &mut dyn Agent,
+    conversation: &mut dyn Conversation,
+    prompt: &str,
+    context: &str,
+    told: &mut Vec<String>,
+) {
+    let Ok(conditions) = agent.conditions(prompt, context) else {
+        return;
+    };
+    for (code, severity, sentence) in conditions {
+        if told.len() >= MAX_CONDITIONS {
+            return;
+        }
+        if told.contains(&code) {
+            continue;
+        }
+        if severity == "severe" {
+            conversation.error(&sentence);
+        } else {
+            conversation.info(&sentence);
+        }
+        told.push(code);
+    }
 }
 
 /// The question for the PIN when `methods` run (ADR-0023, amendment of 2026-11-21, point 3).
