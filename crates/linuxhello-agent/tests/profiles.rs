@@ -287,7 +287,8 @@ fn statements(prefix: &str) -> Vec<String> {
 }
 
 #[test]
-fn agent_profile_receives_only_name_owner_changed_from_the_bus_and_the_scan_result_from_fprintd() {
+fn agent_profile_receives_only_name_owner_changed_from_the_bus_and_the_scan_and_enrolment_steps_from_fprintd(
+) {
     let received = statements("dbus receive");
     assert_eq!(received.len(), 2, "two receive rules: {received:?}");
     assert!(
@@ -301,9 +302,11 @@ fn agent_profile_receives_only_name_owner_changed_from_the_bus_and_the_scan_resu
         // A signal carries the sender's unique name, so a peer given by its well-known name never
         // matches it (the real fprintd showed it: `make vm-test-fingerprint`); the peer is named by
         // its label, and the rule still names the one interface and the one member.
-        received.iter().any(|r| r.contains("member=VerifyStatus")
-            && r.contains("peer=(label=unconfined)")
-            && r.contains("interface=net.reactivated.Fprint.Device")),
+        received
+            .iter()
+            .any(|r| r.contains("member={VerifyStatus,EnrollStatus}")
+                && r.contains("peer=(label=unconfined)")
+                && r.contains("interface=net.reactivated.Fprint.Device")),
         "{received:?}"
     );
 }
@@ -328,7 +331,7 @@ fn agent_profile_talks_to_fprintd_and_to_no_other_service() {
 
 /// The polkit rule that lets the Agent claim and scan a fingerprint reader for another user.
 #[test]
-fn the_polkit_rule_allows_the_agent_exactly_two_fingerprint_actions() {
+fn the_polkit_rule_allows_the_agent_exactly_three_fingerprint_actions() {
     let rule = read("polkit/50-linuxhello-agent.rules");
     let code: String = rule
         .lines()
@@ -344,9 +347,10 @@ fn the_polkit_rule_allows_the_agent_exactly_two_fingerprint_actions() {
         actions,
         [
             "net.reactivated.fprint.device.verify",
-            "net.reactivated.fprint.device.setusername"
+            "net.reactivated.fprint.device.setusername",
+            "net.reactivated.fprint.device.enroll"
         ],
-        "no enrol or delete action"
+        "verify, setusername and enroll, nothing more"
     );
     assert_eq!(code.matches("polkit.Result.YES").count(), 1);
     assert!(
