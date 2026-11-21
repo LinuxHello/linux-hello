@@ -6,6 +6,8 @@ use std::fs;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::PathBuf;
 use std::sync::Mutex;
+
+use crate::ask::Reported;
 use tempfile::TempDir;
 
 /// The strict admin text of the loader tests: `sudo` needs two factors and has two methods.
@@ -61,23 +63,27 @@ const PASSWD: &str = "anna:x:1000:1000::/home/anna:/bin/sh\n";
 
 /// A machine that answers from a table and records every call. `all_ok` is a healthy one.
 struct FakeHost {
-    /// The answer for each program, by name; a program that is absent cannot be started.
-    programs: HashMap<&'static str, (i32, String)>,
+    /// What the Agent's `GetStatus` answers; `None`: the Agent cannot be asked.
+    agent: Option<Vec<Reported>>,
+    /// What systemd says about the Agent's unit: active or not; `None`: systemd cannot be asked.
+    unit: Option<bool>,
+    /// Whether fprintd has a reader; `None`: the bus cannot be asked.
+    reader: Option<bool>,
     /// The text of each readable file, by path; a path that is absent cannot be read.
     files: HashMap<&'static str, String>,
-    /// Every call made, in order: `run <program> <arguments>` or `read <path>`.
+    /// Every question asked, in order: `agent GetStatus`, `systemd <unit>`, `fprintd
+    /// GetDefaultDevice` or `read <path>`.
     calls: Mutex<Vec<String>>,
 }
 
 impl FakeHost {
-    /// The unit is active, the profile enforces, the fingerprint service has a device and Howdy
-    /// is installed.
+    /// The Agent reports nothing, the unit is active, the profile enforces, the fingerprint
+    /// service has a device and Howdy is installed.
     fn all_ok() -> Self {
         Self {
-            programs: HashMap::from([
-                ("systemctl", (0, "active".to_string())),
-                ("busctl", (0, String::new())),
-            ]),
+            agent: Some(Vec::new()),
+            unit: Some(true),
+            reader: Some(true),
             files: HashMap::from([
                 (
                     "/sys/kernel/security/apparmor/profiles",
@@ -89,15 +95,21 @@ impl FakeHost {
         }
     }
 
-    /// The same machine, but `program` answers with `code` and `stdout`.
-    fn with_program(mut self, program: &'static str, code: i32, stdout: &str) -> Self {
-        self.programs.insert(program, (code, stdout.to_string()));
+    /// The same machine, but the Agent answers `agent` (`None`: it cannot be asked).
+    fn with_agent(mut self, agent: Option<Vec<Reported>>) -> Self {
+        self.agent = agent;
         self
     }
 
-    /// The same machine, but `program` cannot be started.
-    fn without_program(mut self, program: &'static str) -> Self {
-        self.programs.remove(program);
+    /// The same machine, but systemd answers `unit` for the Agent's unit.
+    fn with_unit(mut self, unit: Option<bool>) -> Self {
+        self.unit = unit;
+        self
+    }
+
+    /// The same machine, but fprintd answers `reader`.
+    fn with_reader(mut self, reader: Option<bool>) -> Self {
+        self.reader = reader;
         self
     }
 
@@ -117,21 +129,42 @@ impl FakeHost {
     fn calls(&self) -> Vec<String> {
         self.calls.lock().unwrap().clone()
     }
+
+    /// Records one question.
+    fn asked(&self, what: String) {
+        self.calls.lock().unwrap().push(what);
+    }
 }
 
 impl Host for FakeHost {
-    fn run(&self, program: &str, args: &[&str]) -> Option<(i32, String)> {
-        self.calls
-            .lock()
-            .unwrap()
-            .push(format!("run {program} {}", args.join(" ")));
-        self.programs.get(program).cloned()
+    fn agent_status(&self) -> Option<Vec<Reported>> {
+        self.asked("agent GetStatus".to_string());
+        self.agent.clone()
+    }
+
+    fn unit_active(&self, unit: &str) -> Option<bool> {
+        self.asked(format!("systemd {unit}"));
+        self.unit
+    }
+
+    fn fingerprint_reader(&self) -> Option<bool> {
+        self.asked("fprintd GetDefaultDevice".to_string());
+        self.reader
     }
 
     fn read(&self, path: &Path) -> Option<String> {
         let path = path.to_str().unwrap();
-        self.calls.lock().unwrap().push(format!("read {path}"));
+        self.asked(format!("read {path}"));
         self.files.get(path).cloned()
+    }
+}
+
+/// One condition as the Agent reports it.
+fn said(code: &str, severity: &str, sentence: &str) -> Reported {
+    Reported {
+        code: code.to_string(),
+        severity: severity.to_string(),
+        sentence: sentence.to_string(),
     }
 }
 
@@ -320,7 +353,7 @@ fn doctor_is_ok_when_every_probe_is_fine() {
 #[test]
 fn doctor_reports_an_inactive_agent_unit() {
     let t = sound_tree();
-    let host = FakeHost::all_ok().with_program("systemctl", 3, "inactive");
+    let host = FakeHost::all_ok().with_unit(Some(false));
     let (code, out, _) = go_on(&host, &t, &t.users, &["doctor"]);
     assert_eq!(code, 1);
     assert!(
@@ -358,7 +391,7 @@ fn doctor_reports_a_profile_that_is_not_enforcing() {
 fn doctor_reports_unavailable_methods() {
     let t = sound_tree();
     let host = FakeHost::all_ok()
-        .with_program("busctl", 1, "")
+        .with_reader(Some(false))
         .without_file("/etc/howdy/config.ini");
     let (code, out, _) = go_on(&host, &t, &t.users, &["doctor"]);
     assert_eq!(code, 1);
@@ -371,7 +404,7 @@ fn a_probe_that_cannot_run_is_a_condition_not_a_clean_result() {
     let t = sound_tree();
     let cases = [
         (
-            FakeHost::all_ok().without_program("systemctl"),
+            FakeHost::all_ok().with_unit(None),
             "status-fact-unreadable: the agent unit",
         ),
         (
@@ -379,7 +412,7 @@ fn a_probe_that_cannot_run_is_a_condition_not_a_clean_result() {
             "status-fact-unreadable: the AppArmor profile list",
         ),
         (
-            FakeHost::all_ok().without_program("busctl"),
+            FakeHost::all_ok().with_reader(None),
             "status-fact-unreadable: the fingerprint service",
         ),
     ];
@@ -401,49 +434,53 @@ fn status_probes_nothing() {
 }
 
 #[test]
-fn doctor_probes_only_the_named_commands_and_files() {
+fn doctor_probes_only_the_named_services_and_files() {
     let t = sound_tree();
     let host = FakeHost::all_ok();
     go_on(&host, &t, &t.users, &["doctor"]);
     assert_eq!(
         host.calls(),
         vec![
-            "run systemctl is-active linuxhello-agent.service".to_string(),
+            "systemd linuxhello-agent.service".to_string(),
             "read /sys/kernel/security/apparmor/profiles".to_string(),
-            "run busctl --system --timeout=5 call net.reactivated.Fprint \
-             /net/reactivated/Fprint/Manager net.reactivated.Fprint.Manager GetDefaultDevice"
-                .to_string(),
+            "fprintd GetDefaultDevice".to_string(),
             "read /etc/howdy/config.ini".to_string(),
         ]
     );
 }
 
-/// What `busctl` prints for `GetStatus` when the policy is damaged and `sudo` cannot be satisfied.
-const AGENT_SAYS: &str = r#"a(sss) 2 "policy-pin-only" "severe" "Biometric sign-in is off because a policy file failed to load." "context-unsatisfiable: sudo" "severe" "sudo cannot be unlocked with the configured methods.""#;
+/// What the Agent's `GetStatus` answers when the policy is damaged and `sudo` cannot be satisfied.
+fn agent_says() -> Vec<Reported> {
+    vec![
+        said(
+            "policy-pin-only",
+            "severe",
+            "Biometric sign-in is off because a policy file failed to load.",
+        ),
+        said(
+            "context-unsatisfiable: sudo",
+            "severe",
+            "sudo cannot be unlocked with the configured methods.",
+        ),
+    ]
+}
 
 #[test]
 fn status_without_a_user_shows_what_the_agent_says() {
     let t = sound_tree();
-    let host = FakeHost::all_ok().with_program("busctl", 0, AGENT_SAYS);
+    let host = FakeHost::all_ok().with_agent(Some(agent_says()));
     let (code, out, _) = go_on(&host, &t, &t.users, &["status"]);
     assert_eq!(code, 0);
     assert!(out.contains("policy-pin-only  severe  Biometric sign-in is off"));
     assert!(out.contains("context-unsatisfiable: sudo  severe"));
     assert!(!out.contains("agent-unreachable"));
-    assert_eq!(
-        host.calls(),
-        vec![
-            "run busctl --system --timeout=5 call io.github.LinuxHello.Agent1 \
-             /io/github/LinuxHello/Agent1 io.github.LinuxHello.Agent1 GetStatus"
-                .to_string()
-        ]
-    );
+    assert_eq!(host.calls(), vec!["agent GetStatus".to_string()]);
 }
 
 #[test]
 fn status_without_a_user_says_no_conditions_for_an_empty_answer() {
     let t = sound_tree();
-    let host = FakeHost::all_ok().with_program("busctl", 0, "a(sss) 0");
+    let host = FakeHost::all_ok().with_agent(Some(vec![]));
     let (_, out, _) = go_on(&host, &t, &t.users, &["status"]);
     assert_eq!(out, "no conditions\n");
 }
@@ -451,11 +488,8 @@ fn status_without_a_user_says_no_conditions_for_an_empty_answer() {
 #[test]
 fn an_agent_that_does_not_answer_is_a_condition_and_the_files_are_read() {
     let t = damaged();
-    for host in [
-        FakeHost::all_ok().with_program("busctl", 1, ""),
-        FakeHost::all_ok().without_program("busctl"),
-        FakeHost::all_ok().with_program("busctl", 0, "not what busctl prints"),
-    ] {
+    {
+        let host = FakeHost::all_ok().with_agent(None);
         let host = host.with_file(
             "/proc/self/status",
             "Name:\tx\nUid:\t1000\t1001\t1002\t1003\n",
@@ -475,7 +509,7 @@ fn an_agent_that_does_not_answer_is_a_condition_and_the_files_are_read() {
 #[test]
 fn an_unknown_caller_is_a_condition_not_a_clean_result() {
     let t = sound_tree();
-    let host = FakeHost::all_ok().without_program("busctl");
+    let host = FakeHost::all_ok().with_agent(None);
     let (_, out, _) = go_on(&host, &t, &t.users, &["status"]);
     assert!(out.starts_with("agent-unreachable"), "{out}");
     assert!(

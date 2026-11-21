@@ -72,7 +72,7 @@ fn main() -> ExitCode {
         std::io::stdout(),
         std::io::stderr(),
     );
-    let host = RealHost;
+    let host = RealHost::default();
     let code = if matches!(args.first().map(String::as_str), Some("pin")) {
         pin_command(&args, &mut out)
     } else if matches!(args[0].as_str(), "status" | "doctor") {

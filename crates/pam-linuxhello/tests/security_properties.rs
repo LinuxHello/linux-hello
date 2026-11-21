@@ -56,3 +56,48 @@ fn pam_never_succeeds_when_agent_is_unreachable() {
 fn pam_success_for_another_user_is_not_success() {
     unimplemented!("P-21: write this test when it is unblocked");
 }
+
+/// Every `.rs` file under `dir`.
+fn sources(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+    for entry in std::fs::read_dir(dir).unwrap() {
+        let path = entry.unwrap().path();
+        if path.is_dir() {
+            sources(&path, out);
+        } else if path.extension().is_some_and(|e| e == "rs") {
+            out.push(path);
+        }
+    }
+}
+
+/// ADR-0026: the PAM module reaches the Agent over its own bus connection and the PIN socket, and
+/// starts no program. A file named `tests.rs` is test code; any other file is read up to its first
+/// `#[cfg(test)]`, which in this crate opens the test module at its end.
+#[test]
+fn the_pam_module_starts_no_program() {
+    let mut files = Vec::new();
+    sources(
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+        &mut files,
+    );
+    assert!(files.len() > 3, "the sources were found: {files:?}");
+    for file in files {
+        if file.file_name().is_some_and(|n| n == "tests.rs") {
+            continue;
+        }
+        let text = std::fs::read_to_string(&file).unwrap();
+        let code = text.split("#[cfg(test)]").next().unwrap_or_default();
+        for forbidden in [
+            "process::Command",
+            "Command::new",
+            "libc::system",
+            "execv",
+            "posix_spawn",
+        ] {
+            assert!(
+                !code.contains(forbidden),
+                "{} uses {forbidden} outside its tests (ADR-0026)",
+                file.display()
+            );
+        }
+    }
+}

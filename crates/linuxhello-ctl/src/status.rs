@@ -41,17 +41,6 @@ const APPARMOR_PROFILES: &str = "/sys/kernel/security/apparmor/profiles";
 /// Howdy's configuration file: present when Howdy is installed.
 const HOWDY_CONFIG: &str = "/etc/howdy/config.ini";
 
-/// The call that asks the fingerprint service for its default device; it fails when there is none.
-const FPRINT_PROBE: [&str; 7] = [
-    "--system",
-    "--timeout=5",
-    "call",
-    "net.reactivated.Fprint",
-    "/net/reactivated/Fprint/Manager",
-    "net.reactivated.Fprint.Manager",
-    "GetDefaultDevice",
-];
-
 /// How serious a condition is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Severity {
@@ -128,19 +117,20 @@ fn fact_unreadable(what: &str, fix: &'static str) -> Condition {
     }
 }
 
-/// The four facts about the machine that `doctor` probes through `host`: the Agent unit, the
-/// AppArmor profile, the fingerprint service and Howdy. A probe only reads, and the only commands
-/// and files it uses are the ones named here (`doctor_probes_only_the_named_commands_and_files`).
+/// The four facts about the machine that `doctor` probes through `host`: the Agent unit (asked of
+/// systemd over the bus), the AppArmor profile list (a file), the fingerprint service (asked of
+/// fprintd over the bus) and Howdy (a file). A probe only reads, and starts no program
+/// (`doctor_probes_only_the_named_services_and_files`, ADR-0026).
 fn machine_conditions(host: &dyn Host) -> Vec<Condition> {
     let mut found = Vec::new();
 
-    match host.run("systemctl", &["is-active", "linuxhello-agent.service"]) {
+    match host.unit_active("linuxhello-agent.service") {
         None => found.push(fact_unreadable(
             "the agent unit",
-            "Run as root and check that systemctl works.",
+            "Check that systemd and the system bus are running.",
         )),
-        Some((0, stdout)) if stdout == "active" => {}
-        Some(_) => found.push(Condition {
+        Some(true) => {}
+        Some(false) => found.push(Condition {
             code: "agent-unit-inactive".to_string(),
             severity: Severity::Severe,
             sentence: "The Linux Hello Agent is not running.".to_string(),
@@ -173,13 +163,13 @@ fn machine_conditions(host: &dyn Host) -> Vec<Condition> {
         }
     }
 
-    match host.run("busctl", &FPRINT_PROBE) {
+    match host.fingerprint_reader() {
         None => found.push(fact_unreadable(
             "the fingerprint service",
-            "Install busctl (part of systemd) and run doctor as root.",
+            "Check that the system bus is running.",
         )),
-        Some((0, _)) => {}
-        Some(_) => found.push(Condition {
+        Some(true) => {}
+        Some(false) => found.push(Condition {
             code: "method-unavailable: fingerprint".to_string(),
             severity: Severity::Severe,
             sentence: "Fingerprint sign-in is unavailable because the fingerprint service reports no device.".to_string(),

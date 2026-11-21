@@ -6,7 +6,7 @@
 //! attempt), starts the job, and for each PIN first says over the bus "a PIN is coming" and then
 //! sends it on a private socket, because a PIN must never be a bus message. It then waits for the
 //! prompt's outcome. The prompt belongs to the bus connection that opened it, so every step uses
-//! one connection; that is why this does not run `busctl` as the status command does.
+//! one connection. Like every part of this tool it starts no program (ADR-0026).
 //!
 //! The PINs are read without echo from the terminal and wiped after use. Typing the new PIN twice
 //! and comparing the two is done here, before anything is sent.
