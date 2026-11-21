@@ -30,7 +30,7 @@ impl SoftTpm {
     pub fn start() -> Option<Self> {
         for _ in 0..8 {
             let state = private_tempdir();
-            let port = free_port();
+            let port = claim_port();
             let child = Command::new("swtpm")
                 .args(["socket", "--tpm2", "--tpmstate"])
                 .arg(format!("dir={}", state.path().display()))
@@ -43,6 +43,7 @@ impl SoftTpm {
                 .stderr(Stdio::null())
                 .spawn();
             let Ok(child) = child else {
+                release_port(port);
                 assert!(
                     std::env::var("LH_REQUIRE_SWTPM").is_err(),
                     "swtpm is required here (LH_REQUIRE_SWTPM) and is not installed"
@@ -58,6 +59,7 @@ impl SoftTpm {
             if soft.wait_until_listening() {
                 return Some(soft);
             }
+            // Dropping `soft` gives the port back.
         }
         panic!("swtpm did not start listening on any of eight ports");
     }
@@ -107,7 +109,35 @@ impl Drop for SoftTpm {
             std::thread::sleep(Duration::from_millis(20));
         }
         let _ = self.child.kill();
+        release_port(self.port);
     }
+}
+
+/// The data ports that software TPMs of this process hold. Two tests that start a TPM side by side
+/// must not pick the same free port: the loser's "is it listening" check would be answered by the
+/// winner's swtpm, and the loser would then talk to a TPM that is not its own.
+static CLAIMED: std::sync::Mutex<Vec<u16>> = std::sync::Mutex::new(Vec::new());
+
+/// A free port, with the next one for the control channel, that no other TPM of this process holds.
+fn claim_port() -> u16 {
+    loop {
+        let port = free_port();
+        let mut claimed = CLAIMED
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !claimed.iter().any(|p| p.abs_diff(port) <= 1) {
+            claimed.push(port);
+            return port;
+        }
+    }
+}
+
+/// Gives a port back.
+fn release_port(port: u16) {
+    CLAIMED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .retain(|p| *p != port);
 }
 
 /// A port that is free now, with the next one for the control channel.
