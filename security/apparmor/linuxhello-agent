@@ -39,9 +39,12 @@ profile linuxhello-agent /usr/libexec/linuxhello/linuxhello-agent flags=(attach_
   dbus send bus=system path=/net/reactivated/Fprint/**
        interface=net.reactivated.Fprint.{Manager,Device}
        peer=(name=net.reactivated.Fprint),
+  # A signal carries only the sender's unique name (":1.314"), so a peer named by its well-known name
+  # never matches it; the rule names the peer's profile label instead. fprintd runs unconfined on
+  # Ubuntu 24.04 and 26.04 (checked in the test VM, `make vm-test-fingerprint`).
   dbus receive bus=system path=/net/reactivated/Fprint/**
        interface=net.reactivated.Fprint.Device member=VerifyStatus
-       peer=(name=net.reactivated.Fprint),
+       peer=(label=unconfined),
   /etc/passwd r,
 
   # The face method (ADR-0023): Howdy runs as a child of the Agent, started by the Agent's own

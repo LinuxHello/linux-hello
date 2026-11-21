@@ -177,7 +177,10 @@ check "another_user_cannot_authenticate_a_prompt_that_is_not_theirs" 'call nobod
 check "authenticate_refuses_an_unknown_context" 'call lh $N $P $N Authenticate ss $ID root | grep -q "invalid argument"'
 # fprintd is not installed in the test VM (nothing is downloaded for this check), so the method is
 # unavailable and the denials check below shows whether the profile lets the Agent try to reach it.
-check "polkit_loads_the_agents_rule_without_an_error" 'sudo journalctl -u polkit --no-pager --since "-5min" > /tmp/polkit.log; grep -q "Finished loading" /tmp/polkit.log && ! grep -Eqi "error|syntax" /tmp/polkit.log'
+# polkit 127 (Ubuntu 26.04) no longer logs "Finished loading" at its default level, so what is checked
+# is that polkit runs and logged no error about its rules; that the rule does what it should is
+# checked with pkcheck where fprintd's actions exist (scripts/ci/fingerprint-real.sh).
+check "polkit_loads_the_agents_rule_without_an_error" 'systemctl is-active polkit >/dev/null && sudo journalctl -u polkit --no-pager --since "-5min" > /tmp/polkit.log && ! grep -Eqi "error|syntax" /tmp/polkit.log'
 
 # The face method runs Howdy as a child under its own profile. Howdy is not installed in the test VM,
 # so a stand-in plays its compare script: the interpreter and the path are the real ones, and the
@@ -187,7 +190,10 @@ check "polkit_loads_the_agents_rule_without_an_error" 'sudo journalctl -u polkit
 stub() { sudo install -d -m755 /lib/security/howdy; printf '#!/usr/bin/python3\nimport sys\nsys.exit(%s)\n' "$1" | sudo tee /lib/security/howdy/compare.py >/dev/null; sudo chmod 644 /lib/security/howdy/compare.py; }
 # The user's own layer, set by the checks above, switches biometrics off; take it away for these two
 # checks and put it back after them.
-call lh $N $P $N SetUserPolicy s "" >/dev/null
+# Login by face alone, so that these two checks give the same result whether or not fprintd is
+# installed in the machine (a real fprintd would wait for a finger, and a stand-in for a face would
+# then not end the sign-in); that is a stricter layer than the default and is accepted.
+call lh $N $P $N SetUserPolicy s $'[context.login]\nmethods = ["face"]\nfactors = 1\n' >/dev/null
 stub 0
 check "a_face_that_howdy_accepts_is_a_success" 'sudo -u lh python3 /tmp/auth_flow.py $LHUID | grep -q "^RESULT success"'
 stub 11

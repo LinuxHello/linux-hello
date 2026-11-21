@@ -67,6 +67,8 @@ sudo apparmor_parser -r /etc/apparmor.d/linuxhello-agent /etc/apparmor.d/linuxhe
 sudo systemctl reload dbus; sudo systemctl daemon-reload
 sudo systemctl stop linuxhello-agent linuxhello-tpm-provider 2>/dev/null
 sudo systemctl reset-failed linuxhello-agent linuxhello-tpm-provider 2>/dev/null
+# The denial check below looks at the log from here on only.
+T0=$(date +%s)
 # A clean state: no PIN records from an earlier run.
 sudo rm -rf /var/lib/linuxhello/users /var/lib/linuxhello/pinlock.toml
 # The provider first: the Agent asks it for the TPM's limit when it starts.
@@ -98,7 +100,7 @@ check "a_pin_that_is_too_short_is_not_accepted" 'pin change 333333 1 1 | grep -q
 check "a_pin_without_a_digit_is_not_accepted_by_the_default_policy" 'pin change 333333 abcdefgh abcdefgh | grep -q "not accepted"'
 check "the_pin_still_works_after_a_refused_change" 'pin change 333333 444444 444444 | grep -q "Done\.$"'
 check "the_current_pin_cannot_be_chosen_as_the_new_pin" 'pin change 444444 444444 444444 | grep -q "not accepted"'
-check "no_confinement_denial_in_the_log" '! sudo journalctl -k --no-pager --since "-10min" 2>/dev/null | grep -E "apparmor=\"DENIED\".*(linuxhello-agent|linuxhello-tpm-provider|linuxhello-ctl)" | head -3 | grep .'
+check "no_confinement_denial_in_the_log" '! sudo journalctl -k --no-pager --since "@$T0" 2>/dev/null | grep -E "apparmor=\"DENIED\".*(linuxhello-agent|linuxhello-tpm-provider|linuxhello-ctl)" | head -3 | grep .'
 
 # P-14 on a real machine. The TPM counts wrong tries for every user together and locks all of them at
 # its own limit; here it allows three. The Agent reads that limit when it starts and keeps its own at
@@ -135,6 +137,13 @@ sudo tpm2_clear >/dev/null 2>&1
 sudo systemctl restart linuxhello-tpm-provider; sleep 2
 check "a_cleared_tpm_is_reported_in_the_status" 'sudo -u lh2 /usr/bin/linuxhello-ctl status | grep -q tpm-cleared'
 check "a_user_without_a_record_is_not_told_the_tpm_was_cleared" '! sudo -u nobody /usr/bin/linuxhello-ctl status | grep -q tpm-cleared'
+
+# Leave the machine as the other VM checks expect it: no provider, no PIN records, and a TPM that
+# allows many tries (a clear resets the limit to the TPM's own default of three).
+sudo tpm2_dictionarylockout --clear-lockout >/dev/null 2>&1
+sudo tpm2_dictionarylockout --setup-parameters --max-tries=100 --recovery-time=10 --lockout-recovery-time=10 >/dev/null 2>&1
+sudo systemctl stop linuxhello-agent linuxhello-tpm-provider
+sudo rm -rf /var/lib/linuxhello/users /var/lib/linuxhello/pinlock.toml
 
 echo
 if [[ $fail -eq 0 ]]; then echo "All checks passed."; else echo "$fail check(s) failed."; exit 1; fi
