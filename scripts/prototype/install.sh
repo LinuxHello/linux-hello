@@ -6,6 +6,7 @@
 #   scripts/prototype/install.sh                 build, install, enable for sudo
 #   scripts/prototype/install.sh --lock-screen   also enable for the Plasma lock screen (/etc/pam.d/kde)
 #   scripts/prototype/install.sh --console       also enable for login on a text console (/etc/pam.d/login)
+#   scripts/prototype/install.sh --face          let Howdy, which the Agent starts, use the camera
 #   scripts/prototype/install.sh --no-build      install what target/ already holds
 #
 # It changes the machine: it creates two system users, installs files under /usr, /etc and /var,
@@ -23,13 +24,15 @@ root=$PWD
 
 lock=no
 console=no
+face=no
 build=yes
 for arg in "$@"; do
   case "$arg" in
     --lock-screen) lock=yes ;;
     --console) console=yes ;;
+    --face) face=yes ;;
     --no-build) build=no ;;
-    -h|--help) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown option: $arg" >&2; exit 2 ;;
   esac
 done
@@ -79,6 +82,27 @@ sudo install -m644 "$sec/systemd/linuxhello-agent.service" /usr/lib/systemd/syst
 sudo install -m644 "$sec/systemd/linuxhello-tpm-provider.service" /usr/lib/systemd/system/linuxhello-tpm-provider.service
 security_dir=/usr/lib/x86_64-linux-gnu/security
 sudo install -D -m644 "$rel/libpam_linuxhello.so" "$security_dir/pam_linuxhello.so"
+
+# The face method runs Howdy's compare script as a child of the Agent, inside the Agent's unit. The
+# unit admits no device but the TPM, and Howdy keeps its face models for root, so without these two
+# changes a face is never checked. Both are for this prototype only; a helper unit for Howdy with its
+# own rights replaces them (#272).
+face_dropin=/etc/systemd/system/linuxhello-agent.service.d/50-face-prototype.conf
+howdy=/lib/security/howdy
+if [[ $face == yes ]]; then
+  step "letting Howdy use the camera (--face)"
+  [[ -f $howdy/compare.py ]] || echo "   warning: $howdy/compare.py not found: install Howdy first, or the face method stays unavailable"
+  printf '%s\n' "$MARK: lets Howdy, which the Agent starts, open the camera" '[Service]' \
+    'DeviceAllow=char-video4linux rw' 'SupplementaryGroups=video' \
+    | sudo install -D -m644 /dev/stdin "$face_dropin"
+  if [[ -d $howdy/models ]] && ! sudo -u linuxhello test -r "$howdy/models"; then
+    command -v setfacl >/dev/null || die "setfacl is needed to let the Agent read Howdy's models (sudo apt install acl)"
+    sudo setfacl -R -m u:linuxhello:rX "$howdy/models"
+    echo "   $howdy/models: readable by the Agent's user (an ACL; uninstall.sh removes it)"
+  fi
+else
+  sudo rm -f "$face_dropin"
+fi
 
 step "loading the profiles and starting the services"
 sudo apparmor_parser -r /etc/apparmor.d/linuxhello-agent /etc/apparmor.d/linuxhello-tpm-provider
