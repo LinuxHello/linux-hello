@@ -328,6 +328,8 @@ fn classify(error: tss_esapi::Error) -> TpmError {
 }
 
 /// Any error as [`TpmError::Failed`].
-fn failed(error: impl std::fmt::Display) -> TpmError {
-    TpmError::Failed(error.to_string())
+fn failed(error: impl std::fmt::Display + std::fmt::Debug) -> TpmError {
+    // The stack's own text is "response code not recognized" for any code it has no name for, which
+    // hides what the TPM said; the debug form carries the code.
+    TpmError::Failed(format!("{error} ({error:?})"))
 }

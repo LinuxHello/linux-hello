@@ -130,7 +130,10 @@ impl Server {
             let body = match self.tpm.limits() {
                 Ok(limits) => encode_limits(&limits),
                 Err(TpmError::Locked) => vec![STATUS_LOCKED],
-                Err(TpmError::Failed(_)) => vec![STATUS_FAILED],
+                Err(TpmError::Failed(text)) => {
+                    eprintln!("linuxhello-tpm-provider: the TPM refused a request: {text}");
+                    vec![STATUS_FAILED]
+                }
             };
             let _ = write_frame(&mut stream, &body);
             return;
@@ -165,10 +168,14 @@ impl Server {
                 status: STATUS_LOCKED,
                 blobs: None,
             },
-            Err(TpmError::Failed(_)) => Response {
-                status: STATUS_FAILED,
-                blobs: None,
-            },
+            Err(TpmError::Failed(text)) => {
+                // The text is the TPM stack's own and carries no PIN; the client only learns "failed".
+                eprintln!("linuxhello-tpm-provider: the TPM refused a request: {text}");
+                Response {
+                    status: STATUS_FAILED,
+                    blobs: None,
+                }
+            }
         }
     }
 }

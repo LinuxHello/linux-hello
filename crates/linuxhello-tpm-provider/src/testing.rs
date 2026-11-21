@@ -56,7 +56,7 @@ impl SoftTpm {
                 port,
                 _state: state,
             };
-            if soft.wait_until_listening() {
+            if soft.wait_until_listening() && soft.answers() {
                 return Some(soft);
             }
             // Dropping `soft` gives the port back.
@@ -71,7 +71,33 @@ impl SoftTpm {
 
     /// Opens the key service on it.
     pub fn open(&self) -> Tpm {
-        Tpm::open(&self.tcti()).expect("open the software TPM")
+        open_when_ready(&self.tcti())
+    }
+
+    /// Whether this swtpm answers a real command within a few seconds. A connection that is accepted
+    /// proves little: another listener on the port, a swtpm that is still starting and one that died a
+    /// moment after it listened all accept. Asking for a property of the TPM proves that it is this
+    /// TPM and that it works, and costs no key generation.
+    fn answers(&mut self) -> bool {
+        let Ok(tcti) = self.tcti().parse::<tss_esapi::TctiNameConf>() else {
+            return false;
+        };
+        let until = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < until {
+            if !matches!(self.child.try_wait(), Ok(None)) {
+                return false;
+            }
+            if let Ok(mut context) = tss_esapi::Context::new(tcti.clone()) {
+                if context
+                    .get_tpm_property(tss_esapi::constants::PropertyTag::Manufacturer)
+                    .is_ok()
+                {
+                    return true;
+                }
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        false
     }
 
     /// Waits until swtpm accepts connections on its data port. `false` when swtpm has already ended
@@ -95,21 +121,46 @@ impl SoftTpm {
 impl Drop for SoftTpm {
     fn drop(&mut self) {
         // Ask swtpm to shut down over its control channel (CMD_SHUTDOWN is 3), wait for it for a
-        // moment, then stop it, and never wait for ever.
+        // moment, then stop it, and never wait for ever. The port is given back last, once nothing
+        // listens on it.
         if let Ok(mut control) = std::net::TcpStream::connect(("127.0.0.1", self.port + 1)) {
             let _ = std::io::Write::write_all(&mut control, &3_u32.to_be_bytes());
             let mut answer = [0_u8; 4];
             let _ = std::io::Read::read(&mut control, &mut answer);
         }
         let until = Instant::now() + Duration::from_secs(3);
+        let mut ended = false;
         while Instant::now() < until {
             if matches!(self.child.try_wait(), Ok(Some(_))) {
-                return;
+                ended = true;
+                break;
             }
             std::thread::sleep(Duration::from_millis(20));
         }
-        let _ = self.child.kill();
+        if !ended {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
         release_port(self.port);
+    }
+}
+
+/// Opens the key service on the TPM at `tcti`, trying again for a few seconds. A software TPM accepts
+/// connections a moment before it can answer commands, and under load that moment is long enough for
+/// the first command to be refused with a code the TSS library has no name for ("response code not
+/// recognized"); a TPM that is not there still fails, after the last try.
+///
+/// # Panics
+///
+/// When the TPM does not open within ten seconds.
+pub fn open_when_ready(tcti: &str) -> Tpm {
+    let until = Instant::now() + Duration::from_secs(10);
+    loop {
+        match Tpm::open(tcti) {
+            Ok(tpm) => return tpm,
+            Err(error) if Instant::now() >= until => panic!("open the software TPM: {error:?}"),
+            Err(_) => std::thread::sleep(Duration::from_millis(100)),
+        }
     }
 }
 
