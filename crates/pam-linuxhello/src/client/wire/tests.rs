@@ -67,6 +67,21 @@ fn message(kind: u8, serial: u32, fields: &[F<'_>], body: &[Value]) -> Vec<u8> {
                 let n = (b.bytes.len() - at) as u32;
                 b.bytes[at - 4..at].copy_from_slice(&n.to_le_bytes());
             }
+            Value::Triples(items) => {
+                sig.push_str("a(sss)");
+                b.u32(0);
+                let length = b.bytes.len() - 4;
+                b.pad(8);
+                let at = b.bytes.len();
+                for (x, y, z) in items {
+                    b.pad(8);
+                    b.s(x);
+                    b.s(y);
+                    b.s(z);
+                }
+                let n = (b.bytes.len() - at) as u32;
+                b.bytes[length..length + 4].copy_from_slice(&n.to_le_bytes());
+            }
         }
     }
     let body_bytes = b.bytes;
@@ -345,4 +360,78 @@ fn a_string_with_a_zero_byte_or_bad_utf8_is_malformed() {
     let mut utf8 = good.clone();
     utf8[at] = 0xff;
     assert_eq!(parse(&utf8), Err(Malformed));
+}
+
+fn triple(a: &str, b: &str, c: &str) -> (String, String, String) {
+    (a.into(), b.into(), c.into())
+}
+
+#[test]
+fn a_list_of_conditions_is_read() {
+    for items in [
+        vec![],
+        vec![triple(
+            "tpm-cleared",
+            "severe",
+            "The TPM no longer holds the key.",
+        )],
+        // The first element ends off an 8-byte boundary, so the second starts after padding.
+        vec![
+            triple("a", "b", "c"),
+            triple(
+                "context-unsatisfiable: sudo",
+                "severe",
+                "sudo cannot be unlocked.",
+            ),
+        ],
+    ] {
+        let reply = message(2, 5, &[F::U(5, 9)], &[Value::Triples(items.clone())]);
+        assert_eq!(
+            parse(&reply).unwrap().body,
+            vec![Value::Triples(items.clone())]
+        );
+        // The module's own test writer gives the same bytes.
+        let mine = encode_for_tests(&parse(&reply).unwrap());
+        assert_eq!(parse(&mine).unwrap().body, vec![Value::Triples(items)]);
+    }
+}
+
+#[test]
+fn a_list_of_conditions_that_does_not_add_up_is_malformed_and_never_a_panic() {
+    let good = message(
+        2,
+        5,
+        &[F::U(5, 9)],
+        &[Value::Triples(vec![
+            triple("a", "b", "c"),
+            triple("dd", "e", "f"),
+        ])],
+    );
+    assert!(parse(&good).is_ok());
+    for at in 0..good.len() {
+        for value in [0_u8, 1, 3, 0x7f, 0xff] {
+            let mut bad = good.clone();
+            bad[at] = value;
+            let _ = parse(&bad);
+        }
+    }
+    // The array's length is the first four bytes of the body, which is the end of the message.
+    let body_at = good.len() - (u32::from_le_bytes(good[4..8].try_into().unwrap()) as usize);
+    for wrong in [0_u32, 1, 15, 1000] {
+        let mut bad = good.clone();
+        bad[body_at..body_at + 4].copy_from_slice(&wrong.to_le_bytes());
+        assert_eq!(parse(&bad), Err(Malformed), "length {wrong}");
+    }
+}
+
+#[test]
+fn the_prompt_status_seed_is_a_valid_reply() {
+    let seed = include_bytes!("../../../fuzz/seeds/bus_message/prompt_status_reply");
+    let m = parse(seed).unwrap();
+    assert_eq!((m.kind, m.reply_serial), (Kind::Return, Some(3)));
+    let [Value::Triples(items)] = m.body.as_slice() else {
+        panic!("{:?}", m.body)
+    };
+    assert_eq!(items.len(), 2);
+    assert_eq!(items[1].0, "context-unsatisfiable: login");
 }

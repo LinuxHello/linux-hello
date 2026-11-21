@@ -74,6 +74,9 @@ pub enum Value {
     Strs(Vec<String>),
     /// A signed 64-bit number (`x`), as in the module's own calls.
     I64(i64),
+    /// A list of three strings each (`a(sss)`): the conditions of `GetPromptStatus`, each as
+    /// code, severity and sentence.
+    Triples(Vec<(String, String, String)>),
 }
 
 /// A message read from the bus: the header fields the module uses and the decoded body.
@@ -400,7 +403,22 @@ pub fn parse(bytes: &[u8]) -> Result<Message, Malformed> {
     // The body is aligned from its own start, which is a multiple of 8 from the message's.
     let mut types = signature.as_str();
     while !types.is_empty() {
-        if let Some(rest) = types.strip_prefix("as") {
+        if let Some(rest) = types.strip_prefix("a(sss)") {
+            // The length counts the elements' bytes, from after the padding to the first one.
+            let n = usize::try_from(r.u32()?).map_err(|_| Malformed)?;
+            r.align(8)?;
+            let end = r.at.checked_add(n).ok_or(Malformed)?;
+            let mut items = Vec::new();
+            while r.at < end {
+                r.align(8)?;
+                items.push((r.string()?, r.string()?, r.string()?));
+            }
+            if r.at != end {
+                return Err(Malformed);
+            }
+            message.body.push(Value::Triples(items));
+            types = rest;
+        } else if let Some(rest) = types.strip_prefix("as") {
             let n = usize::try_from(r.u32()?).map_err(|_| Malformed)?;
             let end = r.at.checked_add(n).ok_or(Malformed)?;
             let mut items = Vec::new();
@@ -467,6 +485,21 @@ pub(crate) fn encode_for_tests(message: &Message) -> Vec<u8> {
                 }
                 let n = u32::try_from(body.0.len() - at).unwrap();
                 body.0[at - 4..at].copy_from_slice(&n.to_le_bytes());
+            }
+            Value::Triples(items) => {
+                signature.push_str("a(sss)");
+                body.u32(0);
+                let length_at = body.0.len() - 4;
+                body.align(8);
+                let at = body.0.len();
+                for (a, b, c) in items {
+                    body.align(8);
+                    body.string(a).unwrap();
+                    body.string(b).unwrap();
+                    body.string(c).unwrap();
+                }
+                let n = u32::try_from(body.0.len() - at).unwrap();
+                body.0[length_at..length_at + 4].copy_from_slice(&n.to_le_bytes());
             }
         }
     }
