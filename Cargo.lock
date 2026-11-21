@@ -509,6 +509,12 @@ dependencies = [
 [[package]]
 name = "pam-linuxhello"
 version = "0.0.0"
+dependencies = [
+ "libc",
+ "linuxhello-dbus",
+ "tempfile",
+ "zeroize",
+]
 
 [[package]]
 name = "parking"

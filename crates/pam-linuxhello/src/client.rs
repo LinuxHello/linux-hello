@@ -1,0 +1,447 @@
+//! The Agent client: one authentication from start to PAM code (ADR-0023, decisions 1 to 3 and the
+//! amendments of 2026-11-19 and 2026-11-21).
+//!
+//! In plain words: when `sudo` or a login screen asks "is this the user?", this module opens a
+//! *prompt* (the Agent's word for one attempt) for the user, asks the Agent to start the methods the
+//! policy allows (fingerprint, face, PIN), and waits for the Agent's answer. When the PIN is one of
+//! the methods it asks the person for the PIN through the PAM conversation (the question the
+//! program running PAM shows), and sends the PIN to the Agent on the Agent's PIN socket, never on
+//! the bus. When the person uses the sensor or the camera instead, they press Enter on an empty
+//! PIN and the module waits for that method. The answer becomes a PAM code.
+//!
+//! Fail closed for login, as ADR-0023 decision 2 defines it: whenever Linux Hello cannot give a
+//! clear answer (the bus or the Agent is not there or hangs, the context is not named, the person
+//! gives no answer in time) the module returns *unavailable*, so the PAM stack goes on to the
+//! account password. It never returns success for that case (`pam_never_succeeds_when_agent_is_unreachable`,
+//! property P-20). Every step has a deadline (`pam_returns_within_its_deadline_when_the_agent_hangs`).
+//!
+//! Only safe code is here; the PAM entry points that call it are in the crate's `entry` module.
+//!
+//! C4 component: `agentClient` ([workspace.dsl](https://github.com/LinuxHello/linux-hello-architecture/blob/main/workspace.dsl))
+
+mod bus;
+pub mod wire;
+
+use std::io::{Read, Write};
+use std::os::unix::net::UnixStream;
+use std::path::Path;
+use std::time::{Duration, Instant};
+
+use linuxhello_dbus::{PromptId, AGENT_BUS_NAME, AGENT_INTERFACE, AGENT_OBJECT_PATH};
+use zeroize::Zeroizing;
+
+use bus::{Bus, BusError};
+use wire::{Arg, Value};
+
+/// The system bus socket. Never taken from the environment: `sudo` runs PAM with the invoking
+/// user's environment, and a bus of the user's own could answer "success".
+pub const SYSTEM_BUS: &str = "/run/dbus/system_bus_socket";
+
+/// The Agent's PIN socket (`PIN_SOCKET` in the Agent's `main.rs`, ADR-0021).
+pub const PIN_SOCKET: &str = "/run/linuxhello/pin.sock";
+
+/// The reply byte of the PIN socket for an accepted PIN (`REPLY_ACCEPTED` of the Agent).
+const REPLY_ACCEPTED: u8 = 0;
+
+/// The contexts a module argument may name (the policy schema's contexts, ADR-0023 amendment of
+/// 2026-11-19, point 3).
+pub const CONTEXTS: [&str; 4] = ["login", "unlock", "sudo", "session"];
+
+/// What the module answers PAM.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Code {
+    /// The user is authenticated (`PAM_SUCCESS`).
+    Success,
+    /// The user was not authenticated: a wrong PIN, a finger or face that did not match, a lockout
+    /// (`PAM_AUTH_ERR`).
+    Denied,
+    /// Linux Hello could not answer; the stack goes on to the password (`PAM_AUTHINFO_UNAVAIL`).
+    Unavailable,
+    /// No such user (`PAM_USER_UNKNOWN`).
+    UserUnknown,
+}
+
+/// The deadlines of one authentication (ADR-0023, amendment of 2026-11-21, point 6).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Limits {
+    /// To connect to the bus and finish `Hello`.
+    pub connect: Duration,
+    /// For each method call, and for the Agent's first report of the methods.
+    pub call: Duration,
+    /// For the answer after the PIN was sent or an empty answer was given.
+    pub wait: Duration,
+    /// For the whole authentication, whatever the person does.
+    pub total: Duration,
+}
+
+impl Limits {
+    /// The limits of ADR-0023: 250 ms, 2 s, 30 s, 120 s.
+    pub const DEFAULT: Self = Self {
+        connect: Duration::from_millis(250),
+        call: Duration::from_secs(2),
+        wait: Duration::from_secs(30),
+        total: Duration::from_secs(120),
+    };
+}
+
+/// The PAM conversation: how the module asks the person and tells them things.
+pub trait Conversation {
+    /// Asks `question` without echo; `None` when the application gives no answer (it was
+    /// cancelled, or it cannot ask).
+    fn secret(&mut self, question: &str) -> Option<Zeroizing<String>>;
+    /// Shows `text` as information.
+    fn info(&mut self, text: &str);
+    /// Shows `text` as an error.
+    fn error(&mut self, text: &str);
+}
+
+/// One authentication's inputs, as the PAM entry point read them.
+pub struct Request<'a> {
+    /// The value of the `context=` module argument, if there was one.
+    pub context: Option<&'a str>,
+    /// The PAM service (`sudo`, `sddm`, ...), for the prompt id.
+    pub service: &'a str,
+    /// The terminal or display, for the prompt id.
+    pub terminal: &'a str,
+    /// The user being authenticated; `None` when the name is not a user.
+    pub uid: Option<u32>,
+}
+
+/// Why a step failed: there is no clear answer, so the module answers unavailable.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Fault;
+
+impl From<BusError> for Fault {
+    fn from(_: BusError) -> Self {
+        Self
+    }
+}
+
+/// What the Agent said about the prompt.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Signal {
+    /// The methods running now (`ActiveMethods`).
+    Active(Vec<String>),
+    /// The outcome (`Result`): result, reason, seconds until another try.
+    Result(String, String, u32),
+    /// The prompt was closed (`Closed`).
+    Closed,
+}
+
+/// The Agent as the flow uses it, so that the flow can be tested without a bus.
+pub trait Agent {
+    /// Calls `member` of the Agent's interface with `args`.
+    ///
+    /// # Errors
+    ///
+    /// [`Fault`] when the call fails or is refused.
+    fn call(&mut self, member: &str, args: &[Arg<'_>]) -> Result<(), Fault>;
+    /// The next signal about `prompt`; `None` when none came before `deadline`.
+    ///
+    /// # Errors
+    ///
+    /// [`Fault`] when the connection fails.
+    fn signal(&mut self, prompt: &str, deadline: Instant) -> Result<Option<Signal>, Fault>;
+}
+
+/// The PIN socket as the flow uses it.
+pub trait PinPost {
+    /// Sends `pin`; whether the Agent accepted it for checking (not whether it is right).
+    ///
+    /// # Errors
+    ///
+    /// [`Fault`] when it cannot be sent.
+    fn send(&mut self, pin: &[u8]) -> Result<bool, Fault>;
+}
+
+/// The Agent on the system bus.
+struct BusAgent {
+    /// The connection.
+    bus: Bus,
+    /// The unique name of the connection that owns the Agent's name; signals from anyone else are
+    /// ignored.
+    owner: String,
+    /// The deadline of each call.
+    call_limit: Duration,
+}
+
+impl BusAgent {
+    /// Connects to the bus at `path` and finds the Agent's connection.
+    fn connect(path: &Path, limits: &Limits) -> Result<Self, Fault> {
+        let mut bus = Bus::connect(path, limits.connect)?;
+        let reply = bus.call(
+            "org.freedesktop.DBus",
+            "/org/freedesktop/DBus",
+            "org.freedesktop.DBus",
+            "GetNameOwner",
+            &[Arg::Str(AGENT_BUS_NAME)],
+            Instant::now() + limits.call,
+        )?;
+        let Some(Value::Str(owner)) = reply.into_iter().next() else {
+            return Err(Fault);
+        };
+        Ok(Self {
+            bus,
+            owner,
+            call_limit: limits.call,
+        })
+    }
+}
+
+impl Agent for BusAgent {
+    fn call(&mut self, member: &str, args: &[Arg<'_>]) -> Result<(), Fault> {
+        self.bus.call(
+            AGENT_BUS_NAME,
+            AGENT_OBJECT_PATH,
+            AGENT_INTERFACE,
+            member,
+            args,
+            Instant::now() + self.call_limit,
+        )?;
+        Ok(())
+    }
+
+    fn signal(&mut self, prompt: &str, deadline: Instant) -> Result<Option<Signal>, Fault> {
+        loop {
+            let Some(message) = self.bus.next_signal(deadline)? else {
+                return Ok(None);
+            };
+            if message.sender.as_deref() != Some(self.owner.as_str())
+                || message.interface.as_deref() != Some(AGENT_INTERFACE)
+            {
+                continue;
+            }
+            if let Some(signal) = read_signal(message.member.as_deref(), &message.body, prompt) {
+                return Ok(Some(signal));
+            }
+        }
+    }
+}
+
+/// The signal of `member` with `body`, when it is about `prompt` and has the expected shape.
+fn read_signal(member: Option<&str>, body: &[Value], prompt: &str) -> Option<Signal> {
+    match (member?, body) {
+        ("ActiveMethods", [Value::Str(id), Value::Strs(methods)]) if id == prompt => {
+            Some(Signal::Active(methods.clone()))
+        }
+        ("Result", [Value::Str(id), Value::Str(result), Value::Str(reason), Value::U32(secs)])
+            if id == prompt =>
+        {
+            Some(Signal::Result(result.clone(), reason.clone(), *secs))
+        }
+        ("Closed", [Value::Str(id)]) if id == prompt => Some(Signal::Closed),
+        _ => None,
+    }
+}
+
+/// The Agent's PIN socket at a path.
+struct SocketPin<'a>(&'a Path);
+
+impl PinPost for SocketPin<'_> {
+    fn send(&mut self, pin: &[u8]) -> Result<bool, Fault> {
+        let length = u16::try_from(pin.len()).map_err(|_| Fault)?;
+        let mut stream = UnixStream::connect(self.0).map_err(|_| Fault)?;
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .map_err(|_| Fault)?;
+        stream
+            .set_write_timeout(Some(Duration::from_secs(5)))
+            .map_err(|_| Fault)?;
+        let mut frame = Zeroizing::new(length.to_be_bytes().to_vec());
+        frame.extend_from_slice(pin);
+        stream.write_all(&frame).map_err(|_| Fault)?;
+        stream
+            .shutdown(std::net::Shutdown::Write)
+            .map_err(|_| Fault)?;
+        let mut reply = [1_u8; 1];
+        stream.read_exact(&mut reply).map_err(|_| Fault)?;
+        Ok(reply[0] == REPLY_ACCEPTED)
+    }
+}
+
+/// Authenticates `request` against the Agent on the system bus, asking through `conversation`.
+pub fn authenticate(request: &Request<'_>, conversation: &mut dyn Conversation) -> Code {
+    authenticate_at(
+        Path::new(SYSTEM_BUS),
+        Path::new(PIN_SOCKET),
+        &Limits::DEFAULT,
+        request,
+        conversation,
+    )
+}
+
+/// [`authenticate`] with the bus, the PIN socket and the limits given, for tests.
+pub fn authenticate_at(
+    bus: &Path,
+    pin_socket: &Path,
+    limits: &Limits,
+    request: &Request<'_>,
+    conversation: &mut dyn Conversation,
+) -> Code {
+    let start = Instant::now();
+    let Some(context) = request.context.filter(|c| CONTEXTS.contains(c)) else {
+        return Code::Unavailable;
+    };
+    let Some(uid) = request.uid else {
+        return Code::UserUnknown;
+    };
+    let Ok(mut agent) = BusAgent::connect(bus, limits) else {
+        return Code::Unavailable;
+    };
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos());
+    let session = format!("{}-{nanos}", std::process::id());
+    let prompt = PromptId::derive(request.service, request.terminal, &session);
+    run(
+        &mut agent,
+        &mut SocketPin(pin_socket),
+        conversation,
+        prompt.as_str(),
+        uid,
+        context,
+        limits,
+        start,
+    )
+}
+
+/// The flow on an `agent`: open the prompt, start, ask, wait, close. The prompt is always closed
+/// once it was opened (`the_prompt_is_always_closed`).
+#[allow(clippy::too_many_arguments)]
+pub fn run(
+    agent: &mut dyn Agent,
+    pins: &mut dyn PinPost,
+    conversation: &mut dyn Conversation,
+    prompt: &str,
+    uid: u32,
+    context: &str,
+    limits: &Limits,
+    start: Instant,
+) -> Code {
+    if agent
+        .call("OpenPrompt", &[Arg::Str(prompt), Arg::I64(i64::from(uid))])
+        .is_err()
+    {
+        return Code::Unavailable;
+    }
+    let code = steps(agent, pins, conversation, prompt, context, limits, start)
+        .unwrap_or(Code::Unavailable);
+    let _ = agent.call("ClosePrompt", &[Arg::Str(prompt)]);
+    code
+}
+
+/// The question for the PIN when `methods` run (ADR-0023, amendment of 2026-11-21, point 3).
+fn question(methods: &[String]) -> &'static str {
+    let finger = methods.iter().any(|m| m == "fingerprint");
+    let face = methods.iter().any(|m| m == "face");
+    match (finger, face) {
+        (true, true) => "PIN (or use the fingerprint sensor or the camera, then press Enter): ",
+        (true, false) => "PIN (or touch the fingerprint sensor and press Enter): ",
+        (false, true) => "PIN (or look at the camera and press Enter): ",
+        (false, false) => "PIN: ",
+    }
+}
+
+/// The steps between opening and closing the prompt.
+fn steps(
+    agent: &mut dyn Agent,
+    pins: &mut dyn PinPost,
+    conversation: &mut dyn Conversation,
+    prompt: &str,
+    context: &str,
+    limits: &Limits,
+    start: Instant,
+) -> Result<Code, Fault> {
+    let end = start + limits.total;
+    let soon = |limit: Duration| (Instant::now() + limit).min(end);
+    agent.call("Subscribe", &[Arg::Str(prompt)])?;
+    agent.call("Authenticate", &[Arg::Str(prompt), Arg::Str(context)])?;
+    let mut until = soon(limits.call);
+    let mut answered: Option<Vec<String>> = None;
+    let mut pin_sent = false;
+    loop {
+        let Some(signal) = agent.signal(prompt, until)? else {
+            return Ok(Code::Unavailable);
+        };
+        match signal {
+            // A result before any method ran means none could (no PIN set, no finger enrolled, an
+            // unsatisfiable context): not a refusal of the person, so the password
+            // (`no_method_that_can_run_is_unavailable_not_denied`).
+            Signal::Result(result, _, _) if answered.is_none() && result != "success" => {
+                return Ok(Code::Unavailable)
+            }
+            Signal::Result(result, reason, seconds) => {
+                return Ok(outcome(&result, &reason, seconds, pin_sent, conversation))
+            }
+            Signal::Closed => return Ok(Code::Unavailable),
+            Signal::Active(methods) => {
+                if methods.is_empty() || answered.as_ref() == Some(&methods) {
+                    continue;
+                }
+                answered = Some(methods.clone());
+                let other = methods.iter().any(|m| m == "fingerprint" || m == "face");
+                if methods.iter().any(|m| m == "pin") {
+                    let Some(pin) = conversation.secret(question(&methods)) else {
+                        return Ok(Code::Unavailable);
+                    };
+                    if pin.is_empty() {
+                        if !other {
+                            // Only the PIN can be used and the person gave none: they want the
+                            // password.
+                            return Ok(Code::Unavailable);
+                        }
+                    } else {
+                        agent.call("ExpectPin", &[Arg::Str(prompt)])?;
+                        if !pins.send(pin.as_bytes())? {
+                            return Ok(Code::Unavailable);
+                        }
+                        pin_sent = true;
+                    }
+                } else if other {
+                    conversation.info(if methods.iter().any(|m| m == "fingerprint") {
+                        "Touch the fingerprint sensor."
+                    } else {
+                        "Look at the camera."
+                    });
+                }
+                until = soon(limits.wait);
+            }
+        }
+    }
+}
+
+/// The PAM code of the Agent's `result`, telling the person what happened (ADR-0023, amendment of
+/// 2026-11-21, point 5).
+fn outcome(
+    result: &str,
+    reason: &str,
+    seconds: u32,
+    pin_sent: bool,
+    conversation: &mut dyn Conversation,
+) -> Code {
+    match (result, reason) {
+        ("success", _) => Code::Success,
+        ("locked-out", _) => {
+            let minutes = seconds.div_ceil(60).max(1);
+            conversation.error(&format!(
+                "Too many wrong PINs. Linux Hello is locked for {minutes} more minute{}.",
+                if minutes == 1 { "" } else { "s" }
+            ));
+            Code::Denied
+        }
+        // Nobody answered before the Agent's own deadline: no clear answer, so the password.
+        ("failure", "timeout") | ("cancelled", _) => Code::Unavailable,
+        ("failure", _) => {
+            conversation.error(if pin_sent {
+                "Wrong PIN."
+            } else {
+                "Not recognised."
+            });
+            Code::Denied
+        }
+        _ => Code::Unavailable,
+    }
+}
+
+#[cfg(test)]
+mod tests;

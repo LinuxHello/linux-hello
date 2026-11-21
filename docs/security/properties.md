@@ -68,8 +68,9 @@ How to read the table:
 
 | Id | Property | Test | Owner | Blocked by |
 | :-- | :-- | :-- | :-- | :-- |
-| P-20 | The PAM module never reports success when the Agent is unreachable or returns an error | `pam_never_succeeds_when_agent_is_unreachable` | `pamModule` | PAM entry points; spike [#7](https://github.com/LinuxHello/linux-hello/issues/7) runs |
+| P-20 | The PAM module never reports success when the Agent is unreachable or returns an error, and it gives up within its deadlines when the Agent hangs | `pam_never_succeeds_when_agent_is_unreachable`, `pam_returns_within_its_deadline_when_the_agent_hangs` | `pamModule` | **Tested** against a missing bus, a socket that is not a bus and a fake bus whose Agent never answers (`tests/security_properties.rs`, `client/tests.rs`); a run inside real `sudo` is the VM test of the PAM module |
 | P-21 | The PAM module reports success only for the user being authenticated | `pam_success_for_another_user_is_not_success` | `pamModule` | PAM entry points |
+| P-37 | The PAM module reaches the system bus only at its fixed path, never at an address from the environment (which `sudo` takes from the invoking user), and accepts the Agent's signals only from the connection that owns the Agent's name, so a forged "success" from another program is ignored | `a_signal_from_another_sender_is_ignored` | `pamModule` | **Tested** for the sender check over a fake bus; the fixed path is a constant (`client::SYSTEM_BUS`) with no code that reads the environment |
 
 ## Parsers
 
@@ -79,6 +80,7 @@ Each parser also gets a cargo-fuzz target, as [AGENTS.md](../../AGENTS.md#gates)
 | :-- | :-- | :-- | :-- | :-- |
 | P-22 | A malformed CTAP/CBOR request is refused, never a panic | `malformed_ctap_request_is_refused` | `tpmProvider` | The virtual CTAP authenticator and the provider interface behind it (ADR-0005, decided, not built yet) |
 | P-23 | A malformed KeePassXC protocol message is refused, never a panic | `malformed_kpxc_message_is_refused` | `kpxcBridge` | The bridge's protocol client |
+| P-38 | A D-Bus message the PAM module cannot read is refused, never a panic, and a length above 64 KiB is refused before it is read | `anything_else_is_malformed_and_never_a_panic`, `a_length_above_the_limit_is_refused_before_reading` | `pamModule` | **Tested**; fuzz target `bus_message` in `crates/pam-linuxhello/fuzz` |
 
 ## Confinement and evidence
 

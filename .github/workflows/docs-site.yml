@@ -32,7 +32,7 @@ jobs:
         with:
           toolchain: stable
       - name: Graphviz, and the TSS2 libraries that tss-esapi builds against
-        run: sudo apt-get update -qq && sudo apt-get install --yes --no-install-recommends graphviz libtss2-dev clang libclang-dev pkg-config
+        run: sudo apt-get update -qq && sudo apt-get install --yes --no-install-recommends graphviz libtss2-dev libpam0g-dev clang libclang-dev pkg-config
       # cargo-modules has no release binaries; compile it once per version and keep it.
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         id: cargo-modules

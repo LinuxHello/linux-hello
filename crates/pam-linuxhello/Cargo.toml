@@ -1,6 +1,6 @@
 [package]
 name = "pam-linuxhello"
-description = "PAM module: parallel face, fingerprint and PIN authentication"
+description = "PAM module: a thin synchronous client of the Linux Hello Agent"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -10,6 +10,15 @@ publish.workspace = true
 
 [lints]
 workspace = true
+
+[dependencies]
+linuxhello-dbus = { path = "../linuxhello-dbus" }
+# Already in the tree: getpwnam_r, free and strlen for the PAM entry points.
+libc = "0.2"
+zeroize = "1"
+
+[dev-dependencies]
+tempfile = "3.27.0"
 
 [lib]
 name = "pam_linuxhello"
