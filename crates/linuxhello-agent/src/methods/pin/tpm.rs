@@ -24,7 +24,9 @@ use zeroize::Zeroizing;
 use super::enrol::PinEnrolment;
 use super::{KeyProbe, PinVerifier, VerifyError};
 use crate::pinkdf::{stretch, KdfError, Params, SALT_BYTES};
-use crate::pinrecord::{HistoryEntry, PinRecord, PinRecordStore, RecordError, MAX_HISTORY};
+use crate::pinrecord::{
+    now_unix, HistoryEntry, PinRecord, PinRecordStore, RecordError, MAX_HISTORY,
+};
 
 /// Why a PIN could not be set or changed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -86,6 +88,7 @@ impl TpmVerifier {
         let salt = random_salt().ok_or(EnrolError::Record)?;
         let auth = authorisation(pin, &salt, &self.params).map_err(EnrolError::BadPin)?;
         let blobs = self.client.enrol(auth).map_err(EnrolError::Tpm)?;
+        let changed_at = now_unix();
         self.records
             .save(
                 uid,
@@ -93,6 +96,7 @@ impl TpmVerifier {
                     params: self.params,
                     salt,
                     blobs,
+                    changed_at,
                     history: Vec::new(),
                 },
             )
@@ -174,6 +178,7 @@ impl TpmVerifier {
             .chain(record.history)
             .take(keep)
             .collect();
+        let changed_at = now_unix();
         self.records
             .save(
                 uid,
@@ -181,6 +186,7 @@ impl TpmVerifier {
                     params: self.params,
                     salt: new_salt,
                     blobs,
+                    changed_at,
                     history,
                 },
             )
