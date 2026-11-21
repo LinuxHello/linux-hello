@@ -136,7 +136,7 @@ fn a_plain_password_session_puts_the_value_in_the_stream() {
 fn world() -> Option<(SoftTpm, Recorder, Tpm)> {
     let soft = SoftTpm::start()?;
     let recorder = Recorder::start(&soft);
-    let tpm = Tpm::open(&recorder.tcti).unwrap();
+    let tpm = linuxhello_tpm_provider::testing::open_when_ready(&recorder.tcti);
     Some((soft, recorder, tpm))
 }
 
