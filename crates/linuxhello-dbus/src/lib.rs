@@ -52,6 +52,7 @@ pub const CAPABILITIES: &[&str] = &[
     "GetCapabilities",
     "GetEffectivePolicy",
     "GetPinRules",
+    "GetPromptStatus",
     "GetStatus",
     "GetStatusDetails",
     "GetUserPolicy",
@@ -113,6 +114,10 @@ pub mod status {
         CONTEXT_UNSATISFIABLE,
         PIN_LOCKED,
         PIN_LOCK_DAMAGED,
+        TPM_LIMIT_LOW,
+        TPM_CLEARED,
+        PIN_EXPIRES_SOON,
+        PIN_EXPIRED,
     ];
 
     /// The code of a user whose PIN is locked after too many wrong attempts.
@@ -155,6 +160,27 @@ pub mod status {
     /// The sentence of [`TPM_CLEARED`].
     pub const TPM_CLEARED_SENTENCE: &str =
         "The TPM no longer holds the key that your PIN opens (it was cleared or replaced), so your PIN cannot be used until your enrolment is reset.";
+
+    /// The code of a PIN that expires within 14 days (ADR-0021, amendment of 2026-11-21, point 6).
+    pub const PIN_EXPIRES_SOON: &str = "pin-expires-soon";
+
+    /// The sentence of [`PIN_EXPIRES_SOON`]: the whole days left, rounded up, at least 1.
+    #[must_use]
+    pub fn pin_expires_soon_sentence(days_left: u64) -> String {
+        let days = days_left.max(1);
+        if days == 1 {
+            "Your PIN expires in 1 day. Change it with linuxhello-ctl pin change.".to_string()
+        } else {
+            format!("Your PIN expires in {days} days. Change it with linuxhello-ctl pin change.")
+        }
+    }
+
+    /// The code of a PIN whose `pin.expiry_days` have passed. The PIN still works (ADR-0021,
+    /// amendment of 2026-11-21, point 1).
+    pub const PIN_EXPIRED: &str = "pin-expired";
+    /// The sentence of [`PIN_EXPIRED`].
+    pub const PIN_EXPIRED_SENTENCE: &str =
+        "Your PIN has expired. It still works, but change it now with linuxhello-ctl pin change.";
 
     /// The sentence for an unsatisfiable `context`.
     #[must_use]
@@ -602,6 +628,20 @@ mod tests {
             assert!(CODES.contains(&code.split(": ").next().unwrap()));
             assert!(code.ends_with(context));
         }
+    }
+
+    #[test]
+    fn the_expiry_sentences_are_the_adrs() {
+        use super::status::{pin_expires_soon_sentence, PIN_EXPIRED_SENTENCE};
+        assert_eq!(
+            pin_expires_soon_sentence(14),
+            "Your PIN expires in 14 days. Change it with linuxhello-ctl pin change."
+        );
+        assert_eq!(
+            pin_expires_soon_sentence(0),
+            "Your PIN expires in 1 day. Change it with linuxhello-ctl pin change."
+        );
+        assert!(PIN_EXPIRED_SENTENCE.contains("still works"));
     }
 
     #[test]

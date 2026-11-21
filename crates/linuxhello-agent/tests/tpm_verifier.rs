@@ -479,3 +479,55 @@ fn a_provider_that_is_not_there_claims_nothing_about_the_key() {
     );
     assert_eq!(down.key_loads(1000), None, "unknown is not cleared");
 }
+
+#[test]
+fn an_expired_pin_still_signs_in() {
+    let Some(s) = stack() else { return };
+    s.verifier.enrol(1000, b"1234").unwrap();
+    let store = PinRecordStore::new(&s.records, me());
+    let mut record = store.load(1000).unwrap().unwrap();
+    assert_eq!(
+        s.verifier.pin_changed_at(1000),
+        Some(record.changed_at),
+        "the status reads the record's time"
+    );
+    // Set on 1970-01-01: expired under any policy, and still the key's authorisation.
+    record.changed_at = 0;
+    store.save(1000, &record).unwrap();
+    assert_eq!(s.verifier.pin_changed_at(1000), Some(0));
+    assert_eq!(s.verifier.verify(1000, b"1234"), Ok(true));
+    assert_eq!(s.verifier.pin_changed_at(1001), None, "no record, no time");
+}
+
+/// A PIN of user 1000 that the record says was set at `changed_at`.
+fn enrolled_at(s: &Stack, pin: &[u8], changed_at: u64) -> PinRecordStore {
+    s.verifier.enrol(1000, pin).unwrap();
+    let store = PinRecordStore::new(&s.records, me());
+    let mut record = store.load(1000).unwrap().unwrap();
+    record.changed_at = changed_at;
+    store.save(1000, &record).unwrap();
+    store
+}
+
+#[test]
+fn a_change_starts_the_count_again() {
+    let Some(s) = stack() else { return };
+    let store = enrolled_at(&s, b"old-pin", 0);
+    let before = linuxhello_agent::pinrecord::now_unix();
+    s.verifier
+        .change_pin(1000, b"old-pin", b"new-pin", 0)
+        .unwrap();
+    let changed_at = store.load(1000).unwrap().unwrap().changed_at;
+    assert!(changed_at >= before, "{changed_at} < {before}");
+}
+
+#[test]
+fn a_change_that_fails_keeps_the_old_time() {
+    let Some(s) = stack() else { return };
+    let store = enrolled_at(&s, b"old-pin", 12_345);
+    assert_eq!(
+        s.verifier.change_pin(1000, b"not-it", b"new-pin", 0),
+        Err(EnrolError::WrongPin)
+    );
+    assert_eq!(store.load(1000).unwrap().unwrap().changed_at, 12_345);
+}
