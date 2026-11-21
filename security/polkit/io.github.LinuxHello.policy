@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<!--
+  The polkit action of Linux Hello's destructive reset after a forgotten PIN (ADR-0003, ADR-0027).
+  The Agent asks polkit whether the person who called Reset may do it; polkit's agent in their
+  session then asks for their own account password (auth_self). Nobody else, and no session that
+  is not in front, may do it. The owner annotation lets the Agent's user, linuxhello, ask polkit
+  about another program's connection. Install as
+  /usr/share/polkit-1/actions/io.github.LinuxHello.policy.
+-->
+<policyconfig>
+  <vendor>Linux Hello</vendor>
+  <action id="io.github.LinuxHello.reset">
+    <description>Reset Linux Hello after a forgotten PIN</description>
+    <message>Resetting Linux Hello deletes your PIN and the passkeys kept in this computer's TPM. Enter your password to continue.</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_self</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.owner">unix-user:linuxhello</annotate>
+  </action>
+</policyconfig>

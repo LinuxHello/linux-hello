@@ -20,8 +20,8 @@
 
 use futures_lite::StreamExt;
 use linuxhello_dbus::{
-    PromptId, PromptResult, AGENT_BUS_NAME, AGENT_INTERFACE, AGENT_OBJECT_PATH, CAPABILITIES,
-    INTERFACE_VERSION,
+    PromptId, PromptReason, PromptResult, AGENT_BUS_NAME, AGENT_INTERFACE, AGENT_OBJECT_PATH,
+    CAPABILITIES, INTERFACE_VERSION,
 };
 use std::time::Instant;
 
@@ -46,6 +46,9 @@ use crate::policy::user_store::UserPolicyStore;
 use crate::state::{Config, Outcome, Update};
 
 pub mod credentials;
+pub mod polkit;
+
+use polkit::{Answer, Polkit, RESET_ACTION};
 
 /// How long an authentication may take before it fails with `timeout`.
 const AUTH_DEADLINE: Duration = Duration::from_secs(60);
@@ -106,6 +109,9 @@ pub struct AgentService {
     updates: Option<Sender<AgentUpdate>>,
     /// What `ListFingerprints` and `DeleteFingerprint` use; without it they are `Unavailable`.
     fingerprints: Option<Fingerprints>,
+    /// What `Reset` asks before it resets a user's own enrolment; without it `Reset` is
+    /// `Unavailable` for anyone but root.
+    polkit: Option<Polkit>,
 }
 
 /// The management of enrolled fingers for the settings page (ADR-0027, point 2).
@@ -133,6 +139,7 @@ impl AgentService {
             auth_deadline: AUTH_DEADLINE,
             updates: None,
             fingerprints: None,
+            polkit: None,
         }
     }
 
@@ -186,6 +193,7 @@ impl AgentService {
             auth_deadline: AUTH_DEADLINE,
             updates: None,
             fingerprints: None,
+            polkit: None,
         }
     }
 
@@ -350,6 +358,8 @@ pub struct Extras {
     pub methods: Option<MethodFactory>,
     /// What `ListFingerprints` and `DeleteFingerprint` use; without it they are `Unavailable`.
     pub fingerprints: Option<Fingerprints>,
+    /// What `Reset` asks before a user resets their own enrolment.
+    pub polkit: Option<Polkit>,
     /// How long an authentication may take; a minute by default.
     pub auth_deadline: Option<Duration>,
 }
@@ -372,6 +382,7 @@ pub async fn serve_with_extras(
     .with_pin_lock(extras.pin_lock);
     service.pin_change = extras.pin_change;
     service.fingerprints = extras.fingerprints;
+    service.polkit = extras.polkit;
     service.api = service.api.with_key_probe(extras.key_probe);
     if let Some(methods) = extras.methods {
         service.methods = methods;
@@ -942,6 +953,76 @@ impl AgentService {
                 ))
             }));
             // Whatever went wrong, the prompt must not stay "running" for ever.
+            let outcome = ran.unwrap_or_else(|_| Outcome::new(PromptResult::Failure));
+            let _ = updates.send(AgentUpdate {
+                uid: start.opener_uid,
+                prompt: start.prompt,
+                update: Update::Result(outcome),
+            });
+        });
+        Ok(())
+    }
+
+    /// Starts the destructive reset after a forgotten PIN (ADR-0003, ADR-0027 point 5) on a prompt
+    /// the caller opened: polkit asks the person for the account password (action
+    /// `io.github.LinuxHello.reset`), root needs no polkit. Then the PIN record and the wrapped
+    /// root key in it are deleted and the count of wrong PINs is cleared; the policy layer, the
+    /// fingers and the face stay. Returns at once; the end is the `Result` signal.
+    async fn reset(
+        &mut self,
+        prompt_id: &str,
+        #[zbus(header)] header: Header<'_>,
+        #[zbus(connection)] connection: &Connection,
+    ) -> Result<(), AgentError> {
+        self.tick();
+        let caller = caller_of(connection, header.sender()).await;
+        let (Some(pin_change), Some(lock), Some(updates)) = (
+            self.pin_change.clone(),
+            self.lock.clone(),
+            self.updates.clone(),
+        ) else {
+            return Err(to_bus(ApiError::Unavailable));
+        };
+        let sender = header
+            .sender()
+            .ok_or_else(|| to_bus(ApiError::Denied))?
+            .as_str()
+            .to_string();
+        let start = self.api.begin_reset(caller, prompt_id).map_err(to_bus)?;
+        let polkit = self.polkit.clone();
+        std::thread::spawn(move || {
+            let ran = catch_unwind(AssertUnwindSafe(|| {
+                let fail = |reason| Outcome {
+                    reason,
+                    ..Outcome::new(PromptResult::Failure)
+                };
+                if start.needs_polkit {
+                    let answer = match &polkit {
+                        Some(polkit) => {
+                            futures_lite::future::block_on(polkit.check(&sender, RESET_ACTION))
+                        }
+                        None => Answer::Unavailable,
+                    };
+                    match answer {
+                        Answer::Yes => {}
+                        Answer::Dismissed => return Outcome::new(PromptResult::Cancelled),
+                        Answer::No => return fail(PromptReason::NotRecognised),
+                        Answer::Unavailable => return fail(PromptReason::None),
+                    }
+                }
+                if start.stop.is_cancelled() {
+                    return Outcome::new(PromptResult::Cancelled);
+                }
+                // Device-bound passkeys are deleted first once they exist (ADR-0027, point 5,
+                // step 1); none can be made yet, so there is nothing to delete.
+                if pin_change.enrolment.forget(start.subject).is_err() {
+                    return fail(PromptReason::None);
+                }
+                match lock.record_pin_success(start.subject) {
+                    Ok(()) => Outcome::new(PromptResult::Success),
+                    Err(_) => fail(PromptReason::None),
+                }
+            }));
             let outcome = ran.unwrap_or_else(|_| Outcome::new(PromptResult::Failure));
             let _ = updates.send(AgentUpdate {
                 uid: start.opener_uid,

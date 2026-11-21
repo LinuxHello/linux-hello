@@ -16,6 +16,7 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 use linuxhello_agent::audit::Audit;
+use linuxhello_agent::bus::polkit::Polkit;
 use linuxhello_agent::bus::{bus_alive, serve_with_extras, Extras, Fingerprints, PinChange};
 use linuxhello_agent::methods::fingerprint::{FingerprintMethod, Fprintd};
 use linuxhello_agent::methods::pin::tpm::TpmVerifier;
@@ -166,6 +167,7 @@ async fn run() -> zbus::Result<()> {
             username_of: Arc::new(account_name),
             verifier: verifier_for_fingers,
         }),
+        polkit: Some(Polkit::default()),
     };
     let connection = serve_with_extras(
         Builder::system(),

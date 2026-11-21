@@ -54,6 +54,12 @@ profile linuxhello-agent /usr/libexec/linuxhello/linuxhello-agent flags=(attach_
        peer=(label=unconfined),
   /etc/passwd r,
 
+  # The reset after a forgotten PIN (ADR-0027): the Agent asks polkit whether the caller may do it,
+  # and polkit's agent asks the person for the account password. One method, nothing else.
+  dbus send bus=system path=/org/freedesktop/PolicyKit1/Authority
+       interface=org.freedesktop.PolicyKit1.Authority member=CheckAuthorization
+       peer=(name=org.freedesktop.PolicyKit1),
+
   # The face method (ADR-0023): Howdy runs as a child of the Agent, started by the Agent's own
   # code with a fixed command line and an empty environment. The Agent may start the Python
   # interpreter and nothing else, and the child INHERITS this profile (ix). A child profile of its

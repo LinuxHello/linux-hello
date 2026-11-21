@@ -44,6 +44,17 @@ pub trait PinEnrolment: Send + Sync {
     ///
     /// [`EnrolError`]; a wrong `old` changes nothing.
     fn change(&self, uid: u32, old: &[u8], new: &[u8], history: u32) -> Result<(), EnrolError>;
+
+    /// Deletes the PIN record of `uid` and the wrapped root key in it, for the destructive reset
+    /// of ADR-0003. Deleting a record that is not there succeeds. A stand-in that cannot do it
+    /// refuses.
+    ///
+    /// # Errors
+    ///
+    /// [`EnrolError::Record`] when the record could not be deleted.
+    fn forget(&self, _uid: u32) -> Result<(), EnrolError> {
+        Err(EnrolError::Record)
+    }
 }
 
 /// The registration that makes the PIN socket hand `uid`'s PINs to a job. Made before the call

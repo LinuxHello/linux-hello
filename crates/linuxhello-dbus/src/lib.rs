@@ -61,6 +61,7 @@ pub const CAPABILITIES: &[&str] = &[
     "GetStatusDetails",
     "GetUserPolicy",
     "ListFingerprints",
+    "Reset",
     "SetPin",
     "SetUserPolicy",
     "Unsubscribe",

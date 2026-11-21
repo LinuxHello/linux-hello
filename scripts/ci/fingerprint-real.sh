@@ -55,6 +55,7 @@ sudo install -D -m644 "$sec/dbus/io.github.LinuxHello.Agent1.conf" /usr/share/db
 sudo install -D -m644 "$sec/dbus/io.github.LinuxHello.Agent1.service" /usr/share/dbus-1/system-services/io.github.LinuxHello.Agent1.service
 sudo install -m644 "$sec/apparmor/linuxhello-agent" /etc/apparmor.d/linuxhello-agent
 sudo install -D -m644 "$sec/polkit/50-linuxhello-agent.rules" /etc/polkit-1/rules.d/50-linuxhello-agent.rules
+sudo install -D -m644 "$sec/polkit/io.github.LinuxHello.policy" /usr/share/polkit-1/actions/io.github.LinuxHello.policy
 sudo systemctl restart polkit; sleep 1
 sudo install -m644 "$sec/systemd/linuxhello-agent.service" /usr/lib/systemd/system/linuxhello-agent.service
 sudo apparmor_parser -r /etc/apparmor.d/linuxhello-agent

@@ -155,6 +155,21 @@ impl PinRecordStore {
         }
     }
 
+    /// Deletes the record of `uid`, and with it the wrapped root key that the PIN opens (the
+    /// destructive reset of ADR-0003). A record that is not there is not an error, so a reset that
+    /// stopped half way is finished by the next one (`a_half_done_reset_is_finished_by_the_next`).
+    ///
+    /// # Errors
+    ///
+    /// The I/O error that stopped the deletion.
+    pub fn delete(&self, uid: u32) -> io::Result<()> {
+        match fs::remove_file(self.path(uid)) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error),
+        }
+    }
+
     /// The path of the record of `uid`.
     pub fn path(&self, uid: u32) -> PathBuf {
         self.root.join(uid.to_string()).join(FILE_NAME)

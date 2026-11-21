@@ -180,6 +180,21 @@ pub struct PinStart {
     pub stop: Cancel,
 }
 
+/// A reset the caller may start: whose, and how to stop it (ADR-0027, point 5).
+#[derive(Clone, Debug)]
+pub struct ResetStart {
+    /// The user who opened the prompt, which keys it in the store.
+    pub opener_uid: u32,
+    /// The prompt.
+    pub prompt: PromptId,
+    /// The user whose enrolment is reset.
+    pub subject: u32,
+    /// Whether polkit must be asked first: for anyone but root.
+    pub needs_polkit: bool,
+    /// Set when the prompt closes; the job stops at once.
+    pub stop: Cancel,
+}
+
 /// One condition of `GetStatus`, with the detail only root sees.
 struct StatusItem {
     /// The code, from the closed set of `linuxhello_dbus::status`.
@@ -728,6 +743,51 @@ impl Api {
             prompt,
             subject,
             rules,
+            stop,
+        })
+    }
+
+    /// Starts the destructive reset of ADR-0003 on a prompt the caller opened: for its own user,
+    /// after polkit says yes, or, for root, for the prompt's user without polkit
+    /// (`reset_needs_polkit_or_root`, ADR-0027 point 5).
+    ///
+    /// # Errors
+    ///
+    /// [`ApiError::Denied`] without a caller uid or connection name, for a prompt that is not the
+    /// caller's or has no subject, and for another user's subject unless the caller is root (one
+    /// text for all); [`ApiError::InvalidArgument`] for a malformed id;
+    /// [`ApiError::LimitReached`] while a job of this prompt runs.
+    pub fn begin_reset(&mut self, caller: Caller, prompt_id: &str) -> Result<ResetStart, ApiError> {
+        let result = self.begin_reset_unaudited(&caller, prompt_id);
+        self.audited(&caller, result)
+    }
+
+    /// The work of [`Api::begin_reset`], without the audit record.
+    fn begin_reset_unaudited(
+        &mut self,
+        caller: &Caller,
+        prompt_id: &str,
+    ) -> Result<ResetStart, ApiError> {
+        let uid = caller.uid.ok_or(ApiError::Denied)?;
+        let prompt = parse_prompt(prompt_id)?;
+        let peer = Peer(caller.peer.ok_or(ApiError::Denied)?.as_str().to_string());
+        let subject = self
+            .store
+            .subject_of(uid, &prompt, Some(&peer))?
+            .ok_or(ApiError::Denied)?;
+        if subject != uid && uid != 0 {
+            return Err(ApiError::Denied);
+        }
+        if self.running.contains_key(&(uid, prompt.clone())) {
+            return Err(ApiError::LimitReached);
+        }
+        let stop = Cancel::default();
+        self.running.insert((uid, prompt.clone()), stop.clone());
+        Ok(ResetStart {
+            opener_uid: uid,
+            prompt,
+            subject,
+            needs_polkit: uid != 0,
             stop,
         })
     }
@@ -2384,6 +2444,32 @@ mod tests {
             .err(),
             Some(ApiError::InvalidArgument)
         );
+    }
+
+    #[test]
+    fn reset_is_for_the_callers_own_user_or_root() {
+        let mut api = Api::new(Config::new(vec![]));
+        let own = prompt("own");
+        api.open_prompt_from(on_peer(1000, ":1.5"), ":1.5", &own, Some(1000))
+            .unwrap();
+        let start = api.begin_reset(on_peer(1000, ":1.5"), &own).unwrap();
+        assert_eq!((start.subject, start.needs_polkit), (1000, true));
+        // One reset at a time on a prompt.
+        assert_eq!(
+            api.begin_reset(on_peer(1000, ":1.5"), &own).err(),
+            Some(ApiError::LimitReached)
+        );
+        // Another connection of the same user may not use the prompt.
+        assert_eq!(
+            api.begin_reset(on_peer(1000, ":1.6"), &own).err(),
+            Some(ApiError::Denied)
+        );
+        // Root resets another user without polkit.
+        let other = prompt("other");
+        api.open_prompt_from(on_peer(0, ":1.7"), ":1.7", &other, Some(1001))
+            .unwrap();
+        let start = api.begin_reset(on_peer(0, ":1.7"), &other).unwrap();
+        assert_eq!((start.subject, start.needs_polkit), (1001, false));
     }
 
     #[test]
