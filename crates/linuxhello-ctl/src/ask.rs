@@ -1,11 +1,10 @@
 //! `linuxhello-ctl status` without `--user`: what the running Agent says about the caller
-//! (ADR-0024, point 7). The call goes through `busctl` and the [`Host`] trait, so a test replaces
-//! it and the tool needs no bus library.
+//! (ADR-0024, point 7). The call goes over the tool's own bus connection, behind the [`Host`]
+//! trait so that a test replaces it; no program is started for it (ADR-0026).
 //!
 //! C4 component: `cliCommands` ([workspace.dsl](https://github.com/LinuxHello/linux-hello-architecture/blob/main/workspace.dsl))
 
 use crate::probe::Host;
-use linuxhello_dbus::{AGENT_BUS_NAME, AGENT_INTERFACE, AGENT_OBJECT_PATH};
 
 /// The code of the condition the client computes when the Agent does not answer. The Agent never
 /// reports it (ADR-0024, point 7).
@@ -27,70 +26,9 @@ pub struct Reported {
 }
 
 /// Asks the Agent for the caller's conditions with `GetStatus`. `None` when the answer cannot be
-/// had or read: `busctl` is missing, the call fails, or the reply is not a list of three strings.
+/// had: the Agent does not answer, or its reply is not a list of three strings.
 pub fn get_status(host: &dyn Host) -> Option<Vec<Reported>> {
-    let (code, stdout) = host.run(
-        "busctl",
-        &[
-            "--system",
-            "--timeout=5",
-            "call",
-            AGENT_BUS_NAME,
-            AGENT_OBJECT_PATH,
-            AGENT_INTERFACE,
-            "GetStatus",
-        ],
-    )?;
-    if code != 0 {
-        return None;
-    }
-    parse(&stdout)
-}
-
-/// Reads `busctl`'s text for a reply of type `a(sss)`: `a(sss) 2 "a" "b" "c" "d" "e" "f"`.
-fn parse(text: &str) -> Option<Vec<Reported>> {
-    let rest = text.trim().strip_prefix("a(sss) ")?;
-    let (count, rest) = rest.split_once(' ').unwrap_or((rest, ""));
-    let count: usize = count.parse().ok()?;
-    let strings = quoted_strings(rest)?;
-    if strings.len() != count.checked_mul(3)? {
-        return None;
-    }
-    Some(
-        strings
-            .chunks(3)
-            .map(|c| Reported {
-                code: c[0].clone(),
-                severity: c[1].clone(),
-                sentence: c[2].clone(),
-            })
-            .collect(),
-    )
-}
-
-/// The double-quoted strings of `text`, with `\"` and `\\` unescaped. `None` for anything else
-/// between them.
-fn quoted_strings(text: &str) -> Option<Vec<String>> {
-    let mut out = Vec::new();
-    let mut chars = text.trim().chars().peekable();
-    while chars.peek().is_some() {
-        if chars.next()? != '"' {
-            return None;
-        }
-        let mut s = String::new();
-        loop {
-            match chars.next()? {
-                '"' => break,
-                '\\' => s.push(chars.next()?),
-                c => s.push(c),
-            }
-        }
-        out.push(s);
-        while chars.peek() == Some(&' ') {
-            chars.next();
-        }
-    }
-    Some(out)
+    host.agent_status()
 }
 
 /// The uid of the process, from `/proc/self/status`. `None` when it cannot be read.
@@ -105,16 +43,21 @@ mod tests {
     use super::*;
     use std::path::Path;
 
-    /// A machine whose `busctl` answers `reply` to any call, or cannot run.
+    /// A machine whose Agent answers `reply` and whose `/proc/self/status` is `status_file`.
     struct Scripted {
-        reply: Option<(i32, String)>,
+        reply: Option<Vec<Reported>>,
         status_file: Option<String>,
     }
 
     impl Host for Scripted {
-        fn run(&self, program: &str, _args: &[&str]) -> Option<(i32, String)> {
-            assert_eq!(program, "busctl");
+        fn agent_status(&self) -> Option<Vec<Reported>> {
             self.reply.clone()
+        }
+        fn unit_active(&self, _unit: &str) -> Option<bool> {
+            panic!("status asks no unit")
+        }
+        fn fingerprint_reader(&self) -> Option<bool> {
+            panic!("status asks no reader")
         }
         fn read(&self, path: &Path) -> Option<String> {
             assert_eq!(path, Path::new("/proc/self/status"));
@@ -122,51 +65,20 @@ mod tests {
         }
     }
 
-    fn answers(text: &str) -> Scripted {
-        Scripted {
-            reply: Some((0, text.to_string())),
-            status_file: None,
+    #[test]
+    fn the_agents_answer_is_passed_on_and_no_answer_is_none() {
+        let one = vec![Reported {
+            code: "policy-pin-only".into(),
+            severity: "severe".into(),
+            sentence: "x".into(),
+        }];
+        for reply in [None, Some(vec![]), Some(one)] {
+            let host = Scripted {
+                reply: reply.clone(),
+                status_file: None,
+            };
+            assert_eq!(get_status(&host), reply);
         }
-    }
-
-    #[test]
-    fn an_empty_list_is_no_conditions() {
-        assert_eq!(get_status(&answers("a(sss) 0")), Some(vec![]));
-    }
-
-    #[test]
-    fn conditions_are_read_with_their_three_fields() {
-        let text = r#"a(sss) 2 "policy-pin-only" "severe" "Biometric \"off\"." "context-unsatisfiable: sudo" "severe" "sudo cannot be unlocked.""#;
-        let got = get_status(&answers(text)).unwrap();
-        assert_eq!(got.len(), 2);
-        assert_eq!(got[0].code, "policy-pin-only");
-        assert_eq!(got[0].sentence, "Biometric \"off\".");
-        assert_eq!(got[1].code, "context-unsatisfiable: sudo");
-    }
-
-    #[test]
-    fn an_answer_that_cannot_be_read_is_no_answer() {
-        for text in [
-            "",
-            "s \"x\"",
-            "a(sss) 1 \"only\" \"two\"",
-            "a(sss) 1 \"a\" \"b\" \"c\" \"d\"",
-            "a(sss) x",
-            "a(sss) 1 a b c",
-            "a(sss) 1 \"a\" \"b\" \"unterminated",
-        ] {
-            assert_eq!(get_status(&answers(text)), None, "{text:?}");
-        }
-        let failed = Scripted {
-            reply: Some((1, "a(sss) 0".to_string())),
-            status_file: None,
-        };
-        assert_eq!(get_status(&failed), None);
-        let absent = Scripted {
-            reply: None,
-            status_file: None,
-        };
-        assert_eq!(get_status(&absent), None);
     }
 
     #[test]
