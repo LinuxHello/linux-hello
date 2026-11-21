@@ -312,13 +312,15 @@ fn agent_profile_receives_only_name_owner_changed_from_the_bus_and_the_scan_and_
 }
 
 #[test]
-fn agent_profile_talks_to_fprintd_and_to_no_other_service() {
+fn agent_profile_talks_to_fprintd_and_polkit_and_to_no_other_service() {
     let sends = statements("dbus send");
     for rule in &sends {
         assert!(
             rule.contains("peer=(name=org.freedesktop.DBus)")
                 || rule.contains("peer=(name=net.reactivated.Fprint)")
-                || rule.contains("path=/io/github/LinuxHello/Agent1"),
+                || rule.contains("path=/io/github/LinuxHello/Agent1")
+                || (rule.contains("peer=(name=org.freedesktop.PolicyKit1)")
+                    && rule.contains("member=CheckAuthorization")),
             "a send rule with another peer: {rule}"
         );
     }
@@ -477,4 +479,17 @@ fn agent_profile_lets_the_agent_read_its_own_label_and_nothing_else_of_proc() {
     assert!(!rules
         .iter()
         .any(|r| r.starts_with("@{PROC}/@{pid}/") && r.contains("**")));
+}
+
+#[test]
+fn the_reset_action_asks_for_the_persons_own_password_in_front_only() {
+    let policy = read("polkit/io.github.LinuxHello.policy");
+    assert!(policy.contains(r#"<action id="io.github.LinuxHello.reset">"#));
+    assert!(policy.contains("<allow_any>no</allow_any>"));
+    assert!(policy.contains("<allow_inactive>no</allow_inactive>"));
+    assert!(policy.contains("<allow_active>auth_self</allow_active>"));
+    assert!(policy.contains(
+        r#"<annotate key="org.freedesktop.policykit.owner">unix-user:linuxhello</annotate>"#
+    ));
+    assert_eq!(policy.matches("<action ").count(), 1, "one action only");
 }

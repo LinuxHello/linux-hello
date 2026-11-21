@@ -351,3 +351,17 @@ fn a_record_with_a_malformed_time_is_untrusted() {
         assert_eq!(store.load(1000), Err(RecordError::Untrusted), "{bad}");
     }
 }
+
+#[test]
+fn a_half_done_reset_is_finished_by_the_next() {
+    let dir = crate::private_tempdir();
+    let store = store(&dir);
+    store.save(1000, &record()).unwrap();
+    store.save(1001, &record()).unwrap();
+    store.delete(1000).unwrap();
+    assert_eq!(store.load(1000).ok(), Some(None));
+    // A second reset of the same user finds nothing left and still succeeds.
+    store.delete(1000).unwrap();
+    // Another user's record is untouched.
+    assert!(matches!(store.load(1001), Ok(Some(_))));
+}
