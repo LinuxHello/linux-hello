@@ -216,3 +216,26 @@ fn a_damaged_blob_is_not_a_cleared_tpm_but_does_not_load_either() {
     // The check cannot tell the two apart, and says so by answering "does not load".
     assert_eq!(tpm.root_key_loads(&blobs), Ok(false));
 }
+
+#[test]
+fn a_software_tpm_keeps_no_connection_of_the_test_process_open() {
+    use std::io::Read;
+    // A connection whose client end children inherit, as libtss2 opens its connections to swtpm.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let client = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+    rustix::io::fcntl_setfd(&client, rustix::io::FdFlags::empty()).unwrap();
+    let (mut server, _) = listener.accept().unwrap();
+    // A software TPM started (and answering) while the connection is open...
+    let Some(soft) = SoftTpm::start() else { return };
+    // ...does not keep it open once its owner closes it: the other end reads the end of the stream.
+    drop(client);
+    server
+        .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+        .unwrap();
+    assert_eq!(
+        server.read(&mut [0_u8; 1]).map_err(|e| e.kind()),
+        Ok(0),
+        "swtpm {} holds the test's connection",
+        soft.pid()
+    );
+}
