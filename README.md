@@ -15,7 +15,8 @@ Homepage: [linuxhello.github.io](https://linuxhello.github.io/).
 
 - **Built and tested:** the Agent's state API on the system bus ([ADR-0014](https://github.com/LinuxHello/linux-hello-architecture/blob/main/adr/0014-agent-bus.md)) with its bus policy, systemd unit and AppArmor profile, checked on a real bus under an enforcing profile on Ubuntu 24.04 and 26.04; the routing policy engine; each user's policy layer, kept by the Agent and set over D-Bus ([ADR-0018](https://github.com/LinuxHello/linux-hello-architecture/blob/main/adr/0018-user-policy-layer.md)).
 - **Prototyped, not in this repository:** the virtual CTAP authenticator, which created and used TPM-backed credentials with libfido2, Chromium and Firefox in a test VM ([spike 0094](https://github.com/LinuxHello/linux-hello-architecture/blob/main/spikes/0094-virtual-ctap-end-to-end.md)).
-- **Next:** the TPM provider, the PAM module and the Plasma prompt. The [spikes](https://github.com/LinuxHello/linux-hello-architecture/blob/main/spikes/README.md) of Milestone 0 are mostly answered; the open ones are listed in the backlog.
+- **Try it:** a first prototype unlocks `sudo` (and, if you choose, the Plasma lock screen) with a PIN kept by the TPM or a fingerprint; [docs/prototype.md](docs/prototype.md) says how to install it, try it and remove it.
+- **Next:** passkeys in the browser through the virtual security key, and the Plasma prompt. The [spikes](https://github.com/LinuxHello/linux-hello-architecture/blob/main/spikes/README.md) of Milestone 0 are mostly answered; the open ones are listed in the backlog.
 
 ## What it is
 
