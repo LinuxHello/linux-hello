@@ -18,7 +18,7 @@
 #![allow(unsafe_code)]
 
 use std::ffi::{c_char, c_int, c_void, CStr, CString};
-use std::ptr;
+use std::ptr::{self, NonNull};
 
 use zeroize::Zeroizing;
 
@@ -154,13 +154,11 @@ impl PamConversation {
         // SAFETY: one message, given as Linux-PAM expects (a pointer to an array of pointers); the
         // application allocates `response` with malloc or leaves it null.
         let status = unsafe { conv(1, &mut list, &mut response, self.appdata) };
-        if response.is_null() {
-            return None;
-        }
-        // SAFETY: on any return the application owns nothing more; the array has one element.
-        let answer = unsafe { (*response).resp };
+        let response = NonNull::new(response)?;
+        // SAFETY: the application filled a non-null array of one element; it owns nothing more.
+        let answer = unsafe { response.as_ref() }.resp;
         // SAFETY: the array was allocated with malloc by the application and is freed once.
-        unsafe { libc::free(response.cast::<c_void>()) };
+        unsafe { libc::free(response.as_ptr().cast::<c_void>()) };
         if status != PAM_SUCCESS {
             wipe_and_free(answer);
             return None;
@@ -257,12 +255,13 @@ unsafe fn authenticate(
     let mut conv: *const c_void = ptr::null();
     // SAFETY: `pamh` is PAM's handle; `conv` is a valid place for the item pointer.
     let found = unsafe { pam_get_item(pamh, PAM_CONV, &mut conv) };
-    let (function, appdata) = if found == PAM_SUCCESS && !conv.is_null() {
-        // SAFETY: the item `PAM_CONV` is a `struct pam_conv` owned by PAM.
-        let conv = unsafe { &*conv.cast::<PamConv>() };
-        (conv.conv, conv.appdata_ptr)
-    } else {
-        (None, ptr::null_mut())
+    let (function, appdata) = match NonNull::new(conv.cast_mut()) {
+        Some(conv) if found == PAM_SUCCESS => {
+            // SAFETY: the item `PAM_CONV` is a non-null `struct pam_conv` owned by PAM.
+            let conv = unsafe { conv.cast::<PamConv>().as_ref() };
+            (conv.conv, conv.appdata_ptr)
+        }
+        _ => (None, ptr::null_mut()),
     };
     let mut conversation = PamConversation {
         conv: function,
