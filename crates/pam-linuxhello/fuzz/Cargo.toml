@@ -1,0 +1,27 @@
+# Fuzz target for `pam_linuxhello`'s D-Bus codec. A separate workspace on a pinned nightly toolchain
+# (rust-toolchain.toml here), because cargo-fuzz needs nightly sanitizer flags.
+# Run with `make fuzz` from the repository root.
+[package]
+name = "pam-linuxhello-fuzz"
+version = "0.0.0"
+edition = "2021"
+license = "LGPL-3.0-or-later"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[workspace]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.pam-linuxhello]
+path = ".."
+
+[[bin]]
+name = "bus_message"
+path = "fuzz_targets/bus_message.rs"
+test = false
+doc = false
+bench = false

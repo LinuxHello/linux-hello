@@ -12,11 +12,42 @@ fn pin_is_never_compared_outside_the_tpm() {
     unimplemented!("P-12: write this test when it is unblocked");
 }
 
-/// P-20: see `docs/security/properties.md`.
+/// P-20: see `docs/security/properties.md`. With no bus, or a bus on which nobody owns the Agent's
+/// name, the module answers unavailable, never success.
 #[test]
-#[ignore = "placeholder, blocked: the PAM entry points do not exist yet"]
 fn pam_never_succeeds_when_agent_is_unreachable() {
-    unimplemented!("P-20: write this test when it is unblocked");
+    use pam_linuxhello::client::{authenticate_at, Code, Conversation, Limits, Request};
+    use zeroize::Zeroizing;
+
+    struct Nobody;
+    impl Conversation for Nobody {
+        fn secret(&mut self, _: &str) -> Option<Zeroizing<String>> {
+            Some(Zeroizing::new("1234".into()))
+        }
+        fn info(&mut self, _: &str) {}
+        fn error(&mut self, _: &str) {}
+    }
+    let dir = tempfile::tempdir().unwrap();
+    // A socket path where nothing listens, and a file that is not a socket.
+    std::fs::write(dir.path().join("file"), b"").unwrap();
+    for bus in ["none", "file"] {
+        for context in ["login", "unlock", "sudo", "session"] {
+            let request = Request {
+                context: Some(context),
+                service: "sudo",
+                terminal: "/dev/pts/1",
+                uid: Some(1000),
+            };
+            let code = authenticate_at(
+                &dir.path().join(bus),
+                &dir.path().join("pin"),
+                &Limits::DEFAULT,
+                &request,
+                &mut Nobody,
+            );
+            assert_eq!(code, Code::Unavailable, "{bus} {context}");
+        }
+    }
 }
 
 /// P-21: see `docs/security/properties.md`.
