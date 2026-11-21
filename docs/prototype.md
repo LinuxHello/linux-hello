@@ -86,8 +86,108 @@ To also use Linux Hello on the Plasma lock screen, add `--lock-screen`; it adds 
 
 4. Change the PIN with `linuxhello-ctl pin change`.
 
+## Try it with a fingerprint reader and a camera
+
+This section is for a computer that has a fingerprint reader and a camera for face recognition, and it tests all three ways of signing in: the PIN, the fingerprint and the face. Linux Hello does not read the sensor or the camera itself. It asks fprintd (the Linux service that reads fingerprint readers) and Howdy (a face-recognition program for Linux), so both must work on their own before Linux Hello can use them.
+
+What to expect today:
+
+| Method | State in the prototype |
+| :-- | :-- |
+| PIN | Built, and tested on a software TPM in the test machines |
+| Fingerprint | Built, and tested against a stand-in for fprintd; it has not yet run against a real reader |
+| Face | Built, and tested against a stand-in for Howdy; it has not yet run against a real camera, and it needs `--face` when you install |
+
+Your test is the first run of the fingerprint and the face on real hardware, so a failure there is a finding, not a mistake on your part.
+
+### 1. Build tools
+
+```sh
+sudo apt install build-essential pkg-config clang libclang-dev libtss2-dev libpam0g-dev git acl
+rustup target add --toolchain 1.99.1 x86_64-unknown-linux-musl
+```
+
+The first line installs the compilers and the development files of the TSS2 library (the library that talks to the TPM) and of PAM (Pluggable Authentication Modules, the system that `sudo` and the login screens use to check a person). `acl` gives `setfacl`, which `--face` uses. The second line adds the target for static programs to the Rust version this repository uses (`rust-toolchain.toml`). Install Rust itself with [rustup](https://rustup.rs) if you do not have it.
+
+### 2. The fingerprint, on its own
+
+```sh
+sudo apt install fprintd
+fprintd-enroll
+fprintd-verify
+```
+
+`fprintd-enroll` asks you to touch the reader several times; `fprintd-verify` must then say `verify-match`. If it does not, Linux Hello cannot do better: the reader or its driver is the problem.
+
+Ubuntu's package `libpam-fprintd` may also add fprintd's own PAM module to every sign-in. Turn it off, so that what you see is Linux Hello and not fprintd asking a second time: run `sudo pam-auth-update` and clear "Fingerprint authentication".
+
+### 3. The face, on its own
+
+Howdy is not in Ubuntu's archive. Install it the way its project describes (at the time of writing, a package archive of the Howdy project); that is your decision, because it is software from outside Ubuntu. Then add your face and check it:
+
+```sh
+sudo howdy add
+sudo howdy test
+```
+
+Howdy also puts its own line into the PAM files when it is installed. Remove that line, as for fprintd: `grep -rn howdy /etc/pam.d/` shows where it is. Linux Hello runs Howdy's own compare script, `/lib/security/howdy/compare.py`, and needs nothing else of Howdy's.
+
+A camera with an infrared light is what Howdy is made for. The policy setting `methods.face_requires_ir` (default: true) is not checked by the prototype yet, so an ordinary camera will also be tried; Howdy itself refuses frames that are too dark.
+
+### 4. Install
+
+```sh
+git clone --recurse-submodules https://github.com/LinuxHello/linux-hello
+cd linux-hello
+scripts/prototype/install.sh --lock-screen --console --face
+linuxhello-ctl pin set
+```
+
+`--lock-screen` adds Linux Hello to the Plasma lock screen, `--console` to the login on a text console, and `--face` lets Howdy use the camera from inside the Agent. In detail, `--face` makes two changes. A file `/etc/systemd/system/linuxhello-agent.service.d/50-face-prototype.conf` lets the Agent's service open video devices and gives it the `video` group. And if the Agent's user cannot read Howdy's face models in `/lib/security/howdy/models`, an access-control entry lets it. Both are for this prototype only: later, Howdy gets a helper service with its own rights (#272), and the Agent keeps no camera access.
+
+### 5. Which method each sign-in offers
+
+The built-in policy offers the PIN, the fingerprint and the face at the login screen, at the lock screen and on the console, and only the PIN and the fingerprint for `sudo`. To try the face with `sudo` too, add an administrator policy file:
+
+```sh
+sudo install -d -m755 /etc/linuxhello/policy.d
+printf '[context.sudo]\nmethods = ["pin", "fingerprint", "face"]\n' | sudo tee /etc/linuxhello/policy.d/50-face-sudo.toml
+```
+
+`linuxhello-ctl status` says if a policy file cannot be used; then the PIN is the only method everywhere.
+
+### 6. What to try
+
+The question names the methods that run. While it waits for your PIN, the fingerprint reader and the camera are already working. This is how the prototype behaves:
+
+- **A finger or a face that matches** signs you in once you press Enter.
+- **A finger or a face that does not match** ends only that method. The question comes back without it, and the other methods, the PIN among them, still work. The attempt fails only when every method has failed.
+- **An empty Enter** with only the PIN left gives you the password. While the reader or the camera is still working, it waits for them; when they end without a match, or after 30 seconds, you get the password.
+- **A wrong PIN** ends the PIN for this attempt. If the reader is still working, the module says "Touch the fingerprint sensor." and waits for it. Without a match the attempt fails, and you are not given the password in its place.
+
+| Where | How | The question you should see |
+| :-- | :-- | :-- |
+| `sudo` | `sudo -k; sudo true` in a terminal | `PIN (or touch the fingerprint sensor and press Enter):` |
+| Text console | Ctrl+Alt+F3, then your user name | `PIN (or use the fingerprint sensor or the camera, then press Enter):` |
+| Lock screen | Meta+L, then the password field | the same, or Plasma's own text for it |
+
+For each place, try a finger that is enrolled, a finger that is not, your face, someone else's face or a covered camera, a wrong PIN, and an empty Enter. Note anything that feels wrong, even when it does what the list above says: this is the first time anyone uses these flows.
+
+One thing to watch on the lock screen: Plasma has its own fingerprint check, which also asks fprintd for the reader. If both want the reader at once, one of them may be refused. Write down which one shows a message.
+
+### 7. What to send back
+
+```sh
+linuxhello-ctl status
+journalctl -u linuxhello-agent -u linuxhello-tpm-provider -b --no-pager > lh-journal.txt
+sudo journalctl -k -b --no-pager | grep 'apparmor="DENIED"' | grep linuxhello > lh-denials.txt
+```
+
+The first shows what Linux Hello says about your account. The two files hold the services' log and every denial by the AppArmor profiles since the computer started. A denial is the most likely finding: the profile rules for fprintd and Howdy were written without a real reader and camera. The log files name your computer and your user name, so share them privately, not in a public issue.
+
 ## When something goes wrong
 
+- **The question does not name the fingerprint or the camera.** The method is not available: `fprintd-verify` or `sudo howdy test` fails on its own, `--face` was not given, or the policy does not offer it there (section 5 above). The Agent's log says which.
 - **`sudo` asks only for the password.** Linux Hello was unavailable. `systemctl status linuxhello-agent linuxhello-tpm-provider` shows whether the services run; `journalctl -u linuxhello-agent -b` shows why not. No PIN set is also a reason.
 - **The Agent does not start.** Its unit checks that its AppArmor profile is in enforce mode: `sudo grep linuxhello /sys/kernel/security/apparmor/profiles`. Denials are in `sudo journalctl -k | grep DENIED`.
 - **Anything else.** Write down the command, what you saw, and the last lines of `journalctl -u linuxhello-agent -u linuxhello-tpm-provider -b`, and open an issue. Leave your PIN out of it.
