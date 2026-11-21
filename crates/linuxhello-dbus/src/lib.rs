@@ -52,6 +52,7 @@ pub const CAPABILITIES: &[&str] = &[
     "GetCapabilities",
     "GetEffectivePolicy",
     "GetPinRules",
+    "GetPinState",
     "GetPromptStatus",
     "GetStatus",
     "GetStatusDetails",

@@ -816,6 +816,17 @@ impl AgentService {
             .map_err(to_bus)
     }
 
+    /// Returns whether the caller has a PIN, and when it was set or last changed in seconds since
+    /// the Unix epoch (`0` without one); only ever the caller's own (ADR-0027, point 1).
+    async fn get_pin_state(
+        &self,
+        #[zbus(header)] header: Header<'_>,
+        #[zbus(connection)] connection: &Connection,
+    ) -> Result<(bool, u64), AgentError> {
+        let caller = caller_of(connection, header.sender()).await;
+        self.api.get_pin_state(caller).map_err(to_bus)
+    }
+
     /// Returns the conditions that affect the caller, each as code, severity and sentence.
     async fn get_status(
         &self,
