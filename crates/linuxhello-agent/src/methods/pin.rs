@@ -57,6 +57,13 @@ pub trait KeyProbe: Send + Sync {
     /// cleared or replaced, or the record is damaged); `Some(true)` when it does; `None` when there
     /// is no record, or the TPM cannot be asked (nothing is claimed then).
     fn key_loads(&self, uid: u32) -> Option<bool>;
+
+    /// When the PIN of `uid` was last set or changed, in seconds since the Unix epoch, for the
+    /// expiry codes of the status (ADR-0021, amendment of 2026-11-21). `None` when the user has no
+    /// record or it cannot be trusted: then no expiry is reported.
+    fn pin_changed_at(&self, _uid: u32) -> Option<u64> {
+        None
+    }
 }
 
 /// The verifier of an Agent that has no way to check a PIN yet: always unavailable.

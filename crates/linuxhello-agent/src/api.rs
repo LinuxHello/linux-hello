@@ -874,9 +874,11 @@ impl Api {
 
     /// The work of [`Api::get_status`], with the detail kept.
     fn status_unaudited(&self, caller: &Caller) -> Result<Vec<StatusItem>, ApiError> {
+        use crate::pinrecord::Expiry;
         use linuxhello_dbus::status::{
-            context_unsatisfiable_on_the_bus, pin_locked_sentence, tpm_limit_low_sentence,
-            Severity, PIN_LOCKED, PIN_LOCK_DAMAGED, PIN_LOCK_DAMAGED_SENTENCE, POLICY_PIN_ONLY,
+            context_unsatisfiable_on_the_bus, pin_expires_soon_sentence, pin_locked_sentence,
+            tpm_limit_low_sentence, Severity, PIN_EXPIRED, PIN_EXPIRED_SENTENCE, PIN_EXPIRES_SOON,
+            PIN_LOCKED, PIN_LOCK_DAMAGED, PIN_LOCK_DAMAGED_SENTENCE, POLICY_PIN_ONLY,
             POLICY_PIN_ONLY_SENTENCE, TPM_CLEARED, TPM_CLEARED_SENTENCE, TPM_LIMIT_LOW,
         };
         let uid = caller.uid.ok_or(ApiError::Denied)?;
@@ -942,6 +944,30 @@ impl Api {
                     severity: Severity::Severe,
                     sentence: PIN_LOCK_DAMAGED_SENTENCE.to_string(),
                     detail: Some("the lockout file cannot be trusted".to_string()),
+                }),
+            }
+        }
+        // The PIN's expiry: a warning only, the PIN keeps working (ADR-0021, amendment of
+        // 2026-11-21, points 1 and 6; `status_says_a_pin_expires_soon_from_fourteen_days_before`).
+        let changed_at = self
+            .key_probe
+            .as_ref()
+            .and_then(|probe| probe.pin_changed_at(uid));
+        if let Some(changed_at) = changed_at {
+            let days = policy.pin_rules().expiry_days;
+            match crate::pinrecord::expiry(changed_at, (self.clock)(), days) {
+                Expiry::Current => {}
+                Expiry::ExpiresSoon { days_left } => items.push(StatusItem {
+                    code: PIN_EXPIRES_SOON.to_string(),
+                    severity: Severity::Warning,
+                    sentence: pin_expires_soon_sentence(days_left),
+                    detail: None,
+                }),
+                Expiry::Expired => items.push(StatusItem {
+                    code: PIN_EXPIRED.to_string(),
+                    severity: Severity::Warning,
+                    sentence: PIN_EXPIRED_SENTENCE.to_string(),
+                    detail: None,
                 }),
             }
         }
@@ -1756,6 +1782,75 @@ mod tests {
                 assert_eq!(status[0].1, "severe");
             }
         }
+    }
+
+    /// A probe that knows when the PIN was set, and says the key loads.
+    struct SetAt(Option<u64>);
+
+    impl crate::methods::pin::KeyProbe for SetAt {
+        fn key_loads(&self, _uid: u32) -> Option<bool> {
+            Some(true)
+        }
+        fn pin_changed_at(&self, _uid: u32) -> Option<u64> {
+            self.0
+        }
+    }
+
+    /// The time of the expiry tests: day 100 since the Unix epoch.
+    fn at_day_100() -> u64 {
+        100 * 86_400
+    }
+
+    /// The status of user 1000 with `admin` as the admin policy and a PIN set at `changed_at`.
+    fn expiry_status(
+        admin_text: Option<&str>,
+        changed_at: Option<u64>,
+    ) -> Vec<(String, String, String)> {
+        let tmp = crate::private_tempdir();
+        let (store, admin) = store_with_admin(&tmp);
+        if let Some(text) = admin_text {
+            crate::write_admin_file(admin.join("expiry.toml"), text).unwrap();
+        }
+        let api = Api::new(Config::new(vec![]))
+            .with_user_policy_store(Some(store))
+            .with_key_probe(Some(std::sync::Arc::new(SetAt(changed_at))))
+            .with_clock(at_day_100);
+        api.get_status(status_caller(1000)).unwrap()
+    }
+
+    #[test]
+    fn status_says_a_pin_expires_soon_from_fourteen_days_before() {
+        let thirty = Some("[pin]\nexpiry_days = 30\n");
+        // Set on day 70: expires on day 100, now. Set on day 84: 14 days left. Day 85: 15 left.
+        let soon = expiry_status(thirty, Some(84 * 86_400));
+        assert_eq!(soon.len(), 1, "{soon:?}");
+        assert_eq!(
+            (soon[0].0.as_str(), soon[0].1.as_str()),
+            ("pin-expires-soon", "warning")
+        );
+        assert!(soon[0].2.contains("14 days"), "{soon:?}");
+        assert!(expiry_status(thirty, Some(85 * 86_400)).is_empty());
+        // Part of a day left counts as a whole day.
+        let part = expiry_status(thirty, Some(70 * 86_400 + 1));
+        assert!(part[0].2.contains("in 1 day."), "{part:?}");
+    }
+
+    #[test]
+    fn status_says_an_expired_pin_has_expired_and_still_works() {
+        let expired = expiry_status(Some("[pin]\nexpiry_days = 30\n"), Some(70 * 86_400));
+        assert_eq!(expired.len(), 1, "{expired:?}");
+        assert_eq!(
+            (expired[0].0.as_str(), expired[0].1.as_str()),
+            ("pin-expired", "warning")
+        );
+        assert!(expired[0].2.contains("still works"));
+    }
+
+    #[test]
+    fn no_expiry_is_reported_without_the_policy_key_or_without_a_pin() {
+        // A PIN set on day 0 would have expired long ago under a 30-day policy.
+        assert!(expiry_status(None, Some(0)).is_empty());
+        assert!(expiry_status(Some("[pin]\nexpiry_days = 30\n"), None).is_empty());
     }
 
     #[test]

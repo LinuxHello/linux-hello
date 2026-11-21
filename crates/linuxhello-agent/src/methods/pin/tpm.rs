@@ -258,4 +258,11 @@ impl KeyProbe for TpmVerifier {
         };
         self.client.key_loads(record.blobs).ok()
     }
+
+    fn pin_changed_at(&self, uid: u32) -> Option<u64> {
+        match self.records.load(uid) {
+            Ok(Some(record)) => Some(record.changed_at),
+            Ok(None) | Err(_) => None,
+        }
+    }
 }
