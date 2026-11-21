@@ -265,4 +265,12 @@ impl KeyProbe for TpmVerifier {
             Ok(None) | Err(_) => None,
         }
     }
+
+    fn pin_record(&self, uid: u32) -> super::PinRecordState {
+        match self.records.load(uid) {
+            Ok(Some(record)) => super::PinRecordState::Set(record.changed_at),
+            Ok(None) => super::PinRecordState::Absent,
+            Err(_) => super::PinRecordState::Damaged,
+        }
+    }
 }

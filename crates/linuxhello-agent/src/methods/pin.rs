@@ -64,6 +64,25 @@ pub trait KeyProbe: Send + Sync {
     fn pin_changed_at(&self, _uid: u32) -> Option<u64> {
         None
     }
+
+    /// Whether `uid` has a PIN record, and when it was set, for `GetPinState` (ADR-0027, point 1).
+    /// The default reads [`KeyProbe::pin_changed_at`] and cannot tell a damaged record from none.
+    fn pin_record(&self, uid: u32) -> PinRecordState {
+        self.pin_changed_at(uid)
+            .map_or(PinRecordState::Absent, PinRecordState::Set)
+    }
+}
+
+/// What the Agent knows about a user's PIN record.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PinRecordState {
+    /// The user has no PIN record.
+    Absent,
+    /// The user has a record; the PIN was set or last changed at this time, in seconds since the
+    /// Unix epoch.
+    Set(u64),
+    /// A record exists but cannot be read or trusted.
+    Damaged,
 }
 
 /// The verifier of an Agent that has no way to check a PIN yet: always unavailable.

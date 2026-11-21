@@ -822,6 +822,32 @@ impl Api {
             .map_err(|_| ApiError::LimitReached)
     }
 
+    /// Whether the caller has a PIN, and when it was set or last changed, in seconds since the
+    /// Unix epoch (`0` without a PIN). The answer is only ever the caller's own: there is no
+    /// argument (`pin_state_says_whether_the_callers_pin_is_set`, `pin_state_is_only_the_callers_own`,
+    /// ADR-0027, point 1).
+    ///
+    /// # Errors
+    ///
+    /// [`ApiError::Denied`] without a caller uid; [`ApiError::Unavailable`] when the Agent has no
+    /// way to read PIN records; [`ApiError::Damaged`] for a record that cannot be read.
+    pub fn get_pin_state(&self, caller: Caller) -> Result<(bool, u64), ApiError> {
+        use crate::methods::pin::PinRecordState;
+        let result = caller.uid.ok_or(ApiError::Denied).and_then(|uid| {
+            match self
+                .key_probe
+                .as_ref()
+                .ok_or(ApiError::Unavailable)?
+                .pin_record(uid)
+            {
+                PinRecordState::Absent => Ok((false, 0)),
+                PinRecordState::Set(changed_at) => Ok((true, changed_at)),
+                PinRecordState::Damaged => Err(ApiError::Damaged),
+            }
+        });
+        self.audited(&caller, result)
+    }
+
     /// The conditions that affect the caller, each as `(code, severity, sentence)`: its own
     /// policy layer and the faults of the machine that change what it can do. A fault is a
     /// condition, never an error. The list names no file, no path and no other user
@@ -2217,6 +2243,55 @@ mod tests {
             peer: None,
         };
         assert_eq!(api.get_status_details(anonymous), Err(ApiError::Denied));
+    }
+
+    /// A probe with a record for user 1000 set at day 3, none for 1001, a damaged one for 1002.
+    struct Records;
+
+    impl KeyProbe for Records {
+        fn key_loads(&self, _uid: u32) -> Option<bool> {
+            Some(true)
+        }
+        fn pin_record(&self, uid: u32) -> crate::methods::pin::PinRecordState {
+            use crate::methods::pin::PinRecordState;
+            match uid {
+                1000 => PinRecordState::Set(3 * 86_400),
+                1002 => PinRecordState::Damaged,
+                _ => PinRecordState::Absent,
+            }
+        }
+    }
+
+    #[test]
+    fn pin_state_says_whether_the_callers_pin_is_set() {
+        let api = Api::new(Config::new(vec![])).with_key_probe(Some(Arc::new(Records)));
+        assert_eq!(
+            api.get_pin_state(status_caller(1000)),
+            Ok((true, 3 * 86_400))
+        );
+        assert_eq!(api.get_pin_state(status_caller(1001)), Ok((false, 0)));
+        assert_eq!(
+            api.get_pin_state(status_caller(1002)),
+            Err(ApiError::Damaged)
+        );
+        let none = Api::new(Config::new(vec![]));
+        assert_eq!(
+            none.get_pin_state(status_caller(1000)),
+            Err(ApiError::Unavailable)
+        );
+    }
+
+    #[test]
+    fn pin_state_is_only_the_callers_own() {
+        let api = Api::new(Config::new(vec![])).with_key_probe(Some(Arc::new(Records)));
+        // Root and any other user get their own answer, never user 1000's.
+        assert_eq!(api.get_pin_state(status_caller(0)), Ok((false, 0)));
+        assert_eq!(api.get_pin_state(status_caller(1001)), Ok((false, 0)));
+        let nobody = Caller {
+            uid: None,
+            ..status_caller(1000)
+        };
+        assert_eq!(api.get_pin_state(nobody), Err(ApiError::Denied));
     }
 
     #[test]
