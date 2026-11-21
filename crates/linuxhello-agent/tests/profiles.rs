@@ -434,3 +434,43 @@ fn agent_profile_allows_the_notify_socket_and_no_other_datagram_path() {
     assert_eq!(writes_to_run, [&"/run/systemd/notify w,"]);
     assert!(!rules.iter().any(|l| l.starts_with("network inet")));
 }
+
+#[test]
+fn agent_unit_bounds_its_memory_tasks_and_open_files() {
+    let s = service_settings();
+    assert_eq!(only(&s, "MemoryMax"), "1G");
+    assert_eq!(only(&s, "TasksMax"), "128");
+    assert_eq!(only(&s, "LimitNOFILE"), "1024");
+}
+
+#[test]
+fn agent_unit_shares_no_ipc_or_keyring_and_binds_no_internet_socket() {
+    let s = service_settings();
+    assert_eq!(only(&s, "PrivateIPC"), "yes");
+    assert_eq!(only(&s, "KeyringMode"), "private");
+    assert_eq!(only(&s, "SocketBindDeny"), "any");
+    // Without the BPF security module, which Ubuntu does not enable, systemd refuses to start a
+    // unit that restricts file systems; the Agent would never run.
+    assert!(!s.contains_key("RestrictFileSystems"));
+}
+
+#[test]
+fn agent_profile_denies_unix_sockets_in_the_abstract_namespace() {
+    let rules = profile_rules();
+    assert!(rules
+        .iter()
+        .any(|r| r == "deny unix (connect, send) peer=(addr=@**),"));
+    assert!(rules.iter().any(|r| r == "deny unix (listen) addr=@**,"));
+}
+
+#[test]
+fn agent_profile_lets_the_agent_read_its_own_label_and_nothing_else_of_proc() {
+    let rules = profile_rules();
+    assert!(rules
+        .iter()
+        .any(|r| r == "@{PROC}/@{pid}/attr/{,apparmor/}current r,"));
+    // The rule names the label files only, not the process's other files.
+    assert!(!rules
+        .iter()
+        .any(|r| r.starts_with("@{PROC}/@{pid}/") && r.contains("**")));
+}
