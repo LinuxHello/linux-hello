@@ -39,8 +39,9 @@ profile linuxhello-agent /usr/libexec/linuxhello/linuxhello-agent flags=(attach_
        member=NameOwnerChanged
        peer=(name=org.freedesktop.DBus),
 
-  # The fingerprint method (ADR-0023): the Agent is a client of fprintd. It calls the manager and
-  # the readers, hears the result of a scan, and reads the account name of the user who signs in
+  # The fingerprint method (ADR-0023) and the finger calls of the settings page (ADR-0027): the
+  # Agent is a client of fprintd. It calls the manager and the readers, hears the result of a scan
+  # and the steps of an enrolment, and reads the account name of the user who signs in
   # (a name that only a name service knows is not found, and that user has no fingerprint method).
   dbus send bus=system path=/net/reactivated/Fprint/**
        interface=net.reactivated.Fprint.{Manager,Device}
@@ -49,7 +50,7 @@ profile linuxhello-agent /usr/libexec/linuxhello/linuxhello-agent flags=(attach_
   # never matches it; the rule names the peer's profile label instead. fprintd runs unconfined on
   # Ubuntu 24.04 and 26.04 (checked in the test VM, `make vm-test-fingerprint`).
   dbus receive bus=system path=/net/reactivated/Fprint/**
-       interface=net.reactivated.Fprint.Device member=VerifyStatus
+       interface=net.reactivated.Fprint.Device member={VerifyStatus,EnrollStatus}
        peer=(label=unconfined),
   /etc/passwd r,
 

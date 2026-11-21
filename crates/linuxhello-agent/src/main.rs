@@ -16,10 +16,11 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 use linuxhello_agent::audit::Audit;
-use linuxhello_agent::bus::{bus_alive, serve_with_extras, Extras, PinChange};
+use linuxhello_agent::bus::{bus_alive, serve_with_extras, Extras, Fingerprints, PinChange};
+use linuxhello_agent::methods::fingerprint::{FingerprintMethod, Fprintd};
 use linuxhello_agent::methods::pin::tpm::TpmVerifier;
 use linuxhello_agent::methods::pin::{PinInbox, PinMethod, PinVerifier};
-use linuxhello_agent::methods::{face::FaceMethod, fingerprint::FingerprintMethod, username_of};
+use linuxhello_agent::methods::{face::FaceMethod, username_of};
 use linuxhello_agent::notify::{watchdog_interval, Notifier};
 use linuxhello_agent::orchestrator::Method;
 use linuxhello_agent::pinlock::service::{wall_clock_seconds, Limits, PinLockService};
@@ -64,6 +65,17 @@ fn methods_of(
         methods.push(Box::new(FingerprintMethod::new(name)));
     }
     methods
+}
+
+/// The account name of `uid` for the finger calls of the settings page, read from `/etc/passwd`
+/// at each call so that an account added since the Agent started is found. It is the same small
+/// read of a local file that [`methods_of`] makes for every authentication; it runs on the bus
+/// thread and does not wait on anything else.
+fn account_name(uid: u32) -> Option<String> {
+    username_of(
+        uid,
+        &std::fs::read_to_string("/etc/passwd").unwrap_or_default(),
+    )
 }
 
 /// The socket of the TPM provider (ADR-0021): the Agent reaches the TPM through it and links no TPM
@@ -132,6 +144,7 @@ async fn run() -> zbus::Result<()> {
         TPM_SOCKET,
     ));
     let verifier: Arc<dyn PinVerifier> = tpm.clone();
+    let verifier_for_fingers = Arc::clone(&verifier);
     let pin_socket = serve_pin_socket(Arc::clone(&inbox));
     let store = UserPolicyStore::new(USER_POLICY_ROOT).with_admin_layer(ADMIN_POLICY_DIR, 0);
     let extras = Extras {
@@ -147,6 +160,12 @@ async fn run() -> zbus::Result<()> {
             methods_of(subject, &inbox, &lock, &verifier)
         })),
         auth_deadline: None,
+        // The finger calls of the settings page.
+        fingerprints: Some(Fingerprints {
+            fprintd: Fprintd::default(),
+            username_of: Arc::new(account_name),
+            verifier: verifier_for_fingers,
+        }),
     };
     let connection = serve_with_extras(
         Builder::system(),

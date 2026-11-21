@@ -36,8 +36,9 @@ use zbus::{connection, interface, Connection};
 
 use crate::api::{Api, ApiError, Caller, Notification, PeerName};
 use crate::audit::Audit;
-use crate::methods::pin::enrol::{run_change, run_set, Job, PinEnrolment};
-use crate::methods::pin::{KeyProbe, PinInbox};
+use crate::methods::fingerprint::{Fprintd, FINGERS};
+use crate::methods::pin::enrol::{run_change, run_check, run_set, CheckJob, Job, PinEnrolment};
+use crate::methods::pin::{KeyProbe, PinInbox, PinVerifier};
 use crate::orchestrator::{Method, Orchestrator, Reporter};
 use crate::pinlock::service::{wall_clock_seconds, PinLockService};
 use crate::pinsocket::PinSocket;
@@ -103,6 +104,20 @@ pub struct AgentService {
     /// Where the orchestrator's reports go, to be applied to the state store on the bus thread;
     /// `None` until the service is served.
     updates: Option<Sender<AgentUpdate>>,
+    /// What `ListFingerprints` and `DeleteFingerprint` use; without it they are `Unavailable`.
+    fingerprints: Option<Fingerprints>,
+}
+
+/// The management of enrolled fingers for the settings page (ADR-0027, point 2).
+#[derive(Clone)]
+pub struct Fingerprints {
+    /// The fingerprint service.
+    pub fprintd: Fprintd,
+    /// The account name of a uid, for which `fprintd` claims the reader; `None` for a uid
+    /// without one.
+    pub username_of: Arc<dyn Fn(u32) -> Option<String> + Send + Sync>,
+    /// What checks the person's PIN before `EnrolFingerprint` adds a finger.
+    pub verifier: Arc<dyn PinVerifier>,
 }
 
 impl AgentService {
@@ -117,7 +132,20 @@ impl AgentService {
             methods: Arc::new(|_| Vec::new()),
             auth_deadline: AUTH_DEADLINE,
             updates: None,
+            fingerprints: None,
         }
+    }
+
+    /// The fingerprint management and the account name of `caller`, for the finger calls.
+    fn fingerprints_of(&self, caller: &Caller) -> Result<(Fingerprints, String), AgentError> {
+        let uid = caller.uid.ok_or_else(|| to_bus(ApiError::Denied))?;
+        let fingerprints = self
+            .fingerprints
+            .clone()
+            .ok_or_else(|| to_bus(ApiError::Unavailable))?;
+        let username =
+            (fingerprints.username_of)(uid).ok_or_else(|| to_bus(ApiError::Unavailable))?;
+        Ok((fingerprints, username))
     }
 
     /// Sends the `Closed` signal for every prompt that closed since the last call, to the peers
@@ -157,6 +185,7 @@ impl AgentService {
             methods: Arc::new(|_| Vec::new()),
             auth_deadline: AUTH_DEADLINE,
             updates: None,
+            fingerprints: None,
         }
     }
 
@@ -319,6 +348,8 @@ pub struct Extras {
     pub key_probe: Option<Arc<dyn KeyProbe>>,
     /// Makes the methods an authentication runs; none by default.
     pub methods: Option<MethodFactory>,
+    /// What `ListFingerprints` and `DeleteFingerprint` use; without it they are `Unavailable`.
+    pub fingerprints: Option<Fingerprints>,
     /// How long an authentication may take; a minute by default.
     pub auth_deadline: Option<Duration>,
 }
@@ -340,6 +371,7 @@ pub async fn serve_with_extras(
     .with_pin_socket(extras.pin_socket)
     .with_pin_lock(extras.pin_lock);
     service.pin_change = extras.pin_change;
+    service.fingerprints = extras.fingerprints;
     service.api = service.api.with_key_probe(extras.key_probe);
     if let Some(methods) = extras.methods {
         service.methods = methods;
@@ -561,6 +593,18 @@ async fn send(connection: &Connection, note: &Notification) {
                 AGENT_INTERFACE,
                 note.signal,
                 &(prompt, &note.values),
+            )
+            .await
+    } else if note.signal == "EnrolProgress" {
+        let value = |at: usize| note.values.get(at).map_or("", String::as_str);
+        let number = |at: usize| value(at).parse::<u32>().unwrap_or(0);
+        connection
+            .emit_signal(
+                peer,
+                AGENT_OBJECT_PATH,
+                AGENT_INTERFACE,
+                note.signal,
+                &(prompt, value(0), number(1), number(2)),
             )
             .await
     } else if note.signal == "Result" {
@@ -814,6 +858,118 @@ impl AgentService {
         self.api
             .expect_pin(caller, process, prompt_id, self.pin_socket.as_deref())
             .map_err(to_bus)
+    }
+
+    /// Returns the caller's enrolled fingers, by `fprintd`'s names, in the order of the closed set
+    /// of ten; only ever the caller's own (ADR-0027, point 2).
+    async fn list_fingerprints(
+        &self,
+        #[zbus(header)] header: Header<'_>,
+        #[zbus(connection)] connection: &Connection,
+    ) -> Result<Vec<String>, AgentError> {
+        let caller = caller_of(connection, header.sender()).await;
+        let (fingerprints, username) = self.fingerprints_of(&caller)?;
+        fingerprints
+            .fprintd
+            .list(&username)
+            .await
+            .map_err(|_| to_bus(ApiError::Unavailable))
+    }
+
+    /// Starts enrolling one of the caller's fingers on a prompt the caller opened for itself: the
+    /// Agent first waits for the caller's PIN on the PIN socket and checks it, counted like any
+    /// other, and only then starts `fprintd`'s enrolment. Each step is an `EnrolProgress` signal
+    /// and the end is `Result`. Returns at once. Without a PIN set it is `InvalidArgument`
+    /// (ADR-0027, points 2 and 4).
+    async fn enrol_fingerprint(
+        &mut self,
+        prompt_id: &str,
+        finger: &str,
+        #[zbus(header)] header: Header<'_>,
+        #[zbus(connection)] connection: &Connection,
+    ) -> Result<(), AgentError> {
+        self.tick();
+        if !FINGERS.contains(&finger) {
+            return Err(to_bus(ApiError::InvalidArgument));
+        }
+        let caller = caller_of(connection, header.sender()).await;
+        let (fingerprints, username) = self.fingerprints_of(&caller)?;
+        let (Some(pin_change), Some(lock), Some(updates)) = (
+            self.pin_change.clone(),
+            self.lock.clone(),
+            self.updates.clone(),
+        ) else {
+            return Err(to_bus(ApiError::Unavailable));
+        };
+        let has_pin = caller
+            .uid
+            .is_some_and(|uid| pin_change.enrolment.has_pin(uid));
+        // The same checks as `ChangePin`: the caller's own prompt, a PIN set, one job at a time.
+        let start = self
+            .api
+            .begin_pin_change(caller, prompt_id, true, has_pin)
+            .map_err(to_bus)?;
+        // Registered before the call returns, so that a PIN sent right after it is not lost.
+        let wait = pin_change.inbox.wait_for(start.subject);
+        let finger = finger.to_string();
+        std::thread::spawn(move || {
+            let ran = catch_unwind(AssertUnwindSafe(|| {
+                let check = CheckJob {
+                    subject: start.subject,
+                    wait: PIN_WAIT,
+                    lock: &lock,
+                    verifier: &*fingerprints.verifier,
+                    clock: wall_clock_seconds,
+                };
+                if let Err(outcome) = run_check(&check, &wait, &start.stop) {
+                    return outcome;
+                }
+                drop(wait);
+                let steps = updates.clone();
+                let (uid, prompt) = (start.opener_uid, start.prompt.clone());
+                let mut progress = move |step, done| {
+                    let _ = steps.send(AgentUpdate {
+                        uid,
+                        prompt: prompt.clone(),
+                        update: Update::Progress(step, done, 0),
+                    });
+                };
+                futures_lite::future::block_on(fingerprints.fprintd.enrol(
+                    &username,
+                    &finger,
+                    &start.stop,
+                    &mut progress,
+                ))
+            }));
+            // Whatever went wrong, the prompt must not stay "running" for ever.
+            let outcome = ran.unwrap_or_else(|_| Outcome::new(PromptResult::Failure));
+            let _ = updates.send(AgentUpdate {
+                uid: start.opener_uid,
+                prompt: start.prompt,
+                update: Update::Result(outcome),
+            });
+        });
+        Ok(())
+    }
+
+    /// Deletes one of the caller's fingers; a finger that is not enrolled changes nothing. No PIN
+    /// is needed: removing a way in lets nobody in (ADR-0027, point 2).
+    async fn delete_fingerprint(
+        &self,
+        finger: &str,
+        #[zbus(header)] header: Header<'_>,
+        #[zbus(connection)] connection: &Connection,
+    ) -> Result<(), AgentError> {
+        let caller = caller_of(connection, header.sender()).await;
+        if !FINGERS.contains(&finger) {
+            return Err(to_bus(ApiError::InvalidArgument));
+        }
+        let (fingerprints, username) = self.fingerprints_of(&caller)?;
+        fingerprints
+            .fprintd
+            .delete(&username, finger)
+            .await
+            .map_err(|_| to_bus(ApiError::Unavailable))
     }
 
     /// Returns whether the caller has a PIN, and when it was set or last changed in seconds since

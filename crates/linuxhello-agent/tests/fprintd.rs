@@ -7,10 +7,13 @@ mod common;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use common::{connect, run, Daemon};
-use linuxhello_agent::methods::fingerprint::FingerprintMethod;
+use common::{call, connect, is_error, my_uid, run, Daemon};
+use linuxhello_agent::bus::{serve_with_extras, Extras, Fingerprints};
+use linuxhello_agent::methods::fingerprint::{FingerprintMethod, Fprintd};
+use linuxhello_agent::methods::pin::{PinVerifier, VerifyError};
 use linuxhello_agent::orchestrator::{Cancel, Method, MethodEnd};
-use linuxhello_dbus::PromptReason;
+use linuxhello_agent::state::Config;
+use linuxhello_dbus::{EnrolStep, PromptReason, PromptResult};
 use zbus::connection::Builder;
 use zbus::fdo;
 use zbus::object_server::SignalEmitter;
@@ -46,6 +49,16 @@ impl Manager {
     }
 }
 
+/// The errors of `fprintd` that the fake gives, under `fprintd`'s own error names.
+#[derive(Debug, zbus::DBusError)]
+#[zbus(prefix = "net.reactivated.Fprint.Error")]
+enum FprintError {
+    #[zbus(error)]
+    ZBus(zbus::Error),
+    /// The user has no finger enrolled.
+    NoEnrolledPrints(String),
+}
+
 /// The fake reader: it answers a scan with a script of `VerifyStatus` results.
 struct Device {
     log: Log,
@@ -55,12 +68,23 @@ struct Device {
 
 #[interface(name = "net.reactivated.Fprint.Device")]
 impl Device {
-    async fn list_enrolled_fingers(&self, username: String) -> fdo::Result<Vec<String>> {
+    async fn list_enrolled_fingers(&self, username: String) -> Result<Vec<String>, FprintError> {
         self.log.push(format!("ListEnrolledFingers {username}"));
         if self.enrolled.is_empty() {
-            Err(fdo::Error::Failed("NoEnrolledPrints".into()))
+            Err(FprintError::NoEnrolledPrints("no prints".into()))
         } else {
             Ok(self.enrolled.clone())
+        }
+    }
+
+    async fn delete_enrolled_finger(&mut self, finger: String) -> Result<(), FprintError> {
+        self.log.push(format!("DeleteEnrolledFinger {finger}"));
+        let before = self.enrolled.len();
+        self.enrolled.retain(|f| *f != finger);
+        if self.enrolled.len() == before {
+            Err(FprintError::NoEnrolledPrints("no such print".into()))
+        } else {
+            Ok(())
         }
     }
 
@@ -93,6 +117,33 @@ impl Device {
         self.log.push("VerifyStop");
         Ok(())
     }
+
+    async fn enroll_start(
+        &self,
+        finger: String,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+    ) -> fdo::Result<()> {
+        self.log.push(format!("EnrollStart {finger}"));
+        for (result, done) in &self.script {
+            async_io::Timer::after(Duration::from_millis(20)).await;
+            Self::enroll_status(&emitter, result.clone(), *done)
+                .await
+                .map_err(|e| fdo::Error::Failed(e.to_string()))?;
+        }
+        Ok(())
+    }
+
+    async fn enroll_stop(&self) -> fdo::Result<()> {
+        self.log.push("EnrollStop");
+        Ok(())
+    }
+
+    #[zbus(signal)]
+    async fn enroll_status(
+        emitter: &SignalEmitter<'_>,
+        result: String,
+        done: bool,
+    ) -> zbus::Result<()>;
 
     #[zbus(signal)]
     async fn verify_status(
@@ -295,5 +346,265 @@ fn a_reader_with_a_finger_is_available() {
         let (_fprintd, _log) = fake_fprintd(&daemon, Setup::with(vec![])).await;
         let method = FingerprintMethod::new("anna").on_bus(daemon.address.clone());
         assert!(method.available());
+    });
+}
+
+#[test]
+fn fingers_are_listed_in_the_closed_order_without_unknown_names() {
+    let daemon = Daemon::start();
+    run(async {
+        let setup = Setup {
+            enrolled: vec!["right-index-finger", "a-tentacle", "left-thumb"],
+            ..Setup::with(vec![])
+        };
+        let (_fprintd, log) = fake_fprintd(&daemon, setup).await;
+        let fprintd = Fprintd::on_bus(daemon.address.clone());
+        assert_eq!(
+            fprintd.list("anna").await,
+            Ok(vec![
+                "left-thumb".to_string(),
+                "right-index-finger".to_string()
+            ])
+        );
+        assert_eq!(log.lines(), ["ListEnrolledFingers anna"]);
+    });
+}
+
+#[test]
+fn no_enrolled_finger_is_an_empty_list() {
+    let daemon = Daemon::start();
+    run(async {
+        let setup = Setup {
+            enrolled: vec![],
+            ..Setup::with(vec![])
+        };
+        let (_fprintd, _log) = fake_fprintd(&daemon, setup).await;
+        let fprintd = Fprintd::on_bus(daemon.address.clone());
+        assert_eq!(fprintd.list("anna").await, Ok(vec![]));
+    });
+}
+
+#[test]
+fn deleting_claims_for_the_user_deletes_and_releases() {
+    let daemon = Daemon::start();
+    run(async {
+        let (_fprintd, log) = fake_fprintd(&daemon, Setup::with(vec![])).await;
+        let fprintd = Fprintd::on_bus(daemon.address.clone());
+        assert_eq!(fprintd.delete("anna", "right-index-finger").await, Ok(()));
+        // A finger that is not there is not an error, and the reader is still given back.
+        assert_eq!(fprintd.delete("anna", "left-thumb").await, Ok(()));
+        assert_eq!(
+            log.lines(),
+            [
+                "Claim anna",
+                "DeleteEnrolledFinger right-index-finger",
+                "Release",
+                "Claim anna",
+                "DeleteEnrolledFinger left-thumb",
+                "Release"
+            ]
+        );
+    });
+}
+
+/// Serves the Agent with the finger calls on `daemon`, where uid `n` has the account `user<n>`.
+async fn agent_with_fingerprints(daemon: &Daemon) -> zbus::Connection {
+    serve_with_extras(
+        Builder::address(daemon.address.as_str()),
+        Config::new(vec![]),
+        None,
+        Extras {
+            fingerprints: Some(Fingerprints {
+                fprintd: Fprintd::on_bus(daemon.address.clone()),
+                username_of: Arc::new(|uid| Some(format!("user{uid}"))),
+                verifier: Arc::new(NoPin),
+            }),
+            ..Extras::default()
+        },
+    )
+    .await
+    .expect("serve the Agent")
+}
+
+#[test]
+fn a_caller_lists_and_deletes_only_its_own_fingers() {
+    let daemon = Daemon::start();
+    run(async {
+        let (_fprintd, log) = fake_fprintd(&daemon, Setup::with(vec![])).await;
+        let _agent = agent_with_fingerprints(&daemon).await;
+        let client = connect(&daemon).await;
+        let me = format!("user{}", my_uid());
+        let reply = call(&client, "ListFingerprints", &())
+            .await
+            .expect("the list");
+        let fingers: Vec<String> = reply.body().deserialize().unwrap();
+        assert_eq!(fingers, ["right-index-finger"]);
+        call(&client, "DeleteFingerprint", &("right-index-finger",))
+            .await
+            .expect("deleted");
+        // There is no argument that names a user: fprintd is only ever asked for the caller.
+        assert_eq!(
+            log.lines(),
+            [
+                format!("ListEnrolledFingers {me}"),
+                format!("Claim {me}"),
+                "DeleteEnrolledFinger right-index-finger".to_string(),
+                "Release".to_string()
+            ]
+        );
+    });
+}
+
+#[test]
+fn an_unknown_finger_name_is_invalid() {
+    let daemon = Daemon::start();
+    run(async {
+        let (_fprintd, log) = fake_fprintd(&daemon, Setup::with(vec![])).await;
+        let _agent = agent_with_fingerprints(&daemon).await;
+        let client = connect(&daemon).await;
+        for finger in ["any", "", "right-index-finger ", "../anna"] {
+            let result = call(&client, "DeleteFingerprint", &(finger,)).await;
+            assert!(
+                is_error(&result, "io.github.LinuxHello.Error.InvalidArgument"),
+                "{finger:?}: {result:?}"
+            );
+        }
+        assert!(log.lines().is_empty(), "fprintd was not asked");
+    });
+}
+
+#[test]
+fn the_finger_calls_without_fprintd_are_unavailable() {
+    let daemon = Daemon::start();
+    run(async {
+        let _agent = agent_with_fingerprints(&daemon).await;
+        let client = connect(&daemon).await;
+        let listed = call(&client, "ListFingerprints", &()).await;
+        assert!(
+            is_error(&listed, "io.github.LinuxHello.Error.Unavailable"),
+            "{listed:?}"
+        );
+        let deleted = call(&client, "DeleteFingerprint", &("left-thumb",)).await;
+        assert!(
+            is_error(&deleted, "io.github.LinuxHello.Error.Unavailable"),
+            "{deleted:?}"
+        );
+    });
+}
+
+/// A verifier for which no PIN is right.
+struct NoPin;
+
+impl PinVerifier for NoPin {
+    fn available(&self, _uid: u32) -> bool {
+        false
+    }
+    fn verify(&self, _uid: u32, _pin: &[u8]) -> Result<bool, VerifyError> {
+        Err(VerifyError)
+    }
+}
+
+/// Enrols `right-index-finger` of `anna` against a fake that answers with `script`, and returns
+/// the outcome, the steps and the fake's log.
+fn enrol_with(
+    script: Vec<(&'static str, bool)>,
+) -> (
+    PromptResult,
+    PromptReason,
+    Vec<(EnrolStep, u32)>,
+    Vec<String>,
+) {
+    let daemon = Daemon::start();
+    run(async {
+        let (_fprintd, log) = fake_fprintd(&daemon, Setup::with(script)).await;
+        let fprintd = Fprintd::on_bus(daemon.address.clone());
+        let mut steps = Vec::new();
+        let outcome = fprintd
+            .enrol(
+                "anna",
+                "right-index-finger",
+                &Cancel::default(),
+                &mut |step, done| {
+                    steps.push((step, done));
+                },
+            )
+            .await;
+        (outcome.result, outcome.reason, steps, log.lines())
+    })
+}
+
+#[test]
+fn enrolment_reports_each_touch() {
+    let (result, _, steps, log) = enrol_with(vec![
+        ("enroll-stage-passed", false),
+        ("enroll-retry-scan", false),
+        ("enroll-finger-not-centered", false),
+        ("enroll-swipe-too-short", false),
+        ("enroll-remove-and-retry", false),
+        ("enroll-stage-passed", false),
+        ("enroll-completed", true),
+    ]);
+    assert_eq!(result, PromptResult::Success);
+    assert_eq!(
+        steps,
+        [
+            (EnrolStep::Waiting, 0),
+            (EnrolStep::Passed, 1),
+            (EnrolStep::Waiting, 1),
+            (EnrolStep::Retry, 1),
+            (EnrolStep::NotCentred, 1),
+            (EnrolStep::TooShort, 1),
+            (EnrolStep::Lift, 1),
+            (EnrolStep::Passed, 2),
+            (EnrolStep::Waiting, 2),
+        ]
+    );
+    // Claimed for the user, enrolled, and always stopped and given back.
+    assert_eq!(
+        log,
+        [
+            "Claim anna",
+            "EnrollStart right-index-finger",
+            "EnrollStop",
+            "Release"
+        ]
+    );
+}
+
+#[test]
+fn an_enrolment_that_fails_says_why() {
+    for (status, reason) in [
+        ("enroll-duplicate", PromptReason::Duplicate),
+        ("enroll-data-full", PromptReason::StorageFull),
+        ("enroll-disconnected", PromptReason::DeviceGone),
+        ("enroll-failed", PromptReason::None),
+        ("enroll-unknown-error", PromptReason::None),
+    ] {
+        let (result, why, _, log) = enrol_with(vec![(status, true)]);
+        assert_eq!((result, why), (PromptResult::Failure, reason), "{status}");
+        assert_eq!(&log[log.len() - 2..], ["EnrollStop", "Release"], "{status}");
+    }
+}
+
+#[test]
+fn enrolment_without_a_pin_set_is_refused_before_fprintd_is_asked() {
+    let daemon = Daemon::start();
+    run(async {
+        let (_fprintd, log) = fake_fprintd(&daemon, Setup::with(vec![])).await;
+        let _agent = agent_with_fingerprints(&daemon).await;
+        let client = connect(&daemon).await;
+        // No prompt, and no PIN service: refused, and fprintd is never asked.
+        let result = call(&client, "EnrolFingerprint", &("p", "right-index-finger")).await;
+        assert!(result.is_err(), "{result:?}");
+        let unknown = call(&client, "EnrolFingerprint", &("p", "any")).await;
+        assert!(
+            is_error(&unknown, "io.github.LinuxHello.Error.InvalidArgument"),
+            "{unknown:?}"
+        );
+        assert!(
+            log.lines().is_empty(),
+            "fprintd was not asked: {:?}",
+            log.lines()
+        );
     });
 }

@@ -747,6 +747,7 @@ impl Api {
             Update::Active(_) => "ActiveMethods",
             Update::State(_) => "State",
             Update::Result(_) => "Result",
+            Update::Progress(..) => "EnrolProgress",
         };
         let wire = wire_values(&update);
         let ended = matches!(update, Update::Result(_));
@@ -1235,6 +1236,11 @@ fn wire_values(update: &Update) -> Vec<String> {
             outcome.result.as_wire().to_string(),
             outcome.reason.as_wire().to_string(),
             outcome.retry_after.to_string(),
+        ],
+        Update::Progress(step, done, needed) => vec![
+            step.as_wire().to_string(),
+            done.to_string(),
+            needed.to_string(),
         ],
     }
 }
@@ -2344,6 +2350,40 @@ mod tests {
     /// A valid prompt id.
     fn prompt(name: &str) -> String {
         PromptId::derive("test", name, "s1").as_str().to_string()
+    }
+
+    #[test]
+    fn enrolment_progress_reaches_the_subscribers_and_ends_nothing() {
+        let mut api = Api::new(Config::new(vec![]));
+        let id = prompt("enrol");
+        api.open_prompt_from(on_peer(1000, ":1.5"), ":1.5", &id, Some(1000))
+            .unwrap();
+        api.subscribe(on_peer(1000, ":1.5"), ":1.5", &id).unwrap();
+        let key = PromptId::parse(&id).unwrap();
+        let notes = api.agent_report(
+            1000,
+            &key,
+            Update::Progress(linuxhello_dbus::EnrolStep::Passed, 3, 0),
+        );
+        assert_eq!(notes.len(), 1);
+        assert_eq!(notes[0].signal, "EnrolProgress");
+        assert_eq!(notes[0].values, ["passed", "3", "0"]);
+        // The prompt has no result: the enrolment goes on.
+        assert_eq!(
+            api.get_state(on_peer(1000, ":1.5"), &id).unwrap().result,
+            None
+        );
+        // And a client cannot send the signal itself.
+        assert_eq!(
+            api.report_state(
+                on_peer(1000, ":1.5"),
+                &id,
+                "EnrolProgress",
+                &["passed", "1", "0"]
+            )
+            .err(),
+            Some(ApiError::InvalidArgument)
+        );
     }
 
     #[test]
