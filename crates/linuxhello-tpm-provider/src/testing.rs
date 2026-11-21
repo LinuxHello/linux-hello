@@ -27,11 +27,28 @@ impl SoftTpm {
     /// Starts swtpm, or `None` (and a line saying so) when it is not installed. The tests run side by
     /// side and pick their ports one after another, so two can pick the same one; the one that loses
     /// finds its swtpm gone (the port is taken), and tries again with another port.
+    ///
+    /// swtpm is started through [`CLOSE_INHERITED`], so that it keeps none of the test process's
+    /// descriptors: see there for why that matters.
+    ///
+    /// # Panics
+    ///
+    /// When `LH_REQUIRE_SWTPM` is set and swtpm is not installed, when `bash` cannot be started,
+    /// and when swtpm does not answer on any of eight ports.
     pub fn start() -> Option<Self> {
+        if !on_path("swtpm") {
+            assert!(
+                std::env::var("LH_REQUIRE_SWTPM").is_err(),
+                "swtpm is required here (LH_REQUIRE_SWTPM) and is not installed"
+            );
+            eprintln!("SKIPPED: swtpm is not installed");
+            return None;
+        }
         for _ in 0..8 {
             let state = private_tempdir();
             let port = claim_port();
-            let child = Command::new("swtpm")
+            let child = Command::new("bash")
+                .args(["-c", CLOSE_INHERITED, "swtpm"])
                 .args(["socket", "--tpm2", "--tpmstate"])
                 .arg(format!("dir={}", state.path().display()))
                 .arg("--server")
@@ -41,16 +58,8 @@ impl SoftTpm {
                 .args(["--flags", "not-need-init,startup-clear"])
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
-                .spawn();
-            let Ok(child) = child else {
-                release_port(port);
-                assert!(
-                    std::env::var("LH_REQUIRE_SWTPM").is_err(),
-                    "swtpm is required here (LH_REQUIRE_SWTPM) and is not installed"
-                );
-                eprintln!("SKIPPED: swtpm is not installed");
-                return None;
-            };
+                .spawn()
+                .expect("start bash, which starts swtpm");
             let mut soft = Self {
                 child,
                 port,
@@ -62,6 +71,11 @@ impl SoftTpm {
             // Dropping `soft` gives the port back.
         }
         panic!("swtpm did not start listening on any of eight ports");
+    }
+
+    /// The process id of this swtpm.
+    pub fn pid(&self) -> u32 {
+        self.child.id()
     }
 
     /// The TCTI string of this TPM.
@@ -162,6 +176,32 @@ pub fn open_when_ready(tcti: &str) -> Tpm {
             Err(_) => std::thread::sleep(Duration::from_millis(100)),
         }
     }
+}
+
+/// A bash script that closes every descriptor above 2 it was given and then runs swtpm with its own
+/// arguments (`$@`).
+///
+/// The TSS library (libtss2) opens a new TCP connection to swtpm for every TPM command, without
+/// close-on-exec (read in its source, versions 4.0.1 and 4.1.3). When one test starts its swtpm
+/// while another test's command is under way, the new swtpm inherits that test's connection and
+/// keeps it open after the library has closed its own copy. swtpm serves one connection at a time and
+/// waits for the client to hang up before it takes the next, so the other test's next command waits
+/// behind a connection that nobody will close, until its call times out or its swtpm is stopped and
+/// the waiting connection is reset ("Connection reset by peer", TSS2 response code 0xA000A). Closing
+/// the inherited descriptors before swtpm runs leaves every connection to its owner.
+///
+/// Test: `a_software_tpm_keeps_no_connection_of_the_test_process_open`.
+const CLOSE_INHERITED: &str = r#"for fd in /proc/self/fd/*; do fd=${fd##*/}; if [ "$fd" -gt 2 ]; then exec {fd}>&-; fi; done; exec swtpm "$@""#;
+
+/// Whether `program` is an executable file in one of the directories of `PATH`.
+fn on_path(program: &str) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::env::var_os("PATH").is_some_and(|path| {
+        std::env::split_paths(&path).any(|dir| {
+            std::fs::metadata(dir.join(program))
+                .is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+        })
+    })
 }
 
 /// The data ports that software TPMs of this process hold. Two tests that start a TPM side by side
