@@ -163,7 +163,7 @@ The question names the methods that run. While it waits for your PIN, the finger
 - **A finger or a face that matches** signs you in once you press Enter.
 - **A finger or a face that does not match** ends only that method. The question comes back without it, and the other methods, the PIN among them, still work. The attempt fails only when every method has failed.
 - **An empty Enter** with only the PIN left gives you the password. While the reader or the camera is still working, it waits for them; when they end without a match, or after 30 seconds, you get the password.
-- **A wrong PIN** ends the PIN for this attempt. If the reader is still working, the module says "Touch the fingerprint sensor." and waits for it. Without a match the attempt fails, and you are not given the password in its place.
+- **A wrong PIN** ends the PIN for this attempt. If the reader is still working, the module says "Touch the fingerprint sensor." (or "Touch the fingerprint sensor or look at the camera." when the camera is working too) and waits for it. Without a match the attempt fails, and you are not given the password in its place.
 
 | Where | How | The question you should see |
 | :-- | :-- | :-- |
@@ -188,7 +188,7 @@ The first shows what Linux Hello says about your account. The two files hold the
 ## When something goes wrong
 
 - **The question does not name the fingerprint or the camera.** The method is not available: `fprintd-verify` or `sudo howdy test` fails on its own, `--face` was not given, or the policy does not offer it there (section 5 above). The Agent's log says which.
-- **`sudo` asks only for the password.** Linux Hello was unavailable. `systemctl status linuxhello-agent linuxhello-tpm-provider` shows whether the services run; `journalctl -u linuxhello-agent -b` shows why not. No PIN set is also a reason.
+- **`sudo` asks only for the password.** Linux Hello was unavailable. On the text console and the lock screen the module says so first: "Linux Hello is not available. Use your account password." (`sudo` hides the module's messages.) `systemctl status linuxhello-agent linuxhello-tpm-provider` shows whether the services run; `journalctl -u linuxhello-agent -b` shows why not. No PIN set is also a reason.
 - **The Agent does not start.** Its unit checks that its AppArmor profile is in enforce mode: `sudo grep linuxhello /sys/kernel/security/apparmor/profiles`. Denials are in `sudo journalctl -k | grep DENIED`.
 - **Anything else.** Write down the command, what you saw, and the last lines of `journalctl -u linuxhello-agent -u linuxhello-tpm-provider -b`, and open an issue. Leave your PIN out of it.
 

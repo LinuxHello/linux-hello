@@ -43,6 +43,10 @@ pub const PIN_SOCKET: &str = "/run/linuxhello/pin.sock";
 /// The reply byte of the PIN socket for an accepted PIN (`REPLY_ACCEPTED` of the Agent).
 const REPLY_ACCEPTED: u8 = 0;
 
+/// The line shown when Linux Hello cannot answer because the bus or the Agent failed, so that the
+/// person knows the account password comes next (`an_unreachable_agent_is_announced`).
+pub const UNAVAILABLE_LINE: &str = "Linux Hello is not available. Use your account password.";
+
 /// The contexts a module argument may name (the policy schema's contexts, ADR-0023 amendment of
 /// 2026-11-19, point 3).
 pub const CONTEXTS: [&str; 4] = ["login", "unlock", "sudo", "session"];
@@ -316,6 +320,7 @@ pub fn authenticate_at(
         return Code::UserUnknown;
     };
     let Ok(mut agent) = BusAgent::connect(bus, limits) else {
+        conversation.info(UNAVAILABLE_LINE);
         return Code::Unavailable;
     };
     let nanos = std::time::SystemTime::now()
@@ -336,7 +341,9 @@ pub fn authenticate_at(
 }
 
 /// The flow on an `agent`: open the prompt, start, ask, wait, close. The prompt is always closed
-/// once it was opened (`the_prompt_is_always_closed`).
+/// once it was opened (`the_prompt_is_always_closed`). When a call to the Agent or the bus fails
+/// the person is told that Linux Hello is not available (`an_unreachable_agent_is_announced`);
+/// an answer of *unavailable* the person chose (an empty PIN) or a timeout is not announced.
 #[allow(clippy::too_many_arguments)]
 pub fn run(
     agent: &mut dyn Agent,
@@ -352,12 +359,16 @@ pub fn run(
         .call("OpenPrompt", &[Arg::Str(prompt), Arg::I64(i64::from(uid))])
         .is_err()
     {
+        conversation.info(UNAVAILABLE_LINE);
         return Code::Unavailable;
     }
     let mut told = Vec::new();
     tell(agent, conversation, prompt, context, &mut told);
-    let code = steps(agent, pins, conversation, prompt, context, limits, start)
-        .unwrap_or(Code::Unavailable);
+    let code =
+        steps(agent, pins, conversation, prompt, context, limits, start).unwrap_or_else(|Fault| {
+            conversation.info(UNAVAILABLE_LINE);
+            Code::Unavailable
+        });
     if code == Code::Success {
         tell(agent, conversation, prompt, context, &mut told);
     }
@@ -407,6 +418,18 @@ fn question(methods: &[String]) -> &'static str {
         (true, false) => "PIN (or touch the fingerprint sensor and press Enter): ",
         (false, true) => "PIN (or look at the camera and press Enter): ",
         (false, false) => "PIN: ",
+    }
+}
+
+/// What the person is told to do when `methods` run without the PIN
+/// (`both_sensor_and_camera_are_named`).
+fn announcement(methods: &[String]) -> &'static str {
+    let finger = methods.iter().any(|m| m == "fingerprint");
+    let face = methods.iter().any(|m| m == "face");
+    match (finger, face) {
+        (true, true) => "Touch the fingerprint sensor or look at the camera.",
+        (true, false) => "Touch the fingerprint sensor.",
+        _ => "Look at the camera.",
     }
 }
 
@@ -487,11 +510,7 @@ fn steps(
                         pin_sent = true;
                     }
                 } else if other {
-                    conversation.info(if methods.iter().any(|m| m == "fingerprint") {
-                        "Touch the fingerprint sensor."
-                    } else {
-                        "Look at the camera."
-                    });
+                    conversation.info(announcement(&methods));
                 }
                 until = soon(limits.wait);
             }
