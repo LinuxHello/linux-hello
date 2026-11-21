@@ -57,7 +57,7 @@ scripts/prototype/install.sh
 
 It builds the four programs, installs them where a package would (`/usr/libexec/linuxhello/`, `/usr/bin/linuxhello-ctl`, `/usr/lib/x86_64-linux-gnu/security/pam_linuxhello.so`), installs the bus policy, the AppArmor profiles, the polkit rule (which lets the Agent use the fingerprint sensor for you) and the two systemd units, starts the services and adds one line to `/etc/pam.d/sudo`. A copy of the original file is kept as `/etc/pam.d/sudo.linuxhello-orig`. Every step asks `sudo` for itself; nothing runs as root that you cannot see in the script.
 
-To also use Linux Hello on the Plasma lock screen, add `--lock-screen`; it adds the same line to `/etc/pam.d/kde`, the PAM file of the lock screen.
+To also use Linux Hello on the Plasma lock screen, add `--lock-screen`; it adds the same line to `/etc/pam.d/kde`, the PAM file of the lock screen. To use it when you log in on a text console (the screen you reach with Ctrl+Alt+F3), add `--console`; it adds the line to `/etc/pam.d/login`, with the context `login`. Both keep the account password working after the PIN, exactly as for `sudo`.
 
 ## Try it
 
