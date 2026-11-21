@@ -238,11 +238,22 @@ fn reset_without_account_authentication_is_refused() {
     unimplemented!("P-19: write this test when it is unblocked");
 }
 
-/// P-24: see `docs/security/properties.md`.
+/// P-24 for the Agent: started outside its AppArmor profile, as every test runs, the program
+/// refuses at once, before it touches the bus, and says why.
 #[test]
-#[ignore = "placeholder, blocked: the Agent's start-up code does not exist yet"]
 fn agent_refuses_to_start_without_enforced_apparmor_profile() {
-    unimplemented!("P-24: write this test when it is unblocked");
+    let started = std::time::Instant::now();
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_linuxhello-agent"))
+        .env_clear()
+        .output()
+        .expect("run the Agent");
+    assert!(!out.status.success());
+    let said = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        said.contains("refusing to start") && said.contains("AppArmor"),
+        "{said}"
+    );
+    assert!(started.elapsed() < std::time::Duration::from_secs(5));
 }
 
 /// P-13 for the bus name of the caller (`LH_PEER`): a `PeerName` has no form but a unique bus name, so
