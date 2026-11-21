@@ -359,9 +359,21 @@ fn steps(
     let mut until = soon(limits.call);
     let mut answered: Option<Vec<String>> = None;
     let mut pin_sent = false;
+    // The PIN was sent and the Agent then dropped it from the running methods: it was wrong. From
+    // then on nothing may end in the password, not even a reader that never answers
+    // (`a_wrong_pin_then_a_silent_reader_never_falls_through_to_the_password`, P-32).
+    let mut pin_refused = false;
+    let refused = |conversation: &mut dyn Conversation| {
+        conversation.error("Wrong PIN.");
+        Code::Denied
+    };
     loop {
         let Some(signal) = agent.signal(prompt, until)? else {
-            return Ok(Code::Unavailable);
+            return Ok(if pin_refused {
+                refused(conversation)
+            } else {
+                Code::Unavailable
+            });
         };
         match signal {
             // A result before any method ran means none could (no PIN set, no finger enrolled, an
@@ -370,11 +382,20 @@ fn steps(
             Signal::Result(result, _, _) if answered.is_none() && result != "success" => {
                 return Ok(Code::Unavailable)
             }
+            Signal::Result(result, reason, _)
+                if pin_refused && result == "failure" && reason == "timeout" =>
+            {
+                return Ok(refused(conversation))
+            }
             Signal::Result(result, reason, seconds) => {
                 return Ok(outcome(&result, &reason, seconds, pin_sent, conversation))
             }
+            Signal::Closed if pin_refused => return Ok(refused(conversation)),
             Signal::Closed => return Ok(Code::Unavailable),
             Signal::Active(methods) => {
+                if pin_sent && !methods.iter().any(|m| m == "pin") {
+                    pin_refused = true;
+                }
                 if methods.is_empty() || answered.as_ref() == Some(&methods) {
                     continue;
                 }

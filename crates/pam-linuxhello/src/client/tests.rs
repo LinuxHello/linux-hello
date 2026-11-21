@@ -488,3 +488,63 @@ fn a_signal_from_another_sender_is_ignored() {
     );
     server.join().unwrap();
 }
+
+/// A sign-in where the PIN `1111` is typed while the fingerprint reader also runs, the Agent then
+/// drops the PIN (it was wrong) and `end` is what follows.
+fn wrong_pin_with_the_reader_running(end: Option<Signal>) -> (Code, Person) {
+    let mut agent = Script {
+        signals: [
+            active(&["fingerprint", "pin"]),
+            active(&["fingerprint"]),
+            end,
+        ]
+        .into(),
+        ..Script::default()
+    };
+    let mut socket = Socket {
+        accept: true,
+        ..Socket::default()
+    };
+    let mut person = Person {
+        answers: [Some("1111")].into(),
+        ..Person::default()
+    };
+    let code = go(&mut agent, &mut socket, &mut person);
+    (code, person)
+}
+
+#[test]
+fn a_wrong_pin_then_a_silent_reader_never_falls_through_to_the_password() {
+    // Nothing more from the Agent before the deadline, the Agent's own timeout, or a closed prompt.
+    for end in [None, result("failure", "timeout", 0), Some(Signal::Closed)] {
+        let (code, person) = wrong_pin_with_the_reader_running(end.clone());
+        assert_eq!(code, Code::Denied, "{end:?}");
+        assert_eq!(
+            person.shown.last().map(String::as_str),
+            Some("error: Wrong PIN.")
+        );
+    }
+}
+
+#[test]
+fn a_wrong_pin_then_a_finger_that_matches_still_signs_in() {
+    let (code, _) = wrong_pin_with_the_reader_running(result("success", "", 0));
+    assert_eq!(code, Code::Success);
+}
+
+#[test]
+fn a_silent_reader_without_a_pin_typed_is_still_unavailable() {
+    // An empty answer: no PIN was sent, so a reader that never answers gives the password.
+    let mut agent = Script {
+        signals: [active(&["fingerprint", "pin"]), None].into(),
+        ..Script::default()
+    };
+    let mut person = Person {
+        answers: [Some("")].into(),
+        ..Person::default()
+    };
+    assert_eq!(
+        go(&mut agent, &mut Socket::default(), &mut person),
+        Code::Unavailable
+    );
+}
