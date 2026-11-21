@@ -173,12 +173,102 @@ async fn run() -> zbus::Result<()> {
     Ok(())
 }
 
+/// The AppArmor profile the Agent must run under.
+const PROFILE: &str = "linuxhello-agent";
+
+/// Where the kernel gives a process its AppArmor label: the AppArmor file first, which is right
+/// when several security modules are stacked, then the older shared one.
+const LABEL_FILES: [&str; 2] = [
+    "/proc/self/attr/apparmor/current",
+    "/proc/self/attr/current",
+];
+
+/// Whether `label`, the text of a label file, says the Agent's profile enforces this process:
+/// `linuxhello-agent (enforce)`, or a stack of it with `unconfined`, as Ubuntu 26.04 starts the
+/// unit (`linuxhello-agent//&unconfined (enforce)`), which enforces exactly the Agent's profile.
+/// A complain-mode or mixed label, another profile, a child profile and `unconfined` alone do not
+/// count (`only_the_agents_profile_in_enforce_mode_counts`, P-24).
+fn enforced(label: &str) -> bool {
+    let Some(stack) = label
+        .trim_end_matches(['\n', '\0'])
+        .strip_suffix(" (enforce)")
+    else {
+        return false;
+    };
+    let parts: Vec<&str> = stack.split("//&").collect();
+    parts.contains(&PROFILE) && parts.iter().all(|p| *p == PROFILE || *p == "unconfined")
+}
+
+/// The process's own AppArmor label, from the first label file that can be read and is not empty;
+/// `None` when there is none, which counts as not confined.
+fn own_label() -> Option<String> {
+    LABEL_FILES.iter().find_map(|path| {
+        std::fs::read_to_string(path)
+            .ok()
+            .filter(|label| !label.trim().is_empty())
+    })
+}
+
+/// Before anything holds a secret: makes the process not dumpable, so that neither a core file nor
+/// another process of the Agent's user can read its memory, and refuses to run unless the Agent's
+/// AppArmor profile enforces it. The unit checks the profile too, before the start; this check
+/// also covers a start outside the unit (AGENTS.md invariant 3,
+/// `agent_refuses_to_start_without_enforced_apparmor_profile`).
+///
+/// # Errors
+///
+/// The reason the Agent must not run, for its standard error.
+fn guard() -> Result<(), String> {
+    rustix::process::set_dumpable_behavior(rustix::process::DumpableBehavior::NotDumpable)
+        .map_err(|e| format!("cannot mark the process not dumpable: {e}"))?;
+    match own_label() {
+        Some(label) if enforced(&label) => Ok(()),
+        label => Err(format!(
+            "refusing to start: the AppArmor profile linuxhello-agent does not enforce this process (its label is {:?})",
+            label.as_deref().map_or("unknown", |l| l.trim_end_matches(['\n', '\0']))
+        )),
+    }
+}
+
 fn main() -> ExitCode {
+    if let Err(reason) = guard() {
+        eprintln!("linuxhello-agent: {reason}");
+        return ExitCode::FAILURE;
+    }
     match futures_lite::future::block_on(run()) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("linuxhello-agent: {error}");
             ExitCode::FAILURE
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::enforced;
+
+    #[test]
+    fn only_the_agents_profile_in_enforce_mode_counts() {
+        assert!(enforced("linuxhello-agent (enforce)\n"));
+        assert!(enforced("linuxhello-agent (enforce)"));
+        assert!(enforced("linuxhello-agent//&unconfined (enforce)\n"));
+        assert!(enforced("unconfined//&linuxhello-agent (enforce)\n"));
+        for label in [
+            "",
+            "unconfined",
+            "unconfined\n",
+            "linuxhello-agent (complain)\n",
+            "linuxhello-agent (kill)\n",
+            "linuxhello-agent//howdy (enforce)\n",
+            "linuxhello-tpm-provider (enforce)\n",
+            "linuxhello-agent (enforce) extra",
+            "linuxhello-agent//&unconfined (mixed)\n",
+            "linuxhello-agent//&other (enforce)\n",
+            "unconfined//&unconfined (enforce)\n",
+            "linuxhello-agent//&linuxhello-agent//howdy (enforce)\n",
+        ] {
+            assert!(!enforced(label), "{label:?}");
         }
     }
 }
