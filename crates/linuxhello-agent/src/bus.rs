@@ -8,7 +8,7 @@
 //! names; the Agent emits no broadcast signal.
 //!
 //! The members are the Rust method names in PascalCase: `OpenPrompt`, `ReportState`, `GetState`,
-//! `Subscribe`, `ClosePrompt`, `GetCapabilities`, `GetEffectivePolicy`, `GetPinRules`, `GetStatus`, `GetStatusDetails`, `ExpectPin`, and the signals `MethodsAvailable`, `ActiveMethods`, `State` and
+//! `Subscribe`, `ClosePrompt`, `GetCapabilities`, `GetEffectivePolicy`, `GetPinRules`, `GetStatus`, `GetStatusDetails`, `GetPromptStatus`, `ExpectPin`, and the signals `MethodsAvailable`, `ActiveMethods`, `State` and
 //! `Result` of `linuxhello_dbus::SIGNALS`. A refusal is a D-Bus error of the closed set
 //! `linuxhello_dbus::ERRORS` under `io.github.LinuxHello.Error` ([`AgentError`]): `Denied`,
 //! `LimitReached`, `InvalidArgument`, `InvalidPolicy`, `Unavailable` or `Damaged`.
@@ -824,6 +824,21 @@ impl AgentService {
     ) -> Result<Vec<(String, String, String)>, AgentError> {
         let caller = caller_of(connection, header.sender()).await;
         self.api.get_status(caller).map_err(to_bus)
+    }
+
+    /// Returns the conditions of the prompt's user that may be shown at the prompt in `context`,
+    /// to the connection that opened it (ADR-0024 amendment of 2026-11-21).
+    async fn get_prompt_status(
+        &self,
+        prompt_id: &str,
+        context: &str,
+        #[zbus(header)] header: Header<'_>,
+        #[zbus(connection)] connection: &Connection,
+    ) -> Result<Vec<(String, String, String)>, AgentError> {
+        let caller = caller_of(connection, header.sender()).await;
+        self.api
+            .get_prompt_status(caller, prompt_id, context)
+            .map_err(to_bus)
     }
 
     /// Returns the same conditions with the loader's detail; only root may call it.

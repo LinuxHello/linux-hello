@@ -741,6 +741,34 @@ fn a_user_and_root_get_their_status_over_the_bus() {
     });
 }
 
+#[test]
+fn the_prompts_opener_gets_its_status_over_the_bus_and_nobody_else_does() {
+    let daemon = Daemon::start();
+    let tmp = private_tempdir();
+    let store = UserPolicyStore::new(tmp.path());
+    run(async {
+        let _service = serve_with(
+            Builder::address(daemon.address.as_str()),
+            Config::new(vec![]),
+            Some(store),
+        )
+        .await
+        .expect("serve the Agent");
+        let (owner, other) = (connect(&daemon).await, connect(&daemon).await);
+        let id = pid("p1");
+        call(&owner, "OpenPrompt", &(id.as_str(), i64::from(my_uid())))
+            .await
+            .expect("open the prompt");
+        let reply = call(&owner, "GetPromptStatus", &(id.as_str(), "login"))
+            .await
+            .expect("the prompt's status");
+        let status: Vec<(String, String, String)> = reply.body().deserialize().expect("the reply");
+        assert!(status.is_empty(), "nothing is wrong: {status:?}");
+        let refused = call(&other, "GetPromptStatus", &(id.as_str(), "login")).await;
+        assert!(is_error(&refused, "io.github.LinuxHello.Error.Denied"));
+    });
+}
+
 /// Whether the test runs as root, whose uid the bus gives the Agent.
 fn is_root() -> bool {
     std::fs::read_to_string("/proc/self/status")

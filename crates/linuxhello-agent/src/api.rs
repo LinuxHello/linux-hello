@@ -872,8 +872,77 @@ impl Api {
         self.audited(&caller, result)
     }
 
+    /// The conditions of the user of a sign-in prompt, each as `(code, severity, sentence)`, for
+    /// the program that opened the prompt (`GetPromptStatus`, ADR-0024 amendment of 2026-11-21).
+    /// Before the prompt's result is a success, only what explains why Linux Hello may fail to
+    /// sign the person in: `policy-pin-only`, `context-unsatisfiable` for `context` alone,
+    /// `pin-lock-damaged` and `tpm-cleared`; after a success also `pin-expires-soon` and
+    /// `pin-expired` (`prompt_status_before_sign_in_says_only_why_it_may_fail`,
+    /// `prompt_status_tells_the_expiry_only_after_success`).
+    ///
+    /// # Errors
+    ///
+    /// [`ApiError::Denied`] without a caller uid or connection name, for a prompt that is not the
+    /// caller's, one that does not exist and one with no subject (one text for all,
+    /// `prompt_status_is_only_for_the_prompts_opener`); [`ApiError::InvalidArgument`] for a
+    /// malformed id or a context that is not one of the four; [`ApiError::Unavailable`] without a
+    /// policy store.
+    pub fn get_prompt_status(
+        &self,
+        caller: Caller,
+        prompt_id: &str,
+        context: &str,
+    ) -> Result<Vec<(String, String, String)>, ApiError> {
+        let result = self.prompt_status_unaudited(&caller, prompt_id, context);
+        self.audited(&caller, result)
+    }
+
+    /// The work of [`Api::get_prompt_status`], without the audit record.
+    fn prompt_status_unaudited(
+        &self,
+        caller: &Caller,
+        prompt_id: &str,
+        context: &str,
+    ) -> Result<Vec<(String, String, String)>, ApiError> {
+        use linuxhello_dbus::status::{
+            context_unsatisfiable_on_the_bus, PIN_EXPIRED, PIN_EXPIRES_SOON, PIN_LOCK_DAMAGED,
+            POLICY_PIN_ONLY, TPM_CLEARED,
+        };
+        let uid = caller.uid.ok_or(ApiError::Denied)?;
+        let prompt = parse_prompt(prompt_id)?;
+        if !linuxhello_dbus::status::CONTEXTS.contains(&context) {
+            return Err(ApiError::InvalidArgument);
+        }
+        let peer = Peer(caller.peer.ok_or(ApiError::Denied)?.as_str().to_string());
+        let subject = self
+            .store
+            .subject_of(uid, &prompt, Some(&peer))?
+            .ok_or(ApiError::Denied)?;
+        let signed_in = self.store.get(uid, &prompt).is_ok_and(|snapshot| {
+            snapshot.result.map(|outcome| outcome.result) == Some(PromptResult::Success)
+        });
+        let this_context = context_unsatisfiable_on_the_bus(context).0;
+        let shown = |code: &str| {
+            [POLICY_PIN_ONLY, PIN_LOCK_DAMAGED, TPM_CLEARED].contains(&code)
+                || code == this_context
+                || (signed_in && [PIN_EXPIRES_SOON, PIN_EXPIRED].contains(&code))
+        };
+        Ok(self
+            .status_items(subject)?
+            .into_iter()
+            .filter(|item| shown(&item.code))
+            .map(|c| (c.code, c.severity.as_wire().to_string(), c.sentence))
+            .collect())
+    }
+
     /// The work of [`Api::get_status`], with the detail kept.
     fn status_unaudited(&self, caller: &Caller) -> Result<Vec<StatusItem>, ApiError> {
+        let uid = caller.uid.ok_or(ApiError::Denied)?;
+        self.status_items(uid)
+    }
+
+    /// Every condition that affects user `uid`, with the detail kept.
+    fn status_items(&self, uid: u32) -> Result<Vec<StatusItem>, ApiError> {
         use crate::pinrecord::Expiry;
         use linuxhello_dbus::status::{
             context_unsatisfiable_on_the_bus, pin_expires_soon_sentence, pin_locked_sentence,
@@ -881,7 +950,6 @@ impl Api {
             PIN_LOCKED, PIN_LOCK_DAMAGED, PIN_LOCK_DAMAGED_SENTENCE, POLICY_PIN_ONLY,
             POLICY_PIN_ONLY_SENTENCE, TPM_CLEARED, TPM_CLEARED_SENTENCE, TPM_LIMIT_LOW,
         };
-        let uid = caller.uid.ok_or(ApiError::Denied)?;
         let policy = self.policy_of(uid)?;
         let (layer, reason) = match &policy {
             Policy::Effective(effective) => (&effective.layer, None),
@@ -1851,6 +1919,206 @@ mod tests {
         // A PIN set on day 0 would have expired long ago under a 30-day policy.
         assert!(expiry_status(None, Some(0)).is_empty());
         assert!(expiry_status(Some("[pin]\nexpiry_days = 30\n"), None).is_empty());
+    }
+
+    /// A probe with a fixed answer for the key and for the time the PIN was set.
+    struct Probe {
+        loads: Option<bool>,
+        at: Option<u64>,
+    }
+
+    impl crate::methods::pin::KeyProbe for Probe {
+        fn key_loads(&self, _uid: u32) -> Option<bool> {
+            self.loads
+        }
+        fn pin_changed_at(&self, _uid: u32) -> Option<u64> {
+            self.at
+        }
+    }
+
+    /// An API whose admin policy is `admin_text`, with `probe`, at day 100; and its directory.
+    fn prompt_api(admin_text: &str, probe: Probe) -> (Api, TempDir) {
+        let tmp = crate::private_tempdir();
+        let (store, admin) = store_with_admin(&tmp);
+        crate::write_admin_file(admin.join("prompt.toml"), admin_text).unwrap();
+        let api = Api::new(Config::new(vec![]))
+            .with_user_policy_store(Some(store))
+            .with_key_probe(Some(std::sync::Arc::new(probe)))
+            .with_clock(at_day_100);
+        (api, tmp)
+    }
+
+    /// The codes of `GetPromptStatus` for `caller`.
+    fn prompt_codes(api: &Api, caller: Caller, id: &str, context: &str) -> Vec<String> {
+        api.get_prompt_status(caller, id, context)
+            .unwrap()
+            .into_iter()
+            .map(|(code, _, _)| code)
+            .collect()
+    }
+
+    /// Strict for sudo, PINs expire after 30 days.
+    const STRICT_AND_EXPIRING: &str =
+        "[context.sudo]\nmethods = [\"pin\"]\nfactors = 2\n[pin]\nexpiry_days = 30\n";
+
+    #[test]
+    fn prompt_status_answers_for_the_prompts_user() {
+        let tmp = crate::private_tempdir();
+        let (store, _admin) = store_with_admin(&tmp);
+        // User 1001's own layer is damaged, so 1001 is PIN-only; user 1000's is fine.
+        let damaged = store.path(1001);
+        crate::private_dirs(damaged.parent().unwrap());
+        std::fs::write(&damaged, "not a policy").unwrap();
+        let mut api = Api::new(Config::new(vec![])).with_user_policy_store(Some(store));
+        let (for_1001, for_1000) = (prompt("p1"), prompt("p2"));
+        api.open_prompt_from(on_peer(0, ":1.1"), ":1.1", &for_1001, Some(1001))
+            .unwrap();
+        api.open_prompt_from(on_peer(0, ":1.1"), ":1.1", &for_1000, Some(1000))
+            .unwrap();
+        let root = || on_peer(0, ":1.1");
+        assert_eq!(
+            prompt_codes(&api, root(), &for_1001, "login"),
+            vec!["policy-pin-only"]
+        );
+        assert!(prompt_codes(&api, root(), &for_1000, "login").is_empty());
+        // The caller is root, whose own status is not what the prompt shows.
+        assert!(api.get_status(status_caller(0)).unwrap().is_empty());
+    }
+
+    #[test]
+    fn prompt_status_is_only_for_the_prompts_opener() {
+        let (mut api, _tmp) = prompt_api(
+            STRICT_AND_EXPIRING,
+            Probe {
+                loads: Some(false),
+                at: None,
+            },
+        );
+        let id = prompt("p1");
+        api.open_prompt_from(on_peer(0, ":1.1"), ":1.1", &id, Some(1000))
+            .unwrap();
+        assert!(!prompt_codes(&api, on_peer(0, ":1.1"), &id, "login").is_empty());
+        for stranger in [
+            on_peer(0, ":1.2"),
+            on_peer(1000, ":1.1"),
+            on_peer(1001, ":1.3"),
+        ] {
+            assert_eq!(
+                api.get_prompt_status(stranger, &id, "login"),
+                Err(ApiError::Denied)
+            );
+        }
+        let anonymous = Caller {
+            uid: Some(0),
+            peer: None,
+        };
+        assert_eq!(
+            api.get_prompt_status(anonymous, &id, "login"),
+            Err(ApiError::Denied)
+        );
+        let nobody = prompt("p2");
+        api.open_prompt_from(on_peer(0, ":1.1"), ":1.1", &nobody, None)
+            .unwrap();
+        assert_eq!(
+            api.get_prompt_status(on_peer(0, ":1.1"), &nobody, "login"),
+            Err(ApiError::Denied)
+        );
+        assert_eq!(
+            api.get_prompt_status(on_peer(0, ":1.1"), &prompt("p3"), "login"),
+            Err(ApiError::Denied),
+            "a prompt that does not exist"
+        );
+        assert_eq!(
+            api.get_prompt_status(on_peer(0, ":1.1"), &id, "desktop"),
+            Err(ApiError::InvalidArgument)
+        );
+        assert_eq!(
+            api.get_prompt_status(on_peer(0, ":1.1"), "not an id", "login"),
+            Err(ApiError::InvalidArgument)
+        );
+    }
+
+    #[test]
+    fn prompt_status_before_sign_in_says_only_why_it_may_fail() {
+        // The PIN expired on day 100 and the TPM lost the key; a lowered TPM limit would be
+        // shown to every user by GetStatus.
+        let (mut api, _tmp) = prompt_api(
+            STRICT_AND_EXPIRING,
+            Probe {
+                loads: Some(false),
+                at: Some(70 * 86_400),
+            },
+        );
+        let id = prompt("p1");
+        api.open_prompt_from(on_peer(0, ":1.1"), ":1.1", &id, Some(1000))
+            .unwrap();
+        let all: Vec<String> = api
+            .get_status(status_caller(1000))
+            .unwrap()
+            .into_iter()
+            .map(|(c, _, _)| c)
+            .collect();
+        assert!(all.contains(&"pin-expired".to_string()), "{all:?}");
+        assert_eq!(
+            prompt_codes(&api, on_peer(0, ":1.1"), &id, "login"),
+            vec!["tpm-cleared"]
+        );
+    }
+
+    #[test]
+    fn prompt_status_names_only_this_context() {
+        let (mut api, _tmp) = prompt_api(
+            STRICT_AND_EXPIRING,
+            Probe {
+                loads: None,
+                at: None,
+            },
+        );
+        let id = prompt("p1");
+        api.open_prompt_from(on_peer(0, ":1.1"), ":1.1", &id, Some(1000))
+            .unwrap();
+        assert_eq!(
+            prompt_codes(&api, on_peer(0, ":1.1"), &id, "sudo"),
+            vec!["context-unsatisfiable: sudo"]
+        );
+        assert!(prompt_codes(&api, on_peer(0, ":1.1"), &id, "unlock").is_empty());
+    }
+
+    #[test]
+    fn prompt_status_tells_the_expiry_only_after_success() {
+        let (mut api, _tmp) = prompt_api(
+            STRICT_AND_EXPIRING,
+            Probe {
+                loads: Some(true),
+                at: Some(70 * 86_400),
+            },
+        );
+        let (ok, failed) = (prompt("p1"), prompt("p2"));
+        for id in [&ok, &failed] {
+            api.open_prompt_from(on_peer(0, ":1.1"), ":1.1", id, Some(1000))
+                .unwrap();
+            assert!(prompt_codes(&api, on_peer(0, ":1.1"), id, "login").is_empty());
+        }
+        let key = |id: &str| PromptId::parse(id).unwrap();
+        api.agent_report(
+            0,
+            &key(&ok),
+            Update::Result(Outcome::new(PromptResult::Success)),
+        );
+        api.agent_report(
+            0,
+            &key(&failed),
+            Update::Result(Outcome::new(PromptResult::Failure)),
+        );
+        let after = api
+            .get_prompt_status(on_peer(0, ":1.1"), &ok, "login")
+            .unwrap();
+        assert_eq!(after.len(), 1, "{after:?}");
+        assert_eq!(
+            (after[0].0.as_str(), after[0].1.as_str()),
+            ("pin-expired", "warning")
+        );
+        assert!(prompt_codes(&api, on_peer(0, ":1.1"), &failed, "login").is_empty());
     }
 
     #[test]
