@@ -41,6 +41,8 @@ Type your PIN and press Enter, or touch the sensor and then press Enter on an em
 
 The account password always stays available: whenever Linux Hello cannot answer (the Agent is stopped, no PIN is set, the TPM is locked), the module says "unavailable" and `sudo` asks for the password. A wrong PIN is different: it counts as a failed attempt and does not fall through to the password, so that guessing the PIN and then the password are not one attempt. `sudo` itself gives you three attempts and then says `sudo: maximum 3 incorrect authentication attempts`. After too many wrong PINs Linux Hello locks for some minutes; your password still works then. `sudo` hides the messages a PAM module shows (its `pam_silent` setting is on by default), so it says only "Authentication failed" after a wrong PIN, and `linuxhello-ctl status` tells you about a lockout.
 
+Where a screen does show a module's messages, as the lock screen and a console login do, Linux Hello first says what may stop it from signing you in. For example, "The TPM no longer holds the key that your PIN opens…" or "login cannot be unlocked with the configured methods." appear above the question. After you sign in, it says whether your PIN expires soon or has expired. In `sudo` these lines are hidden like the others; `linuxhello-ctl status` shows the same sentences.
+
 ## Before you install
 
 You need Ubuntu 24.04 or 26.04 with AppArmor (Ubuntu's default), a TPM 2.0 chip (`ls /dev/tpmrm0` shows it), Rust with the static target (`rustup target add x86_64-unknown-linux-musl`), and the TSS2 runtime libraries the TPM provider links to (the installer names any that are missing).
