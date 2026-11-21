@@ -11,6 +11,9 @@
 //! change cannot go back to a former PIN (ADR-0021, amendment of 2026-11-20). An entry is the PIN
 //! stretched under a salt of its own, so it opens nothing.
 //!
+//! The record also keeps when the PIN was set, so that a policy can ask for it to be changed after a
+//! number of days (ADR-0021, amendment of 2026-11-21).
+//!
 //! Fail closed: a missing file means the user has no PIN yet; a file that exists and cannot be
 //! trusted (not a regular file, readable by others, owned by someone else, too large, not TOML, a
 //! version or a salt that is not ours, stretching parameters outside the accepted range) is
@@ -23,6 +26,7 @@ use std::fs;
 use std::io::{self, Write};
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use linuxhello_tpm_provider::wire::Blobs;
 use serde::{Deserialize, Serialize};
@@ -41,6 +45,23 @@ const MAX_FILE_BYTES: u64 = 16 * 1024;
 /// The most earlier PINs a record remembers, whatever the policy says (ADR-0021, amendment of
 /// 2026-11-20, point 3).
 pub const MAX_HISTORY: usize = 24;
+
+/// The number of days before expiry that the Agent starts reminding the user.
+pub const EXPIRY_REMINDER_DAYS: u64 = 14;
+
+/// The result of checking a PIN's expiry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Expiry {
+    /// The PIN is current.
+    Current,
+    /// The PIN is still valid, but will expire in `days_left` days.
+    ExpiresSoon {
+        /// The number of days remaining.
+        days_left: u64,
+    },
+    /// The PIN has expired.
+    Expired,
+}
 
 /// A fingerprint of a PIN that was replaced: the Argon2id result of the PIN under a salt of its
 /// own, never the salt of a root key, so it is not the authorisation value of any key.
@@ -63,6 +84,8 @@ pub struct PinRecord {
     pub salt: [u8; SALT_BYTES],
     /// The blobs of the root key.
     pub blobs: Blobs,
+    /// The Unix time of the last `SetPin` or `ChangePin`.
+    pub changed_at: u64,
     /// Fingerprints of the PINs that were replaced, newest first; at most [`MAX_HISTORY`].
     pub history: Vec<HistoryEntry>,
 }
@@ -92,6 +115,9 @@ struct FileText {
     public: String,
     /// The private blob, in hexadecimal.
     private: String,
+    /// The Unix time of the last `SetPin` or `ChangePin`.
+    #[serde(default)]
+    changed_at: Option<u64>,
     /// The history, newest first; a record written before it existed has none.
     #[serde(default)]
     history: Vec<HistoryText>,
@@ -195,10 +221,21 @@ impl PinRecordStore {
         {
             return Err(RecordError::Untrusted);
         }
+        let changed_at = match parsed.changed_at {
+            Some(t) => t,
+            None => {
+                let mtime = meta.modified().map_err(|_| RecordError::Untrusted)?;
+                let seconds = mtime
+                    .duration_since(UNIX_EPOCH)
+                    .map_err(|_| RecordError::Untrusted)?;
+                seconds.as_secs()
+            }
+        };
         Ok(Some(PinRecord {
             params,
             salt,
             blobs: Blobs { public, private },
+            changed_at,
             history,
         }))
     }
@@ -224,6 +261,7 @@ impl PinRecordStore {
             salt: hex(&record.salt),
             public: hex(&record.blobs.public),
             private: hex(&record.blobs.private),
+            changed_at: Some(record.changed_at),
             history: record
                 .history
                 .iter()
@@ -274,6 +312,40 @@ fn unhex(text: &str) -> Option<Vec<u8>> {
         .step_by(2)
         .map(|i| u8::from_str_radix(&text[i..i + 2], 16).ok())
         .collect()
+}
+
+/// The Unix time of the last `SetPin` or `ChangePin`.
+///
+/// Returns 0 if the clock is before 1970.
+pub fn now_unix() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// Determines if a PIN is current, expires soon, or has expired.
+///
+/// A PIN expires `expiry_days` days after it was set or changed.
+/// A time in the future counts as now.
+pub fn expiry(changed_at: u64, now: u64, expiry_days: Option<u32>) -> Expiry {
+    let Some(days) = expiry_days else {
+        return Expiry::Current;
+    };
+    let start = changed_at.min(now);
+    let deadline = start.saturating_add(u64::from(days) * 86_400);
+    if now >= deadline {
+        Expiry::Expired
+    } else {
+        let left = deadline - now;
+        if left <= EXPIRY_REMINDER_DAYS * 86_400 {
+            Expiry::ExpiresSoon {
+                days_left: left.div_ceil(86_400),
+            }
+        } else {
+            Expiry::Current
+        }
+    }
 }
 
 #[cfg(test)]
