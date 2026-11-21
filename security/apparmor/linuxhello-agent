@@ -17,6 +17,12 @@ profile linuxhello-agent /usr/libexec/linuxhello/linuxhello-agent flags=(attach_
   # The watchdog: one datagram to the service manager's notification socket (linuxhello-agent
   # notify.rs); nothing else uses a datagram socket.
   network unix dgram,
+  # Unix sockets in the abstract namespace have no file and so no file rule, and any process can
+  # listen on any such name. The Agent never connects to one and never listens on one. (Its own
+  # bus socket gets an automatic abstract address from the kernel, because it passes credentials,
+  # so binding one is not denied.)
+  deny unix (connect, send) peer=(addr=@**),
+  deny unix (listen) addr=@**,
   /run/systemd/notify w,
   /run/dbus/system_bus_socket rw,
   dbus bind bus=system name=io.github.LinuxHello.Agent1,
@@ -87,6 +93,9 @@ profile linuxhello-agent /usr/libexec/linuxhello/linuxhello-agent flags=(attach_
   # The admin policy layer, read-only.
   /etc/linuxhello/policy.d/ r,
   /etc/linuxhello/policy.d/** r,
+
+  # Its own confinement, which the Agent checks when it starts (P-24).
+  @{PROC}/@{pid}/attr/{,apparmor/}current r,
 
   # No tracing of or by the Agent, and no reading of other processes' memory.
   deny ptrace,

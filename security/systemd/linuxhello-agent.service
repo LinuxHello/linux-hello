@@ -40,7 +40,14 @@ ReadOnlyPaths=/etc/linuxhello
 # Sandbox. The only device is the TPM resource manager; there is no network but the system bus.
 NoNewPrivileges=yes
 # No core dump of a process that holds a PIN or a stretched key: a core file would write it to disk.
+# The Agent also marks itself not dumpable when it starts (PR_SET_DUMPABLE), which keeps other
+# processes of its user from reading its memory too.
 LimitCORE=0
+# A flood of calls must not exhaust the machine. The memory covers Howdy, a Python child that loads
+# face models; the tasks cover its threads.
+MemoryMax=1G
+TasksMax=128
+LimitNOFILE=1024
 CapabilityBoundingSet=
 AmbientCapabilities=
 ProtectSystem=strict
@@ -49,6 +56,11 @@ PrivateTmp=yes
 PrivateNetwork=yes
 IPAddressDeny=any
 RemoveIPC=yes
+PrivateIPC=yes
+KeyringMode=private
+SocketBindDeny=any
+# Not RestrictFileSystems=: it needs the BPF security module, which Ubuntu does not enable, and
+# without it systemd refuses to start the unit at all (seen on Ubuntu 26.04: status 244/BPF).
 RestrictAddressFamilies=AF_UNIX
 DevicePolicy=closed
 DeviceAllow=/dev/tpmrm0 rw
