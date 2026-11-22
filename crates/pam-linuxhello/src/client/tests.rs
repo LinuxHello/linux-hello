@@ -692,3 +692,83 @@ fn a_silent_reader_without_a_pin_typed_is_still_unavailable() {
         Code::Unavailable
     );
 }
+
+#[test]
+fn both_sensor_and_camera_are_named() {
+    let mut agent = Script {
+        signals: [active(&["fingerprint", "face"]), result("success", "", 0)].into(),
+        ..Script::default()
+    };
+    let mut person = Person::default();
+    assert_eq!(
+        go(&mut agent, &mut Socket::default(), &mut person),
+        Code::Success
+    );
+    assert_eq!(
+        person.shown,
+        ["info: Touch the fingerprint sensor or look at the camera."]
+    );
+}
+
+#[test]
+fn an_unreachable_agent_is_announced() {
+    // The Agent refuses to open the prompt.
+    let mut agent = Script {
+        refuse: vec!["OpenPrompt"],
+        ..Script::default()
+    };
+    let mut person = Person::default();
+    assert_eq!(
+        go(&mut agent, &mut Socket::default(), &mut person),
+        Code::Unavailable
+    );
+    assert_eq!(person.shown, [format!("info: {UNAVAILABLE_LINE}")]);
+
+    // A call fails half way.
+    let mut agent = Script {
+        refuse: vec!["Authenticate"],
+        ..Script::default()
+    };
+    let mut person = Person::default();
+    assert_eq!(
+        go(&mut agent, &mut Socket::default(), &mut person),
+        Code::Unavailable
+    );
+    assert_eq!(person.shown, [format!("info: {UNAVAILABLE_LINE}")]);
+
+    // No bus at all.
+    let dir = tempfile::tempdir().unwrap();
+    let request = Request {
+        context: Some("sudo"),
+        service: "sudo",
+        terminal: "/dev/pts/1",
+        uid: Some(1000),
+    };
+    let mut person = Person::default();
+    let code = authenticate_at(
+        &dir.path().join("none"),
+        &dir.path().join("pin"),
+        &FAST,
+        &request,
+        &mut person,
+    );
+    assert_eq!(code, Code::Unavailable);
+    assert_eq!(person.shown, [format!("info: {UNAVAILABLE_LINE}")]);
+}
+
+#[test]
+fn an_unavailable_answer_the_person_chose_is_not_announced() {
+    let mut agent = Script {
+        signals: [active(&["pin"])].into(),
+        ..Script::default()
+    };
+    let mut person = Person {
+        answers: [Some("")].into(),
+        ..Person::default()
+    };
+    assert_eq!(
+        go(&mut agent, &mut Socket::default(), &mut person),
+        Code::Unavailable
+    );
+    assert!(person.shown.is_empty());
+}
