@@ -15,7 +15,7 @@ use linuxhello_dbus::{PromptReason, PromptResult};
 use zeroize::Zeroizing;
 
 use super::tpm::EnrolError;
-use super::{PinInbox, Waiting};
+use super::{PinInbox, PinVerifier, Waiting};
 use crate::orchestrator::Cancel;
 use crate::pinlock::service::PinLockService;
 use crate::pinlock::PinLockError;
@@ -44,6 +44,17 @@ pub trait PinEnrolment: Send + Sync {
     ///
     /// [`EnrolError`]; a wrong `old` changes nothing.
     fn change(&self, uid: u32, old: &[u8], new: &[u8], history: u32) -> Result<(), EnrolError>;
+
+    /// Deletes the PIN record of `uid` and the wrapped root key in it, for the destructive reset
+    /// of ADR-0003. Deleting a record that is not there succeeds. A stand-in that cannot do it
+    /// refuses.
+    ///
+    /// # Errors
+    ///
+    /// [`EnrolError::Record`] when the record could not be deleted.
+    fn forget(&self, _uid: u32) -> Result<(), EnrolError> {
+        Err(EnrolError::Record)
+    }
 }
 
 /// The registration that makes the PIN socket hand `uid`'s PINs to a job. Made before the call
@@ -191,6 +202,61 @@ pub fn run_change(job: &Job<'_>, wait: &PinWait, cancel: &Cancel) -> Outcome {
             Err(_) => failure(PromptReason::None),
         },
         Err(_) => failure(PromptReason::None),
+    }
+}
+
+/// What a check of the current PIN needs, before a change that adds a way in, such as enrolling a
+/// finger (ADR-0027, point 2).
+pub struct CheckJob<'a> {
+    /// The user whose PIN it is.
+    pub subject: u32,
+    /// How long the PIN may take to arrive.
+    pub wait: Duration,
+    /// The counter of wrong PINs.
+    pub lock: &'a PinLockService,
+    /// What checks the PIN through the TPM.
+    pub verifier: &'a dyn PinVerifier,
+    /// The time in seconds since the Unix epoch.
+    pub clock: fn() -> u64,
+}
+
+/// Waits for the subject's current PIN and checks it, counted by the lock like a sign-in PIN.
+/// `Ok` only for the right PIN; otherwise the outcome the prompt ends with
+/// (`enrolment_asks_for_the_pin_first`, `a_wrong_pin_starts_no_enrolment_and_counts`).
+///
+/// # Errors
+///
+/// The outcome of a lockout, a PIN that did not come in time, a wrong PIN, or a PIN that could
+/// not be checked.
+pub fn run_check(job: &CheckJob<'_>, wait: &PinWait, cancel: &Cancel) -> Result<(), Outcome> {
+    let now = (job.clock)();
+    match job.lock.check(job.subject, now) {
+        Ok(()) => {}
+        Err(PinLockError::Locked { retry_after_secs }) => {
+            return Err(Outcome {
+                retry_after: u32::try_from(retry_after_secs).unwrap_or(u32::MAX),
+                ..Outcome::new(PromptResult::LockedOut)
+            });
+        }
+        Err(PinLockError::BadRecords) => return Err(failure(PromptReason::None)),
+    }
+    let Some(pin) = wait.next(cancel, job.wait) else {
+        return Err(failure(PromptReason::Timeout));
+    };
+    match job.verifier.verify(job.subject, &pin) {
+        Ok(true) => job
+            .lock
+            .record_pin_success(job.subject)
+            .map_err(|_| failure(PromptReason::None)),
+        Ok(false) => Err(match job.lock.record_failure(job.subject, now) {
+            Ok(0) => failure(PromptReason::NotRecognised),
+            Ok(seconds) => Outcome {
+                retry_after: u32::try_from(seconds).unwrap_or(u32::MAX),
+                ..Outcome::new(PromptResult::LockedOut)
+            },
+            Err(_) => failure(PromptReason::None),
+        }),
+        Err(_) => Err(failure(PromptReason::None)),
     }
 }
 

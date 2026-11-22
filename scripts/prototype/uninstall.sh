@@ -51,6 +51,7 @@ sudo rm -f /usr/lib/x86_64-linux-gnu/security/pam_linuxhello.so \
   /usr/share/dbus-1/system-services/io.github.LinuxHello.Agent1.service \
   /etc/apparmor.d/linuxhello-agent /etc/apparmor.d/linuxhello-tpm-provider \
   /etc/polkit-1/rules.d/50-linuxhello-agent.rules \
+  /usr/share/polkit-1/actions/io.github.LinuxHello.policy \
   /usr/lib/systemd/system/linuxhello-agent.service /usr/lib/systemd/system/linuxhello-tpm-provider.service
 sudo rmdir /usr/libexec/linuxhello 2>/dev/null || true
 sudo systemctl daemon-reload

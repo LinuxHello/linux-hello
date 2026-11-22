@@ -277,3 +277,64 @@ fn a_pin_without_the_required_digit_is_refused_before_the_tpm_is_asked() {
     assert_eq!(outcome.result, PromptResult::Failure);
     assert_eq!(*s.memory.calls.lock().unwrap(), 0);
 }
+
+/// A verifier that knows one PIN of user 1000.
+struct Knows(&'static [u8]);
+
+impl PinVerifier for Knows {
+    fn available(&self, _uid: u32) -> bool {
+        true
+    }
+    fn verify(&self, uid: u32, pin: &[u8]) -> Result<bool, crate::methods::pin::VerifyError> {
+        Ok(uid == 1000 && pin == self.0)
+    }
+}
+
+impl Setup {
+    fn check(&self, verifier: &dyn PinVerifier) -> Result<(), Outcome> {
+        let job = CheckJob {
+            subject: 1000,
+            wait: Duration::from_millis(300),
+            lock: &self.lock,
+            verifier,
+            clock: at_1000,
+        };
+        run_check(&job, &self.wait, &Cancel::default())
+    }
+}
+
+#[test]
+fn enrolment_asks_for_the_pin_first() {
+    let s = setup();
+    let verifier = Knows(b"2468");
+    // No PIN sent: the check ends without success.
+    assert_eq!(
+        s.check(&verifier).unwrap_err().reason,
+        PromptReason::Timeout
+    );
+    s.send(b"2468");
+    assert_eq!(s.check(&verifier), Ok(()));
+}
+
+#[test]
+fn a_wrong_pin_starts_no_enrolment_and_counts() {
+    let s = setup();
+    let verifier = Knows(b"2468");
+    s.send(b"1111");
+    assert_eq!(
+        s.check(&verifier).unwrap_err().reason,
+        PromptReason::NotRecognised
+    );
+    // The second wrong PIN reaches the limit of two: the user is locked out, and a right PIN
+    // is then refused without being checked.
+    s.send(b"2222");
+    assert_eq!(
+        s.check(&verifier).unwrap_err().result,
+        PromptResult::LockedOut
+    );
+    s.send(b"2468");
+    assert_eq!(
+        s.check(&verifier).unwrap_err().result,
+        PromptResult::LockedOut
+    );
+}

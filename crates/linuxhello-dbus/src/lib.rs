@@ -48,17 +48,25 @@ pub const CAPABILITIES: &[&str] = &[
     "Authenticate",
     "ChangePin",
     "Closed",
+    "DeleteFingerprint",
+    "EnrolFingerprint",
+    "EnrolProgress",
     "ExpectPin",
     "GetCapabilities",
     "GetEffectivePolicy",
     "GetPinRules",
+    "GetPinState",
     "GetPromptStatus",
     "GetStatus",
     "GetStatusDetails",
     "GetUserPolicy",
+    "ListFingerprints",
+    "PromptStarted",
+    "Reset",
     "SetPin",
     "SetUserPolicy",
     "Unsubscribe",
+    "WatchPrompts",
 ];
 
 /// What `GetStatus` reports (ADR-0024): conditions with a code from a closed set, a severity and
@@ -338,17 +346,27 @@ pub enum PromptReason {
     Cancelled,
     /// Nobody answered in time.
     Timeout,
+    /// An enrolment found the finger already enrolled, for this user or another (ADR-0027,
+    /// point 4).
+    Duplicate,
+    /// The reader has no room for another finger.
+    StorageFull,
+    /// The reader went away during an enrolment.
+    DeviceGone,
 }
 
 impl PromptReason {
     /// Every reason, in wire order.
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 9] = [
         Self::None,
         Self::TooDark,
         Self::NoFace,
         Self::NotRecognised,
         Self::Cancelled,
         Self::Timeout,
+        Self::Duplicate,
+        Self::StorageFull,
+        Self::DeviceGone,
     ];
 
     /// Returns the wire string representation of the reason.
@@ -360,12 +378,71 @@ impl PromptReason {
             Self::NotRecognised => "not-recognised",
             Self::Cancelled => "cancelled",
             Self::Timeout => "timeout",
+            Self::Duplicate => "duplicate",
+            Self::StorageFull => "storage-full",
+            Self::DeviceGone => "device-gone",
         }
     }
 
     /// Parses a reason from a wire string.
     pub fn from_wire(s: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|reason| reason.as_wire() == s)
+    }
+}
+
+/// A step of an enrolment of a finger or a face, as the `EnrolProgress` signal names it: a closed
+/// set, to which a new step is an additive change (ADR-0027, point 4). The end of an enrolment is
+/// never a step; it is the `Result` signal.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EnrolStep {
+    /// Touch the sensor, or look at the camera.
+    Waiting,
+    /// One touch or picture was taken.
+    Passed,
+    /// Touch again, the same way.
+    Retry,
+    /// The swipe was too short.
+    TooShort,
+    /// Put the finger in the middle of the sensor.
+    NotCentred,
+    /// Lift the finger and touch again.
+    Lift,
+    /// The camera sees too little.
+    TooDark,
+    /// The camera sees no face.
+    NoFace,
+}
+
+impl EnrolStep {
+    /// Every step, in wire order.
+    pub const ALL: [Self; 8] = [
+        Self::Waiting,
+        Self::Passed,
+        Self::Retry,
+        Self::TooShort,
+        Self::NotCentred,
+        Self::Lift,
+        Self::TooDark,
+        Self::NoFace,
+    ];
+
+    /// The wire word of the step.
+    pub const fn as_wire(self) -> &'static str {
+        match self {
+            Self::Waiting => "waiting",
+            Self::Passed => "passed",
+            Self::Retry => "retry",
+            Self::TooShort => "too-short",
+            Self::NotCentred => "not-centred",
+            Self::Lift => "lift",
+            Self::TooDark => "too-dark",
+            Self::NoFace => "no-face",
+        }
+    }
+
+    /// Parses a step from its wire word.
+    pub fn from_wire(s: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|step| step.as_wire() == s)
     }
 }
 
@@ -461,6 +538,20 @@ pub const SIGNALS: &[SignalSpec] = &[
         name: "Closed",
         delivery: Delivery::Unicast,
         args: &["prompt_id"],
+    },
+    // Sent by the Agent for each step of an enrolment, never reported by a client (ADR-0027,
+    // point 4).
+    SignalSpec {
+        name: "EnrolProgress",
+        delivery: Delivery::Unicast,
+        args: &["prompt_id", "step", "done", "needed"],
+    },
+    // Sent by the Agent to a watcher when a prompt it may read starts, never reported by a client
+    // (ADR-0014, amendment of 2026-11-22).
+    SignalSpec {
+        name: "PromptStarted",
+        delivery: Delivery::Unicast,
+        args: &["prompt_id", "context"],
     },
 ];
 
@@ -607,7 +698,10 @@ mod tests {
                 "no-face",
                 "not-recognised",
                 "cancelled",
-                "timeout"
+                "timeout",
+                "duplicate",
+                "storage-full",
+                "device-gone"
             ]
         );
         for reason in PromptReason::ALL {
@@ -615,6 +709,30 @@ mod tests {
         }
         assert_eq!(PromptReason::from_wire("TOO-DARK"), None);
         assert_eq!(PromptReason::from_wire("locked"), None);
+    }
+
+    #[test]
+    fn progress_steps_are_a_closed_set() {
+        use super::EnrolStep;
+        let words: Vec<&str> = EnrolStep::ALL.iter().map(|s| s.as_wire()).collect();
+        assert_eq!(
+            words,
+            [
+                "waiting",
+                "passed",
+                "retry",
+                "too-short",
+                "not-centred",
+                "lift",
+                "too-dark",
+                "no-face"
+            ]
+        );
+        for step in EnrolStep::ALL {
+            assert_eq!(EnrolStep::from_wire(step.as_wire()), Some(step));
+        }
+        assert_eq!(EnrolStep::from_wire("done"), None);
+        assert_eq!(EnrolStep::from_wire("Waiting"), None);
     }
 
     #[test]
@@ -663,20 +781,24 @@ mod tests {
 
     #[test]
     fn signals_carry_no_user_or_session_data() {
-        assert_eq!(SIGNALS.len(), 5);
+        assert_eq!(SIGNALS.len(), 7);
         let expected_names = [
             "MethodsAvailable",
             "ActiveMethods",
             "State",
             "Result",
             "Closed",
+            "EnrolProgress",
+            "PromptStarted",
         ];
-        let expected_args: [&[&str]; 5] = [
+        let expected_args: [&[&str]; 7] = [
             &["prompt_id", "methods"],
             &["prompt_id", "methods"],
             &["prompt_id", "state"],
             &["prompt_id", "result", "reason", "retry_after"],
             &["prompt_id"],
+            &["prompt_id", "step", "done", "needed"],
+            &["prompt_id", "context"],
         ];
 
         for (i, sig) in SIGNALS.iter().enumerate() {

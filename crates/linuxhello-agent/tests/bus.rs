@@ -396,7 +396,8 @@ fn pin_is_never_a_dbus_message_body() {
         // announces that the opener of a prompt is about to send one on the PIN socket; it carries
         // a prompt id and nothing secret (ADR-0021, amendment 2026-11-18); `SetPin` and `ChangePin`
         // start setting and changing the caller's PIN and carry a prompt id alone: the PINs go on
-        // the socket (ADR-0021, amendment 2026-11-20).
+        // the socket (ADR-0021, amendment 2026-11-20); `GetPinState` says whether the caller has a
+        // PIN and when it was set, never the PIN (ADR-0027, point 1).
         let names_only = {
             let mut text = xml.clone();
             while let (Some(start), Some(end)) = (text.find("<!--"), text.find("-->")) {
@@ -405,7 +406,15 @@ fn pin_is_never_a_dbus_message_body() {
             text
         };
         for name in names_only.split(['"', '\'']).skip(1).step_by(2) {
-            if ["GetPinRules", "ExpectPin", "SetPin", "ChangePin"].contains(&name) {
+            if [
+                "GetPinRules",
+                "GetPinState",
+                "ExpectPin",
+                "SetPin",
+                "ChangePin",
+            ]
+            .contains(&name)
+            {
                 continue;
             }
             for word in words_of(name) {
@@ -711,6 +720,16 @@ fn the_policy_readers_answer_over_the_bus() {
             reply.body().deserialize().expect("the reply");
         assert!(min >= 1 && max >= min);
         assert!(required.iter().all(|c| !disallowed.contains(c)));
+
+        // An Agent without a way to read PIN records says so with the closed error, and the
+        // method is on the bus with its name.
+        let error = call(&client, "GetPinState", &())
+            .await
+            .expect_err("no PIN records here");
+        assert!(
+            format!("{error:?}").contains("io.github.LinuxHello.Error.Unavailable"),
+            "{error:?}"
+        );
     });
 }
 
@@ -1197,4 +1216,44 @@ fn private_tempdir() -> tempfile::TempDir {
         .permissions(std::fs::Permissions::from_mode(0o700))
         .tempdir()
         .expect("a temporary directory")
+}
+
+#[test]
+fn a_watching_connection_hears_prompt_started_and_cannot_close_the_prompt() {
+    let daemon = Daemon::start();
+    let dir = private_tempdir();
+    run(async {
+        let _service = serve_fakes(
+            &daemon,
+            UserPolicyStore::new(dir.path()),
+            Some(50),
+            std::sync::Arc::default(),
+        )
+        .await;
+        let opener = connect(&daemon).await;
+        let screen = connect(&daemon).await;
+        call(&screen, "WatchPrompts", &()).await.expect("watch");
+        let mut started = signals(&screen, "PromptStarted").await;
+        let id = pid("watched");
+        call(&opener, "OpenPrompt", &(id.as_str(), i64::from(my_uid())))
+            .await
+            .expect("open the prompt");
+        call(&opener, "Authenticate", &(id.as_str(), "unlock"))
+            .await
+            .expect("authenticate");
+        let signal = next_within(&mut started, 3_000)
+            .await
+            .expect("a PromptStarted signal");
+        let (prompt, context): (String, String) = signal.body().deserialize().unwrap();
+        assert_eq!((prompt.as_str(), context.as_str()), (id.as_str(), "unlock"));
+        // The screen follows it, but may not close it: only the opener may.
+        call(&screen, "Subscribe", &(id.as_str(),))
+            .await
+            .expect("the same user may subscribe");
+        let closed = call(&screen, "ClosePrompt", &(id.as_str(),)).await;
+        assert!(
+            is_error(&closed, "io.github.LinuxHello.Error.Denied"),
+            "{closed:?}"
+        );
+    });
 }

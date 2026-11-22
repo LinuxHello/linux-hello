@@ -249,6 +249,10 @@ impl PinEnrolment for TpmVerifier {
     fn change(&self, uid: u32, old: &[u8], new: &[u8], history: u32) -> Result<(), EnrolError> {
         self.change_pin(uid, old, new, history)
     }
+
+    fn forget(&self, uid: u32) -> Result<(), EnrolError> {
+        self.records.delete(uid).map_err(|_| EnrolError::Record)
+    }
 }
 
 impl KeyProbe for TpmVerifier {
@@ -263,6 +267,14 @@ impl KeyProbe for TpmVerifier {
         match self.records.load(uid) {
             Ok(Some(record)) => Some(record.changed_at),
             Ok(None) | Err(_) => None,
+        }
+    }
+
+    fn pin_record(&self, uid: u32) -> super::PinRecordState {
+        match self.records.load(uid) {
+            Ok(Some(record)) => super::PinRecordState::Set(record.changed_at),
+            Ok(None) => super::PinRecordState::Absent,
+            Err(_) => super::PinRecordState::Damaged,
         }
     }
 }
