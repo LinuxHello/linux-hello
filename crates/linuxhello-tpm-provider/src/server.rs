@@ -26,6 +26,32 @@ use crate::wire::{
 /// How long a client may take to send its request: a slow or silent one is dropped.
 const CLIENT_LIMIT: Duration = Duration::from_secs(2);
 
+/// How many requests in a row the TPM may fail before the provider gives up and exits, so that its
+/// unit starts it again with a new connection and a new primary (review finding R-29, #371). A
+/// wrong PIN and a locked TPM are answers, not failures.
+pub const MAX_FAILURES_IN_A_ROW: u32 = 5;
+
+/// Whether the TPM still does what it is asked: a run of failures means the connection or the
+/// primary handle is gone, which nothing inside the process repairs.
+#[derive(Debug, Default)]
+pub struct Health {
+    /// Failures since the last request that did not fail.
+    in_a_row: u32,
+}
+
+impl Health {
+    /// Notes one answer of the TPM; `true` when the provider must stop
+    /// (`a_run_of_failures_ends_the_provider_and_an_answer_ends_the_run`).
+    pub fn note(&mut self, failed: bool) -> bool {
+        if failed {
+            self.in_a_row = self.in_a_row.saturating_add(1);
+        } else {
+            self.in_a_row = 0;
+        }
+        self.in_a_row >= MAX_FAILURES_IN_A_ROW
+    }
+}
+
 /// The provider's socket and the TPM behind it.
 pub struct Server {
     /// The listening socket.
@@ -34,6 +60,8 @@ pub struct Server {
     tpm: Tpm,
     /// The only user id that is served.
     agent_uid: u32,
+    /// How the TPM has been answering.
+    health: Health,
 }
 
 impl Server {
@@ -88,6 +116,7 @@ impl Server {
             listener,
             tpm,
             agent_uid,
+            health: Health::default(),
         })
     }
 
@@ -102,11 +131,19 @@ impl Server {
         Ok(())
     }
 
-    /// Serves until the process ends; an error of accepting is waited out for 100 ms.
-    pub fn serve_forever(mut self) {
+    /// Serves until the TPM has failed [`MAX_FAILURES_IN_A_ROW`] requests in a row, and returns why;
+    /// an error of accepting is waited out for 100 ms. The caller exits, and the unit starts the
+    /// provider again, which makes a new connection and a new primary: an invalid handle does not
+    /// leave every later request failing for ever.
+    pub fn serve_forever(mut self) -> String {
         loop {
             if self.serve_one().is_err() {
                 std::thread::sleep(Duration::from_millis(100));
+            }
+            if self.health.in_a_row >= MAX_FAILURES_IN_A_ROW {
+                return format!(
+                    "the TPM failed {MAX_FAILURES_IN_A_ROW} requests in a row; starting again"
+                );
             }
         }
     }
@@ -132,9 +169,13 @@ impl Server {
                 Err(TpmError::Locked) => vec![STATUS_LOCKED],
                 Err(TpmError::Failed(text)) => {
                     eprintln!("linuxhello-tpm-provider: the TPM refused a request: {text}");
+                    self.health.note(true);
                     vec![STATUS_FAILED]
                 }
             };
+            if matches!(body.first(), Some(&STATUS_OK) | Some(&STATUS_LOCKED)) {
+                self.health.note(false);
+            }
             let _ = write_frame(&mut stream, &body);
             return;
         }
@@ -163,14 +204,21 @@ impl Server {
                 .map(|b| (STATUS_OK, Some(b))),
         };
         match outcome {
-            Ok((status, blobs)) => Response { status, blobs },
-            Err(TpmError::Locked) => Response {
-                status: STATUS_LOCKED,
-                blobs: None,
-            },
+            Ok((status, blobs)) => {
+                self.health.note(false);
+                Response { status, blobs }
+            }
+            Err(TpmError::Locked) => {
+                self.health.note(false);
+                Response {
+                    status: STATUS_LOCKED,
+                    blobs: None,
+                }
+            }
             Err(TpmError::Failed(text)) => {
                 // The text is the TPM stack's own and carries no PIN; the client only learns "failed".
                 eprintln!("linuxhello-tpm-provider: the TPM refused a request: {text}");
+                self.health.note(true);
                 Response {
                     status: STATUS_FAILED,
                     blobs: None,
@@ -205,7 +253,24 @@ fn peer_uid(stream: &UnixStream) -> Option<u32> {
 
 #[cfg(test)]
 mod tests {
-    use super::ids_of;
+    use super::{ids_of, Health, MAX_FAILURES_IN_A_ROW};
+
+    #[test]
+    fn a_run_of_failures_ends_the_provider_and_an_answer_ends_the_run() {
+        let mut health = Health::default();
+        for _ in 0..MAX_FAILURES_IN_A_ROW - 1 {
+            assert!(!health.note(true));
+        }
+        // An answer (a right or wrong PIN, a lock) shows the TPM works: the count starts again.
+        assert!(!health.note(false));
+        for _ in 0..MAX_FAILURES_IN_A_ROW - 1 {
+            assert!(!health.note(true));
+        }
+        assert!(
+            health.note(true),
+            "the last failure of the run stops the provider"
+        );
+    }
 
     #[test]
     fn an_account_is_found_by_name_in_the_passwd_text() {

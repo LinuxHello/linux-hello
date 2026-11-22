@@ -123,12 +123,13 @@ fn agent_unit_writes_no_core_dump() {
 }
 
 #[test]
-fn agent_unit_allows_only_the_tpm_device() {
+fn agent_unit_allows_no_device() {
     let s = service_settings();
     assert_eq!(only(&s, "DevicePolicy"), "closed");
-    assert_eq!(
-        s.get("DeviceAllow").map(Vec::as_slice),
-        Some(["/dev/tpmrm0 rw".to_string()].as_slice())
+    assert!(
+        !s.contains_key("DeviceAllow"),
+        "the Agent never opens a device itself: {:?}",
+        s.get("DeviceAllow")
     );
 }
 
@@ -146,6 +147,17 @@ fn agent_unit_refuses_to_start_unless_apparmor_enforces_its_profile() {
     assert!(profile.contains("profile linuxhello-agent "));
 }
 
+/// A permanent fault (a profile that is not enforced, a TPM with an owner password) must not restart
+/// the service every second for ever (review finding R-29, #371).
+#[test]
+fn agent_unit_backs_off_instead_of_restarting_every_second() {
+    let s = service_settings();
+    assert_eq!(only(&s, "Restart"), "on-failure");
+    assert_eq!(only(&s, "RestartSec"), "1");
+    assert_eq!(only(&s, "RestartSteps"), "5");
+    assert_eq!(only(&s, "RestartMaxDelaySec"), "60");
+}
+
 #[test]
 fn agent_unit_claims_the_registered_bus_name() {
     let s = service_settings();
@@ -154,7 +166,7 @@ fn agent_unit_claims_the_registered_bus_name() {
 }
 
 #[test]
-fn agent_user_has_no_login_and_belongs_to_the_tpm_group() {
+fn agent_user_has_no_login_and_belongs_to_no_group_but_its_own() {
     let sysusers = read("systemd/linuxhello.sysusers");
     let lines: Vec<&str> = sysusers
         .lines()
@@ -165,7 +177,24 @@ fn agent_user_has_no_login_and_belongs_to_the_tpm_group() {
         .find(|l| l.starts_with("u linuxhello "))
         .expect("a u line");
     assert!(user.ends_with("/usr/sbin/nologin"), "{user}");
-    assert!(lines.contains(&"m linuxhello tss"));
+    // No `m` line: the Agent is not in `tss` or any other group that owns a device (R-09, #351).
+    assert!(
+        !lines.iter().any(|l| l.starts_with("m linuxhello ")),
+        "the Agent's user must be in no extra group: {lines:?}"
+    );
+}
+
+/// The Agent reaches the TPM only through the provider's socket. It has no way to open the device
+/// itself, in the unit, in the profile or through a group, so a compromised Agent, or the Howdy
+/// child that inherits its profile, cannot send the chip a command of its own (R-09, #351).
+#[test]
+fn the_agent_cannot_open_the_tpm_device() {
+    assert!(!read("systemd/linuxhello-agent.service").contains("tpmrm"));
+    // The provider's user is in `tss`; the Agent's is not.
+    assert!(!read("systemd/linuxhello.sysusers")
+        .lines()
+        .any(|l| l.starts_with("m linuxhello ") && l.contains("tss")));
+    assert!(!profile_rules().iter().any(|r| r.contains("tpmrm")));
 }
 
 #[test]
@@ -226,12 +255,11 @@ fn agent_profile_grants_no_capability_and_denies_tracing() {
 }
 
 #[test]
-fn agent_profile_grants_the_tpm_and_no_other_device() {
+fn agent_profile_grants_the_camera_and_no_other_device() {
     let rules = profile_rules();
     let devices: Vec<&String> = rules.iter().filter(|r| r.starts_with("/dev/")).collect();
-    // The camera is for the face method (Howdy inherits this profile).
-    assert!(devices.contains(&&"/dev/tpmrm0 rw,".to_string()));
-    assert_eq!(devices.len(), 2);
+    // The camera is for the face method (Howdy inherits this profile); the TPM is not here.
+    assert_eq!(devices, ["/dev/video[0-9]* rw,"]);
 }
 
 /// The Agent starts the Python interpreter, for Howdy, and no other program; the child inherits the
@@ -251,9 +279,9 @@ fn the_agent_may_start_python_for_howdy_and_no_other_program() {
     // Nothing that Howdy inherits lets it out: no network but the bus socket, no home directory.
     assert!(rules.contains(&"deny network inet,".to_string()));
     assert!(rules.iter().any(|r| r.starts_with("deny /home/**")));
-    // The camera, and only the camera and the TPM, among the devices.
+    // The camera, and only the camera, among the devices: Howdy cannot reach the TPM.
     let devices: Vec<&String> = rules.iter().filter(|r| r.starts_with("/dev/")).collect();
-    assert_eq!(devices, ["/dev/video[0-9]* rw,", "/dev/tpmrm0 rw,"]);
+    assert_eq!(devices, ["/dev/video[0-9]* rw,"]);
 }
 
 /// The statements of the AppArmor profile that begin with `prefix`, with their continuation

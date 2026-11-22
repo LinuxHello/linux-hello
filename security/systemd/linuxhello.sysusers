@@ -1,7 +1,8 @@
 # The user of the Linux Hello Agent: no login, no shell, no home. Install as
-# /usr/lib/sysusers.d/linuxhello.conf. The group tss gives access to /dev/tpmrm0.
+# /usr/lib/sysusers.d/linuxhello.conf. It is in no group of the TPM device: the Agent reaches the
+# TPM only through the provider's socket (ADR-0021), and a compromised Agent must not be able to
+# send the chip a command of its own (review finding R-09, #351).
 u linuxhello - "Linux Hello Agent" /var/lib/linuxhello /usr/sbin/nologin
-m linuxhello tss
 # The user of the TPM provider, which runs the TPM commands for the Agent: no login, no shell, no
 # home. The group tss gives access to /dev/tpmrm0.
 u linuxhello-tpm - "Linux Hello TPM provider" - /usr/sbin/nologin

@@ -19,7 +19,12 @@ AppArmorProfile=linuxhello-agent
 User=linuxhello
 Group=linuxhello
 Restart=on-failure
+# A fault that never goes away (a profile that is not enforced, a TPM with an owner password) must
+# not restart the service every second for ever: the pause grows from one second to a minute in
+# five steps (systemd 254 or newer; review finding R-29, #371).
 RestartSec=1
+RestartSteps=5
+RestartMaxDelaySec=60
 # The Agent pings the service manager from its bus loop (notify.rs). A loop that hangs stops the
 # pings and the unit is restarted. Only the main process may notify, and the profile allows the
 # notification socket, so a unit line alone would not be enough (#191).
@@ -37,7 +42,8 @@ UMask=0077
 # The admin policy layer is read-only for the Agent.
 ReadOnlyPaths=/etc/linuxhello
 
-# Sandbox. The only device is the TPM resource manager; there is no network but the system bus.
+# Sandbox. There is no device and no network but the system bus. The Agent reaches the TPM only
+# through the provider's socket and never opens the TPM device (R-09, #351).
 NoNewPrivileges=yes
 # No core dump of a process that holds a PIN or a stretched key: a core file would write it to disk.
 # The Agent also marks itself not dumpable when it starts (PR_SET_DUMPABLE), which keeps other
@@ -63,7 +69,6 @@ SocketBindDeny=any
 # without it systemd refuses to start the unit at all (seen on Ubuntu 26.04: status 244/BPF).
 RestrictAddressFamilies=AF_UNIX
 DevicePolicy=closed
-DeviceAllow=/dev/tpmrm0 rw
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectKernelLogs=yes
