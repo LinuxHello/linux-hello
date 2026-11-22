@@ -359,6 +359,17 @@ min_length = 8
     }
 
     #[test]
+    fn two_admin_files_with_no_method_in_common_leave_pin_only() {
+        // R-14, #356: the empty intersection used to read as "not set" and gave back the default
+        // methods, face and fingerprint included.
+        let a = parse_layer("[context.login]\nmethods = [\"fingerprint\"]").unwrap();
+        let b = parse_layer("[context.login]\nmethods = [\"face\"]").unwrap();
+        let res = merge(&[a, b], None).unwrap();
+        assert_eq!(res.layer.context["login"].methods, vec!["pin".to_string()]);
+        assert!(res.managed.contains("context.login.methods"));
+    }
+
+    #[test]
     fn user_disallowing_a_required_default_is_a_contradiction() {
         let user_toml = r#"
 [pin]

@@ -130,7 +130,9 @@ pub fn load(admin_dir: &Path, user_file: &Path, admin_owner_uid: u32) -> Policy 
                     "merge: contradiction AllClassesDisallowed".to_string()
                 }
             };
-            if user_layer.is_some() {
+            // The fault is the user's only when the admin layers merge without it
+            // (`contradictory_admin_layers_are_not_blamed_on_the_user_layer`, R-14, #356).
+            if user_layer.is_some() && merge(&admin, None).is_ok() {
                 user_layer_failure(&admin, reason)
             } else {
                 Policy::PinOnly(create_pin_only_state(None, Fault::AdminLayer, reason))
@@ -429,7 +431,10 @@ mod tests {
             pin.reason
         );
         let rules = pin.layer.pin.expect("the PIN rules of the good file");
-        assert_eq!((rules.min_length, rules.lockout_attempts), (Some(12), Some(3)));
+        assert_eq!(
+            (rules.min_length, rules.lockout_attempts),
+            (Some(12), Some(3))
+        );
         assert_eq!(pin.layer.context["sudo"].factors, Some(2));
         for ctx in pin.layer.context.values() {
             assert_eq!(ctx.methods, vec!["pin".to_string()]);
@@ -671,5 +676,27 @@ mod tests {
             "merge: contradiction ClassConflict(digits)"
         );
         assert_eq!(policy.pin_rules().min_length, 6);
+    }
+
+    #[test]
+    fn contradictory_admin_layers_are_not_blamed_on_the_user_layer() {
+        // R-14, #356: with a user file present, a contradiction among the admin files was reported
+        // as the user layer's fault.
+        let (_tmp, admin_dir, user_file, uid) = setup();
+        write(
+            &admin_dir.join("10-a.toml"),
+            b"[pin]\ndigits = \"required\"",
+            0o644,
+        );
+        write(
+            &admin_dir.join("20-b.toml"),
+            b"[pin]\ndigits = \"disallowed\"",
+            0o644,
+        );
+        write(&user_file, b"[pin]\nmin_length = 8", 0o644);
+        let Policy::PinOnly(pin) = load(&admin_dir, &user_file, uid) else {
+            panic!("expected the PIN-only state");
+        };
+        assert_eq!(pin.fault, Fault::AdminLayer);
     }
 }

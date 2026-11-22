@@ -117,13 +117,27 @@ pub fn most_restrictive(a: &Layer, b: &Layer) -> Result<Layer, Contradiction> {
     for (name, c1) in &a.context {
         match b.context.get(name) {
             Some(c2) => {
-                // Intersection, in a's order.
-                let methods: Vec<String> = c1
-                    .methods
-                    .iter()
-                    .filter(|m| c2.methods.contains(m))
-                    .cloned()
-                    .collect();
+                // An empty list means "not set" in a file. When only one file sets methods, those
+                // stand. When both do, the intersection in a's order; if the two have nothing in
+                // common, `pin` alone, because an empty result would read as "not set" and give
+                // back the default methods (R-14, #356).
+                let methods: Vec<String> = if c1.methods.is_empty() {
+                    c2.methods.clone()
+                } else if c2.methods.is_empty() {
+                    c1.methods.clone()
+                } else {
+                    let common: Vec<String> = c1
+                        .methods
+                        .iter()
+                        .filter(|m| c2.methods.contains(m))
+                        .cloned()
+                        .collect();
+                    if common.is_empty() {
+                        vec!["pin".to_string()]
+                    } else {
+                        common
+                    }
+                };
 
                 let factors = match (c1.factors, c2.factors) {
                     (Some(f1), Some(f2)) => Some(f1.max(f2)),
