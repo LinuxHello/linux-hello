@@ -52,6 +52,8 @@ LimitCORE=0
 # A flood of calls must not exhaust the machine. The memory covers Howdy, a Python child that loads
 # face models; the tasks cover its threads.
 MemoryMax=1G
+# Nothing of the Agent goes to swap: it holds PIN material while it stretches a PIN.
+MemorySwapMax=0
 TasksMax=128
 LimitNOFILE=1024
 CapabilityBoundingSet=
