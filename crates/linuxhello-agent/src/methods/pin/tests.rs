@@ -7,6 +7,7 @@ use tempfile::TempDir;
 use super::*;
 use crate::pinlock::service::Limits;
 use crate::pinlock::store::PinLockFile;
+use crate::pinsocket::PinTarget;
 
 /// A verifier that says whether the PIN is `1234`, and counts how often it was asked.
 struct Scripted {
@@ -220,4 +221,114 @@ fn a_pin_sent_before_the_method_runs_is_kept_for_it() {
     // Delivered at once, before `run` has even started.
     assert!(s.inbox.deliver(1000, Zeroizing::new(b"1234".to_vec())));
     assert_eq!(s.method.run(&Cancel::default()), MethodEnd::Success);
+}
+
+/// The prompt `n` of the user `opener`: 64 hexadecimal characters made from `n`.
+fn target(opener: u32, n: u8) -> PinTarget {
+    PinTarget {
+        opener,
+        prompt: linuxhello_dbus::PromptId::parse(&format!("{n:064x}")).unwrap(),
+    }
+}
+
+/// What is waiting on `receiver`, if anything.
+fn received(receiver: &Receiver<Zeroizing<Vec<u8>>>) -> Option<Vec<u8>> {
+    receiver.try_recv().ok().map(|pin| pin.to_vec())
+}
+
+#[test]
+fn a_pin_goes_only_to_the_wait_of_its_prompt() {
+    let inbox = Arc::new(PinInbox::default());
+    let (_wait_x, receiver_x) = inbox.expect_for(target(1000, 1)).unwrap();
+    // A PIN announced for another prompt, of the same user, is not taken by this wait.
+    assert!(!inbox.deliver_to(&target(1000, 2), Zeroizing::new(b"1234".to_vec())));
+    assert_eq!(received(&receiver_x), None);
+    // A prompt opened by another user with the same identifier is another prompt.
+    assert!(!inbox.deliver_to(&target(1001, 1), Zeroizing::new(b"1234".to_vec())));
+    assert_eq!(received(&receiver_x), None);
+    // The prompt it waits for gets it.
+    assert!(inbox.deliver_to(&target(1000, 1), Zeroizing::new(b"1234".to_vec())));
+    assert_eq!(received(&receiver_x), Some(b"1234".to_vec()));
+}
+
+#[test]
+fn two_prompts_of_one_user_each_get_their_own_pin() {
+    let inbox = Arc::new(PinInbox::default());
+    let (_wait_x, receiver_x) = inbox.expect_for(target(1000, 1)).unwrap();
+    let (_wait_y, receiver_y) = inbox.expect_for(target(1000, 2)).unwrap();
+    assert!(inbox.deliver_to(&target(1000, 2), Zeroizing::new(b"2222".to_vec())));
+    assert!(inbox.deliver_to(&target(1000, 1), Zeroizing::new(b"1111".to_vec())));
+    assert_eq!(received(&receiver_x), Some(b"1111".to_vec()));
+    assert_eq!(received(&receiver_y), Some(b"2222".to_vec()));
+}
+
+#[test]
+fn a_second_wait_for_a_prompt_is_refused_and_the_first_keeps_its_pin() {
+    let inbox = Arc::new(PinInbox::default());
+    let (_first, receiver) = inbox.expect_for(target(1000, 1)).unwrap();
+    assert!(inbox.expect_for(target(1000, 1)).is_none());
+    assert!(inbox.deliver_to(&target(1000, 1), Zeroizing::new(b"1234".to_vec())));
+    assert_eq!(received(&receiver), Some(b"1234".to_vec()));
+}
+
+#[test]
+fn a_wait_that_ends_removes_only_itself() {
+    // By prompt: a refused second wait that ends takes nothing from the first.
+    let inbox = Arc::new(PinInbox::default());
+    let (first, receiver) = inbox.expect_for(target(1000, 1)).unwrap();
+    assert!(inbox.expect_for(target(1000, 1)).is_none());
+    assert!(inbox.deliver_to(&target(1000, 1), Zeroizing::new(b"1234".to_vec())));
+    assert_eq!(received(&receiver), Some(b"1234".to_vec()));
+    // And a wait that ends is gone: its prompt can be waited for again, and no PIN reaches it.
+    drop(first);
+    assert!(!inbox.deliver_to(&target(1000, 1), Zeroizing::new(b"1234".to_vec())));
+    assert!(inbox.expect_for(target(1000, 1)).is_some());
+
+    // By user: an older wait that is dropped after a newer one replaced it must not remove the
+    // newer one, which still receives its PIN.
+    let inbox = Arc::new(PinInbox::default());
+    let (older, _older_receiver) = inbox.expect(1000);
+    let (_newer, newer_receiver) = inbox.expect(1000);
+    drop(older);
+    assert!(inbox.deliver(1000, Zeroizing::new(b"1234".to_vec())));
+    assert_eq!(received(&newer_receiver), Some(b"1234".to_vec()));
+}
+
+#[test]
+fn a_method_for_a_prompt_gets_only_the_pin_announced_for_it() {
+    let dir = crate::private_tempdir();
+    let uid = std::fs::metadata(dir.path())
+        .map(|m| std::os::unix::fs::MetadataExt::uid(&m))
+        .unwrap();
+    let lock = Arc::new(PinLockService::start(
+        PinLockFile::new(dir.path().join("pinlock.toml"), uid),
+        LIMITS,
+    ));
+    let verifier = Arc::new(Scripted {
+        asked: AtomicU32::new(0),
+        broken: false,
+    });
+    let inbox = Arc::new(PinInbox::default());
+    let mut method = PinMethod::for_prompt(
+        1000,
+        target(1000, 1),
+        &inbox,
+        Arc::clone(&lock),
+        Arc::clone(&verifier) as Arc<dyn PinVerifier>,
+        at_1000,
+    )
+    .unwrap();
+    // A second method for the same prompt is refused.
+    assert!(PinMethod::for_prompt(
+        1000,
+        target(1000, 1),
+        &inbox,
+        lock,
+        verifier as Arc<dyn PinVerifier>,
+        at_1000,
+    )
+    .is_none());
+    assert!(!inbox.deliver_to(&target(1000, 2), Zeroizing::new(b"1234".to_vec())));
+    assert!(inbox.deliver_to(&target(1000, 1), Zeroizing::new(b"1234".to_vec())));
+    assert_eq!(method.run(&Cancel::default()), MethodEnd::Success);
 }

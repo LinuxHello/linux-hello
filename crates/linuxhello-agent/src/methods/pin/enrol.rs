@@ -19,6 +19,7 @@ use super::{PinInbox, PinVerifier, Waiting};
 use crate::orchestrator::Cancel;
 use crate::pinlock::service::PinLockService;
 use crate::pinlock::PinLockError;
+use crate::pinsocket::PinTarget;
 use crate::policy::view::PinRules;
 use crate::state::Outcome;
 
@@ -68,13 +69,24 @@ pub struct PinWait {
 
 impl PinInbox {
     /// Registers a job that waits for PINs of `subject`. It replaces a sign-in that waits for the
-    /// same user at the same moment; that sign-in then ends as unavailable.
+    /// same user at the same moment; that sign-in then ends as unavailable. By user, not by
+    /// prompt; replaced by [`PinInbox::wait_for_prompt`] (#344).
     pub fn wait_for(self: &Arc<Self>, subject: u32) -> PinWait {
         let (registration, receiver) = self.expect(subject);
         PinWait {
             _registration: registration,
             receiver,
         }
+    }
+
+    /// Registers a job that waits for the PINs announced for the prompt `target`, and for no
+    /// others. It never replaces a wait: `None` when the prompt already has one (P-46).
+    pub fn wait_for_prompt(self: &Arc<Self>, target: PinTarget) -> Option<PinWait> {
+        let (registration, receiver) = self.expect_for(target)?;
+        Some(PinWait {
+            _registration: registration,
+            receiver,
+        })
     }
 }
 

@@ -338,3 +338,46 @@ fn a_wrong_pin_starts_no_enrolment_and_counts() {
         PromptResult::LockedOut
     );
 }
+
+#[test]
+fn a_change_job_on_another_prompt_never_sees_a_sign_in_pin() {
+    // A job waits on prompt X. A PIN is announced and delivered for prompt Y of the same user, as
+    // when the person types it at a real prompt: the job must not take it as the current PIN
+    // (R-01, #344, P-46).
+    let dir = crate::private_tempdir();
+    let uid = std::fs::metadata(dir.path())
+        .map(|m| std::os::unix::fs::MetadataExt::uid(&m))
+        .unwrap();
+    let lock = PinLockService::start(
+        PinLockFile::new(dir.path().join("pinlock.toml"), uid),
+        LIMITS,
+    );
+    let inbox = Arc::new(PinInbox::default());
+    let target = |n: u8| PinTarget {
+        opener: 1000,
+        prompt: linuxhello_dbus::PromptId::parse(&format!("{n:064x}")).unwrap(),
+    };
+    let wait = inbox.wait_for_prompt(target(1)).unwrap();
+    // A second job on the same prompt is refused.
+    assert!(inbox.wait_for_prompt(target(1)).is_none());
+    let memory = Memory::default();
+    memory.set(1000, b"1234").unwrap();
+    let calls_before = *memory.calls.lock().unwrap();
+    let rules = rules();
+    let job = Job {
+        subject: 1000,
+        rules: &rules,
+        wait: Duration::from_millis(300),
+        lock: &lock,
+        enrolment: &memory,
+        clock: at_1000,
+    };
+    // The PINs of the real prompt, and of an attacker's change that follows them.
+    assert!(!inbox.deliver_to(&target(2), Zeroizing::new(b"1234".to_vec())));
+    assert!(!inbox.deliver_to(&target(2), Zeroizing::new(b"6666".to_vec())));
+    let outcome = run_change(&job, &wait, &Cancel::default());
+    assert_eq!(outcome.reason, PromptReason::Timeout);
+    // The enrolment was never asked to change anything, and the PIN is the person's own.
+    assert_eq!(*memory.calls.lock().unwrap(), calls_before);
+    assert_eq!(memory.pins.lock().unwrap()[&1000], b"1234");
+}
