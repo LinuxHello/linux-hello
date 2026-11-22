@@ -10,7 +10,11 @@
 //   available   [string]  methods that can be used in this attempt: "pin", "fingerprint", "face"
 //   active      [string]  methods running now (the ActiveMethods signal)
 //   state       string    "idle", "scanning" or "waiting-for-input" (the State signal)
-//   outcomes    object    per method that ended: "matched", "not-recognised", "wrong-pin" or "locked"
+//   outcomes    object    per method that ended: "matched", "not-recognised", "wrong-pin", "locked"
+//                         or "unavailable". From the Agent's MethodEnded signal (ADR-0014, second
+//                         amendment of 2026-11-22): matched is "matched"; failed is "wrong-pin" for
+//                         the PIN and "not-recognised" for the others; locked-out is "locked";
+//                         unavailable is "unavailable"
 //   result      string    "", "success", "failure", "locked-out" or "cancelled" (the Result signal)
 //   reason      string    the Result's reason ("not-recognised", "timeout", ...)
 //   retryAfter  int       seconds until another PIN may be tried, during a lockout
@@ -72,6 +76,9 @@ function tile(s, method) {
     } else if (method === "pin" && outcome === "wrong-pin") {
         t.detail = "Wrong PIN";
         t.tone = "failure";
+    } else if (outcome === "unavailable") {
+        t.detail = "Unavailable";
+        t.tone = "disabled";
     } else if (outcome === "not-recognised") {
         t.detail = "Not recognised";
         t.tone = "failure";

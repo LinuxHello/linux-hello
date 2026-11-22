@@ -86,6 +86,16 @@ TestCase {
         compare(cardTexts(pinOnly), ["severe: Wrong PIN. Try again."]);
     }
 
+    function test_a_method_that_could_not_run_is_greyed_alone() {
+        var s = stateOf(0);
+        s.active = ["pin", "face"];
+        s.outcomes = { fingerprint: "unavailable" };
+        var d = details(s);
+        compare(d.fingerprint, "Unavailable/disabled");
+        compare(d.face, "Camera on/running");
+        compare(cardTexts(s), []);
+    }
+
     function test_conditions_are_listed_most_serious_first() {
         var s = stateOf(0);
         s.conditions = [{ code: "pin-expires-soon: 5", severity: "info", sentence: "soon" },
