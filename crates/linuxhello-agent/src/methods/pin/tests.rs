@@ -65,13 +65,15 @@ fn setup(broken: bool) -> Setup {
         asked: AtomicU32::new(0),
         broken,
     });
-    let method = PinMethod::new(
+    let method = PinMethod::for_prompt(
         1000,
-        Arc::clone(&inbox),
+        target(1000, 1),
+        &inbox,
         Arc::clone(&lock),
         Arc::clone(&verifier) as Arc<dyn PinVerifier>,
         at_1000,
-    );
+    )
+    .unwrap();
     Setup {
         method,
         inbox,
@@ -89,7 +91,7 @@ fn attempt(setup: &mut Setup, pin: &[u8]) -> MethodEnd {
     std::thread::scope(|scope| {
         let run = scope.spawn(|| setup.method.run(&Cancel::default()));
         // The method is registered from the moment it is made, so the PIN can go at once.
-        assert!(inbox.deliver(1000, pin.clone()));
+        assert!(inbox.deliver_to(&target(1000, 1), pin.clone()));
         run.join().unwrap()
     })
 }
@@ -140,13 +142,15 @@ fn an_untrusted_lock_makes_the_method_unavailable_and_the_verifier_is_not_asked(
         broken: false,
     });
     let inbox = Arc::new(PinInbox::default());
-    let method = PinMethod::new(
+    let method = PinMethod::for_prompt(
         1000,
-        Arc::clone(&inbox),
+        target(1000, 1),
+        &inbox,
         lock,
         Arc::clone(&verifier) as Arc<dyn PinVerifier>,
         at_1000,
-    );
+    )
+    .unwrap();
     let mut s = Setup {
         method,
         inbox,
@@ -189,7 +193,7 @@ fn cancelling_ends_the_wait_and_the_registration() {
     // The registration lasts as long as the method does.
     drop(s);
     assert!(
-        !inbox.deliver(1000, Zeroizing::new(b"1234".to_vec())),
+        !inbox.deliver_to(&target(1000, 1), Zeroizing::new(b"1234".to_vec())),
         "nobody waits any more"
     );
 }
@@ -197,14 +201,15 @@ fn cancelling_ends_the_wait_and_the_registration() {
 #[test]
 fn a_pin_for_nobody_who_waits_is_dropped_and_a_pin_for_another_user_is_not_taken() {
     let inbox = Arc::new(PinInbox::default());
-    assert!(!inbox.deliver(1000, Zeroizing::new(b"1234".to_vec())));
-    let (_waiting, receiver) = inbox.expect(1000);
+    assert!(!inbox.deliver_to(&target(1000, 1), Zeroizing::new(b"1234".to_vec())));
+    let (_waiting, receiver) = inbox.expect_for(target(1000, 1)).unwrap();
+    // A prompt that another user opened is another prompt, even with the same number.
     assert!(
-        !inbox.deliver(1001, Zeroizing::new(b"1234".to_vec())),
+        !inbox.deliver_to(&target(1001, 2), Zeroizing::new(b"1234".to_vec())),
         "another user's PIN"
     );
     assert!(receiver.try_recv().is_err());
-    assert!(inbox.deliver(1000, Zeroizing::new(b"1234".to_vec())));
+    assert!(inbox.deliver_to(&target(1000, 1), Zeroizing::new(b"1234".to_vec())));
     assert_eq!(receiver.try_recv().unwrap().as_slice(), b"1234");
 }
 
@@ -219,7 +224,9 @@ fn the_default_verifier_checks_nothing_and_is_never_available() {
 fn a_pin_sent_before_the_method_runs_is_kept_for_it() {
     let mut s = setup(false);
     // Delivered at once, before `run` has even started.
-    assert!(s.inbox.deliver(1000, Zeroizing::new(b"1234".to_vec())));
+    assert!(s
+        .inbox
+        .deliver_to(&target(1000, 1), Zeroizing::new(b"1234".to_vec())));
     assert_eq!(s.method.run(&Cancel::default()), MethodEnd::Success);
 }
 
@@ -283,15 +290,6 @@ fn a_wait_that_ends_removes_only_itself() {
     drop(first);
     assert!(!inbox.deliver_to(&target(1000, 1), Zeroizing::new(b"1234".to_vec())));
     assert!(inbox.expect_for(target(1000, 1)).is_some());
-
-    // By user: an older wait that is dropped after a newer one replaced it must not remove the
-    // newer one, which still receives its PIN.
-    let inbox = Arc::new(PinInbox::default());
-    let (older, _older_receiver) = inbox.expect(1000);
-    let (_newer, newer_receiver) = inbox.expect(1000);
-    drop(older);
-    assert!(inbox.deliver(1000, Zeroizing::new(b"1234".to_vec())));
-    assert_eq!(received(&newer_receiver), Some(b"1234".to_vec()));
 }
 
 #[test]
@@ -331,4 +329,26 @@ fn a_method_for_a_prompt_gets_only_the_pin_announced_for_it() {
     assert!(!inbox.deliver_to(&target(1000, 2), Zeroizing::new(b"1234".to_vec())));
     assert!(inbox.deliver_to(&target(1000, 1), Zeroizing::new(b"1234".to_vec())));
     assert_eq!(method.run(&Cancel::default()), MethodEnd::Success);
+}
+
+#[test]
+fn the_inbox_has_no_wait_by_user() {
+    // The fault of R-01 was a wait keyed by the user: a PIN typed at one prompt went to any job of
+    // that user. Nothing in the inbox may deliver or wait by user again (P-46, #344).
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/methods");
+    for file in ["pin.rs", "pin/enrol.rs"] {
+        let text = std::fs::read_to_string(root.join(file)).unwrap();
+        let code = text.split("#[cfg(test)]").next().unwrap();
+        for forbidden in [
+            "fn deliver(",
+            "fn expect(",
+            "fn wait_for(",
+            "PinMethod::new",
+        ] {
+            assert!(
+                !code.contains(forbidden),
+                "{file} has {forbidden}: a PIN must go by prompt, never by user"
+            );
+        }
+    }
 }

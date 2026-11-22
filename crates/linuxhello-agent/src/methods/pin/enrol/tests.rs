@@ -69,6 +69,14 @@ fn rules() -> PinRules {
     }
 }
 
+/// The prompt `n` of the user `opener`: 64 hexadecimal characters made from `n`.
+fn target(opener: u32, n: u8) -> PinTarget {
+    PinTarget {
+        opener,
+        prompt: linuxhello_dbus::PromptId::parse(&format!("{n:064x}")).unwrap(),
+    }
+}
+
 /// The time of every test.
 fn at_1000() -> u64 {
     1_000
@@ -94,7 +102,7 @@ fn setup() -> Setup {
         LIMITS,
     );
     let inbox = Arc::new(PinInbox::default());
-    let wait = inbox.wait_for(1000);
+    let wait = inbox.wait_for_prompt(target(1000, 1)).unwrap();
     Setup {
         inbox,
         memory: Memory::default(),
@@ -118,7 +126,9 @@ impl Setup {
     }
 
     fn send(&self, pin: &[u8]) {
-        assert!(self.inbox.deliver(1000, Zeroizing::new(pin.to_vec())));
+        assert!(self
+            .inbox
+            .deliver_to(&target(1000, 1), Zeroizing::new(pin.to_vec())));
     }
 }
 
@@ -353,13 +363,9 @@ fn a_change_job_on_another_prompt_never_sees_a_sign_in_pin() {
         LIMITS,
     );
     let inbox = Arc::new(PinInbox::default());
-    let target = |n: u8| PinTarget {
-        opener: 1000,
-        prompt: linuxhello_dbus::PromptId::parse(&format!("{n:064x}")).unwrap(),
-    };
-    let wait = inbox.wait_for_prompt(target(1)).unwrap();
+    let wait = inbox.wait_for_prompt(target(1000, 1)).unwrap();
     // A second job on the same prompt is refused.
-    assert!(inbox.wait_for_prompt(target(1)).is_none());
+    assert!(inbox.wait_for_prompt(target(1000, 1)).is_none());
     let memory = Memory::default();
     memory.set(1000, b"1234").unwrap();
     let calls_before = *memory.calls.lock().unwrap();
@@ -373,8 +379,8 @@ fn a_change_job_on_another_prompt_never_sees_a_sign_in_pin() {
         clock: at_1000,
     };
     // The PINs of the real prompt, and of an attacker's change that follows them.
-    assert!(!inbox.deliver_to(&target(2), Zeroizing::new(b"1234".to_vec())));
-    assert!(!inbox.deliver_to(&target(2), Zeroizing::new(b"6666".to_vec())));
+    assert!(!inbox.deliver_to(&target(1000, 2), Zeroizing::new(b"1234".to_vec())));
+    assert!(!inbox.deliver_to(&target(1000, 2), Zeroizing::new(b"6666".to_vec())));
     let outcome = run_change(&job, &wait, &Cancel::default());
     assert_eq!(outcome.reason, PromptReason::Timeout);
     // The enrolment was never asked to change anything, and the PIN is the person's own.
