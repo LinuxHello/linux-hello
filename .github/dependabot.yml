@@ -8,6 +8,16 @@ updates:
     directory: /crates/linuxhello-agent/fuzz
     schedule:
       interval: weekly
+  # The two trees with a lock file of their own: an advisory in them is otherwise never reported
+  # (R-31, #373).
+  - package-ecosystem: cargo
+    directory: /crates/pam-linuxhello/fuzz
+    schedule:
+      interval: weekly
+  - package-ecosystem: cargo
+    directory: /plasma
+    schedule:
+      interval: weekly
   - package-ecosystem: github-actions
     directory: /
     schedule:
