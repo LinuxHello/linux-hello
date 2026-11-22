@@ -356,6 +356,97 @@ fn the_prompt_is_always_closed() {
 }
 
 #[test]
+fn a_remote_session_never_reaches_the_agent() {
+    // sudo inside an SSH session: the person is not at the sensor or the camera of this machine.
+    // The module answers "unavailable" (so the password follows) without a word to the bus (R-04, #347).
+    for host in ["203.0.113.7", "laptop.example", "::2", "localhost.example"] {
+        let (dir, path, listener) = listen();
+        listener.set_nonblocking(true).unwrap();
+        let request = Request {
+            context: Some("sudo"),
+            service: "sudo",
+            terminal: "/dev/pts/1",
+            remote_host: host,
+            uid: Some(1000),
+        };
+        let code = authenticate_at(
+            &path,
+            &dir.path().join("pin"),
+            &FAST,
+            &request,
+            &mut Person::default(),
+        );
+        assert_eq!(code, Code::Unavailable, "{host}");
+        assert!(listener.accept().is_err(), "{host}: the bus was contacted");
+    }
+}
+
+/// A session file of logind as `sessions` holds it, and the file of this process's session id.
+fn logind(id: &str, session: &str) -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf) {
+    let dir = tempfile::tempdir().unwrap();
+    let sessions = dir.path().join("sessions");
+    std::fs::create_dir(&sessions).unwrap();
+    std::fs::write(sessions.join("2"), session).unwrap();
+    let own = dir.path().join("sessionid");
+    std::fs::write(&own, format!("{id}\n")).unwrap();
+    (dir, own, sessions)
+}
+
+#[test]
+fn a_session_is_at_this_machine_only_when_logind_says_so() {
+    let local = "UID=1000\nACTIVE=1\nREMOTE=0\nSEAT=seat0\nVTNR=2\nTYPE=tty\n";
+    let (_d, own, dir) = logind("2", local);
+    assert!(session_at_this_machine(&own, &dir));
+    // Each way a session is not at this machine, or cannot be shown to be.
+    for (what, id, text) in [
+        ("an SSH session", "2", "ACTIVE=1\nREMOTE=1\nTYPE=tty\n"),
+        (
+            "a remote session that names a seat",
+            "2",
+            "ACTIVE=1\nREMOTE=1\nSEAT=seat0\n",
+        ),
+        (
+            "a session without a seat",
+            "2",
+            "ACTIVE=1\nREMOTE=0\nTYPE=tty\n",
+        ),
+        (
+            "a session behind another one",
+            "2",
+            "ACTIVE=0\nREMOTE=0\nSEAT=seat0\n",
+        ),
+        (
+            "a session with no remote flag",
+            "2",
+            "ACTIVE=1\nSEAT=seat0\n",
+        ),
+        ("a process outside any session", "4294967295", local),
+        ("a session logind does not know", "7", local),
+        ("an id that is not a number", "../2", local),
+        ("an empty id", "", local),
+    ] {
+        let (_d, own, dir) = logind(id, text);
+        assert!(!session_at_this_machine(&own, &dir), "{what}");
+    }
+    // No logind at all.
+    let (dir, _, _) = logind("2", local);
+    assert!(!session_at_this_machine(
+        &dir.path().join("no-sessionid"),
+        &dir.path().join("sessions")
+    ));
+}
+
+#[test]
+fn a_session_at_this_machine_is_not_remote() {
+    for host in ["", "localhost", "127.0.0.1", "::1"] {
+        assert!(is_local_host(host), "{host}");
+    }
+    for host in ["203.0.113.7", "10.0.0.1", "example.org", " ", "localhost "] {
+        assert!(!is_local_host(host), "{host}");
+    }
+}
+
+#[test]
 fn a_missing_or_unknown_context_is_unavailable() {
     let dir = tempfile::tempdir().unwrap();
     // No bus at all: the context is refused before anything is reached, and a valid one then
@@ -365,6 +456,7 @@ fn a_missing_or_unknown_context_is_unavailable() {
             context,
             service: "sudo",
             terminal: "/dev/pts/1",
+            remote_host: "",
             uid: Some(1000),
         };
         assert_eq!(
@@ -383,6 +475,7 @@ fn a_missing_or_unknown_context_is_unavailable() {
         context: Some("sudo"),
         service: "sudo",
         terminal: "",
+        remote_host: "",
         uid: None,
     };
     assert_eq!(
@@ -426,6 +519,7 @@ fn pam_returns_within_its_deadline_when_the_agent_hangs() {
         context: Some("sudo"),
         service: "sudo",
         terminal: "/dev/pts/1",
+        remote_host: "",
         uid: Some(1000),
     };
     let started = Instant::now();
@@ -840,6 +934,7 @@ fn an_unreachable_agent_is_announced() {
         context: Some("sudo"),
         service: "sudo",
         terminal: "/dev/pts/1",
+        remote_host: "",
         uid: Some(1000),
     };
     let mut person = Person::default();
