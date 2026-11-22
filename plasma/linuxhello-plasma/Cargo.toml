@@ -8,10 +8,6 @@ license = "LGPL-3.0-or-later"
 repository = "https://github.com/LinuxHello/linux-hello"
 publish = false
 
-# A workspace of its own: this crate needs Qt to build, and the main workspace's gates do not
-# install it (ADR-0028). Its CI job is `plasma` in .github/workflows/ci.yml.
-[workspace]
-
 [lib]
 # A dynamic QML plugin, so that KDE's lock screen can import it as well as Linux Hello's greeter.
 crate-type = ["cdylib"]

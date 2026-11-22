@@ -504,6 +504,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "linuxhello-greeter"
+version = "0.0.0"
+dependencies = [
+ "cxx-qt-build",
+ "cxx-qt-lib",
+]
+
+[[package]]
 name = "linuxhello-plasma"
 version = "0.0.0"
 dependencies = [

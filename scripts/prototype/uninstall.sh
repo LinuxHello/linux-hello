@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Removes the Linux Hello prototype that scripts/prototype/install.sh installed: the Linux Hello
-# lines in /etc/pam.d/sudo, kde and login first, then the services and their files.
+# lines in /etc/pam.d/sudo, kde, login and greetd first, then greetd's own command, then the
+# services, the greeter and their files.
 #
 #   scripts/prototype/uninstall.sh            remove; keep the PIN records in /var/lib/linuxhello
 #   scripts/prototype/uninstall.sh --purge    also delete /var/lib/linuxhello (the PIN key blobs
@@ -22,7 +23,7 @@ done
 [[ $EUID -ne 0 ]] || { echo "run as your own user, not root" >&2; exit 1; }
 
 MARK="# linux-hello prototype"
-for file in /etc/pam.d/sudo /etc/pam.d/kde /etc/pam.d/login; do
+for file in /etc/pam.d/sudo /etc/pam.d/kde /etc/pam.d/login /etc/pam.d/greetd; do
   [[ -f "$file" ]] || continue
   if grep -qF "$MARK" "$file"; then
     tmp=$(mktemp)
@@ -35,6 +36,18 @@ for file in /etc/pam.d/sudo /etc/pam.d/kde /etc/pam.d/login; do
     sudo rm -f "$file.linuxhello-orig"
   fi
 done
+
+# greetd gets its own command back (what install.sh --greeter replaced); a running greetd keeps the
+# greeter on screen until it restarts.
+config=/etc/greetd/config.toml
+if [[ -f "$config.linuxhello-orig" ]] && grep -qF "$MARK" "$config"; then
+  sudo cp -p "$config.linuxhello-orig" "$config"
+  sudo rm -f "$config.linuxhello-orig"
+  echo "gave greetd its own command back in $config (sudo systemctl restart greetd shows it)"
+fi
+sudo rm -rf /usr/lib/linuxhello/qml /usr/share/linuxhello/greeter
+sudo rm -f /usr/bin/linuxhello-greeter
+sudo rmdir /usr/lib/linuxhello /usr/share/linuxhello 2>/dev/null || true
 
 sudo systemctl disable --now linuxhello-agent linuxhello-tpm-provider >/dev/null 2>&1 || true
 # What install.sh --face added: the unit's drop-in and the ACL on Howdy's models.
