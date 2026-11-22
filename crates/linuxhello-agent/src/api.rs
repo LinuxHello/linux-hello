@@ -220,6 +220,15 @@ pub struct PinRulesReply {
     pub disallowed: Vec<String>,
 }
 
+/// How many authentications and PIN jobs one user may have running at once. A user may open 64
+/// prompts; a job holds threads (and Howdy a Python process), the Agent's unit allows 128 threads
+/// for everybody, and a person needs one or two at a time (review finding R-05, #348).
+pub const MAX_RUNNING_PER_USER: usize = 8;
+
+/// How many jobs root may have running at once: the login screen and PAM open prompts as root for
+/// many users, so it gets a larger budget of its own, still well below the unit's 128 tasks.
+pub const MAX_RUNNING_FOR_ROOT: usize = 32;
+
 /// The request layer over a [`StateStore`].
 pub struct Api {
     /// The per-prompt state and its access rules.
@@ -231,6 +240,8 @@ pub struct Api {
     /// The authentications that are running, by the user who opened the prompt and its id; the
     /// flag stops the orchestrator when the prompt closes.
     running: HashMap<(u32, PromptId), Cancel>,
+    /// The user each running job authenticates, for the budget of root's jobs.
+    running_subject: HashMap<(u32, PromptId), u32>,
     /// The PIN lock, when the Agent has one.
     pin_lock: Option<Arc<PinLockService>>,
     /// What says whether a user's PIN key is still in the TPM, when the Agent has one.
@@ -253,6 +264,7 @@ impl Api {
             user_policies: None,
             audit: Audit::none(),
             running: HashMap::new(),
+            running_subject: HashMap::new(),
             pin_lock: None,
             key_probe: None,
             clock: wall_clock_seconds,
@@ -642,6 +654,33 @@ impl Api {
         store.get(uid).map_err(ApiError::from)
     }
 
+    /// Refuses a job when `uid` already has [`MAX_RUNNING_PER_USER`] running: a user may open many
+    /// prompts, but each running job holds threads, and the Agent's unit allows 128 for everybody
+    /// (`a_user_cannot_run_more_jobs_than_the_limit`, review finding R-05, #348).
+    ///
+    /// Root opens prompts for many users (the login screen, PAM), so for root the budget is per
+    /// subject: each user has [`MAX_RUNNING_PER_USER`] jobs of root's running for them, and root's
+    /// jobs together stay under [`MAX_RUNNING_FOR_ROOT`], below the unit's task limit. One user's
+    /// slow prompts then cannot use up what another user's login needs
+    /// (`root_has_a_budget_per_user_and_a_ceiling`).
+    fn require_room_for_a_job(&self, uid: u32, subject: u32) -> Result<(), ApiError> {
+        let owned = self.running.keys().filter(|(owner, _)| *owner == uid);
+        let full = if uid == 0 {
+            let for_subject = self
+                .running_subject
+                .iter()
+                .filter(|((owner, _), user)| *owner == 0 && **user == subject)
+                .count();
+            for_subject >= MAX_RUNNING_PER_USER || owned.count() >= MAX_RUNNING_FOR_ROOT
+        } else {
+            owned.count() >= MAX_RUNNING_PER_USER
+        };
+        if full {
+            return Err(ApiError::LimitReached);
+        }
+        Ok(())
+    }
+
     /// Refuses a caller that is not the connection that opened the prompt
     /// (`only_the_opener_may_report_or_close_a_prompt`, ADR-0014 amendment of 2026-11-22).
     fn require_opener(&self, caller: &Caller, uid: u32, prompt: &PromptId) -> Result<(), ApiError> {
@@ -744,9 +783,11 @@ impl Api {
         if self.running.contains_key(&(uid, prompt.clone())) {
             return Err(ApiError::LimitReached);
         }
+        self.require_room_for_a_job(uid, subject)?;
         let rule = self.policy_of(subject)?.methods_for(context);
         let stop = Cancel::default();
         self.running.insert((uid, prompt.clone()), stop.clone());
+        self.running_subject.insert((uid, prompt.clone()), subject);
         Ok(AuthStart {
             opener_uid: uid,
             prompt,
@@ -804,9 +845,11 @@ impl Api {
         if self.running.contains_key(&(uid, prompt.clone())) {
             return Err(ApiError::LimitReached);
         }
+        self.require_room_for_a_job(uid, subject)?;
         let rules = self.policy_of(subject)?.pin_rules();
         let stop = Cancel::default();
         self.running.insert((uid, prompt.clone()), stop.clone());
+        self.running_subject.insert((uid, prompt.clone()), subject);
         Ok(PinStart {
             opener_uid: uid,
             prompt,
@@ -850,8 +893,10 @@ impl Api {
         if self.running.contains_key(&(uid, prompt.clone())) {
             return Err(ApiError::LimitReached);
         }
+        self.require_room_for_a_job(uid, subject)?;
         let stop = Cancel::default();
         self.running.insert((uid, prompt.clone()), stop.clone());
+        self.running_subject.insert((uid, prompt.clone()), subject);
         Ok(ResetStart {
             opener_uid: uid,
             prompt,
@@ -884,6 +929,7 @@ impl Api {
         let peers = self.store.report(uid, prompt, update).unwrap_or_default();
         if ended {
             self.running.remove(&(uid, prompt.clone()));
+            self.running_subject.remove(&(uid, prompt.clone()));
         }
         peers
             .into_iter()
@@ -2760,12 +2806,13 @@ mod tests {
     }
 
     #[test]
-    fn a_full_table_is_limit_reached() {
+    fn a_user_with_eight_calls_waiting_is_limit_reached() {
         let (mut api, _recorder, socket, _path, _dir) = pin_setup();
         let id = prompt("p1");
         api.open_prompt_from(on_peer(1000, ":1.1"), ":1.1", &id, Some(1000))
             .unwrap();
-        for pid in 0..64 {
+        // Eight waiting control calls are a user's share of the table (R-15, #357).
+        for pid in 0..8 {
             assert_eq!(
                 api.expect_pin(on_peer(1000, ":1.1"), Some(1000 + pid), &id, Some(&socket)),
                 Ok(())
@@ -2895,6 +2942,84 @@ mod tests {
         let ended = Update::Result(Outcome::new(PromptResult::Failure));
         api.agent_report(1000, &first.prompt, ended);
         assert!(api.begin_authentication(opener, &id, "sudo").is_ok());
+    }
+
+    #[test]
+    fn a_user_cannot_run_more_jobs_than_the_limit() {
+        // R-05, #348: a user may open many prompts, but only MAX_RUNNING_PER_USER jobs run at once,
+        // so one local user cannot use up the threads of the whole Agent. Another user is not held
+        // back, and the end of a job makes room.
+        let (mut api, _recorder, _tmp, _id) = authentication_setup();
+        let opener = on_peer(1000, ":1.1");
+        let mut started = Vec::new();
+        for n in 0..MAX_RUNNING_PER_USER {
+            let id = prompt(&format!("jobs{n}"));
+            api.open_prompt_from(opener, ":1.1", &id, Some(1000))
+                .unwrap();
+            started.push(api.begin_authentication(opener, &id, "login").unwrap());
+        }
+        let one_more = prompt("one-more");
+        api.open_prompt_from(opener, ":1.1", &one_more, Some(1000))
+            .unwrap();
+        assert!(matches!(
+            api.begin_authentication(opener, &one_more, "login"),
+            Err(ApiError::LimitReached)
+        ));
+        // Another user is not held back by it.
+        let other = prompt("other-user");
+        api.open_prompt_from(on_peer(1001, ":1.2"), ":1.2", &other, Some(1001))
+            .unwrap();
+        assert!(api
+            .begin_authentication(on_peer(1001, ":1.2"), &other, "login")
+            .is_ok());
+        // A job that ends makes room.
+        let ended = Update::Result(Outcome::new(PromptResult::Failure));
+        api.agent_report(1000, &started[0].prompt, ended);
+        assert!(api.begin_authentication(opener, &one_more, "login").is_ok());
+    }
+
+    #[test]
+    fn root_has_a_budget_per_user_and_a_ceiling() {
+        // The login screen opens prompts as root for many users: one user's prompts use up that
+        // user's budget and nobody else's, and root's jobs together are bounded.
+        let (mut api, _recorder, _tmp, _id) = authentication_setup();
+        let root = on_peer(0, ":1.9");
+        for n in 0..MAX_RUNNING_PER_USER {
+            let id = prompt(&format!("root-job{n}"));
+            api.open_prompt_from(root, ":1.9", &id, Some(1000)).unwrap();
+            assert!(api.begin_authentication(root, &id, "login").is_ok());
+        }
+        let one_more = prompt("root-one-more");
+        api.open_prompt_from(root, ":1.9", &one_more, Some(1000))
+            .unwrap();
+        assert!(matches!(
+            api.begin_authentication(root, &one_more, "login"),
+            Err(ApiError::LimitReached)
+        ));
+        // Another user's login is not held back by it.
+        let other = prompt("root-other-user");
+        api.open_prompt_from(root, ":1.9", &other, Some(1001))
+            .unwrap();
+        assert!(api.begin_authentication(root, &other, "login").is_ok());
+    }
+
+    #[test]
+    fn root_jobs_together_stay_under_the_ceiling() {
+        let (mut api, _recorder, _tmp, _id) = authentication_setup();
+        let root = on_peer(0, ":1.9");
+        for n in 0..MAX_RUNNING_FOR_ROOT {
+            let uid = 2000 + u32::try_from(n).unwrap();
+            let id = prompt(&format!("ceiling{n}"));
+            api.open_prompt_from(root, ":1.9", &id, Some(uid)).unwrap();
+            assert!(api.begin_authentication(root, &id, "login").is_ok());
+        }
+        let one_more = prompt("ceiling-one-more");
+        api.open_prompt_from(root, ":1.9", &one_more, Some(5000))
+            .unwrap();
+        assert!(matches!(
+            api.begin_authentication(root, &one_more, "login"),
+            Err(ApiError::LimitReached)
+        ));
     }
 
     #[test]

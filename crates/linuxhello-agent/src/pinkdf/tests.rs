@@ -177,3 +177,25 @@ fn the_cost_of_the_default_parameters() {
     }
     println!("default parameters: {:?} per PIN", started.elapsed() / runs);
 }
+
+#[test]
+fn at_most_four_stretchings_run_at_once() {
+    // R-05, #348: sixteen threads stretch together; no more than MAX_AT_ONCE are ever inside at
+    // the same time, and every one of them still gets its answer.
+    let threads: Vec<_> = (0..16)
+        .map(|n| {
+            std::thread::spawn(move || {
+                let pin = format!("12345{n}");
+                stretch(pin.as_bytes(), &salt(), &FAST).map(|s| *s.as_bytes())
+            })
+        })
+        .collect();
+    for thread in threads {
+        assert!(thread.join().unwrap().is_ok());
+    }
+    let most = MOST_AT_ONCE.load(std::sync::atomic::Ordering::SeqCst);
+    assert!(
+        (1..=MAX_AT_ONCE).contains(&most),
+        "{most} stretchings ran at once"
+    );
+}

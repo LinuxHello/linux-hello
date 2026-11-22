@@ -21,6 +21,8 @@
 //!
 //! C4 component: `pinManager` ([workspace.dsl](https://github.com/LinuxHello/linux-hello-architecture/blob/main/workspace.dsl))
 
+use std::sync::{Condvar, Mutex, PoisonError};
+
 use argon2::{Algorithm, Argon2, Params as Argon2Params, Version};
 use unicode_normalization::UnicodeNormalization;
 use zeroize::{Zeroize, Zeroizing};
@@ -125,7 +127,45 @@ fn normalise(pin: &[u8]) -> Result<(Zeroizing<[u8; NORMALISED_BYTES]>, usize), K
     Ok((buffer, used))
 }
 
-/// Stretches `pin` with `salt` and `params`: NFKC, then Argon2id, 32 bytes out.
+/// How many stretchings may run at once, in the whole Agent. Each one allocates up to
+/// [`Params::DEFAULT`]'s 64 MiB, and the unit's `MemoryMax` is 1 GiB, so a user who started many PIN
+/// checks at once could use the memory of everybody else's; the rest wait for a place
+/// (`at_most_four_stretchings_run_at_once`, review finding R-05, #348).
+const MAX_AT_ONCE: usize = 4;
+
+/// The places for stretchings: how many are taken, and who waits.
+static PLACES: (Mutex<usize>, Condvar) = (Mutex::new(0), Condvar::new());
+
+/// A place for one stretching, given back when dropped.
+struct Place;
+
+impl Place {
+    /// Waits for a place.
+    fn take() -> Self {
+        let (taken, freed) = &PLACES;
+        let mut taken = taken.lock().unwrap_or_else(PoisonError::into_inner);
+        while *taken >= MAX_AT_ONCE {
+            taken = freed.wait(taken).unwrap_or_else(PoisonError::into_inner);
+        }
+        *taken += 1;
+        Self
+    }
+}
+
+impl Drop for Place {
+    fn drop(&mut self) {
+        let (taken, freed) = &PLACES;
+        *taken.lock().unwrap_or_else(PoisonError::into_inner) -= 1;
+        freed.notify_one();
+    }
+}
+
+/// The most stretchings that have run at once since the process started, for the test.
+#[cfg(test)]
+static MOST_AT_ONCE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Stretches `pin` with `salt` and `params`: NFKC, then Argon2id, 32 bytes out. At most
+/// At most four (`MAX_AT_ONCE`) stretchings run at once; a call waits for its turn.
 ///
 /// # Errors
 ///
@@ -149,6 +189,12 @@ pub fn stretch(
     .map_err(|_| KdfError::BadParams)?;
     let argon = Argon2::new(Algorithm::Argon2id, Version::V0x13, argon_params);
     let mut out = Zeroizing::new([0_u8; OUTPUT_BYTES]);
+    let _place = Place::take();
+    #[cfg(test)]
+    {
+        let now = *PLACES.0.lock().unwrap_or_else(PoisonError::into_inner);
+        MOST_AT_ONCE.fetch_max(now, std::sync::atomic::Ordering::SeqCst);
+    }
     argon
         .hash_password_into(&normalised[..used], salt, &mut *out)
         .map_err(|_| KdfError::Failed)?;
