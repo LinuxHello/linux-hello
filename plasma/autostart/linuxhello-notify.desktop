@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Linux Hello notifications
+Comment=Tells you after you sign in when your Linux Hello PIN expires soon or something needs your attention
+Exec=/usr/bin/linuxhello-ctl notify
+NoDisplay=true
+X-KDE-autostart-phase=2

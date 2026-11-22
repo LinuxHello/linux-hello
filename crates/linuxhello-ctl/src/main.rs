@@ -75,6 +75,8 @@ fn main() -> ExitCode {
     let host = RealHost::default();
     let code = if matches!(args.first().map(String::as_str), Some("pin")) {
         pin_command(&args, &mut out)
+    } else if args == ["notify"] {
+        status::notify::run(&host, &mut status::notify::SessionNotifier::default())
     } else if matches!(args[0].as_str(), "status" | "doctor") {
         status::run(
             &args,

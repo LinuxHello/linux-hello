@@ -73,6 +73,7 @@ sudo systemd-sysusers "$sec/systemd/linuxhello.sysusers"
 sudo install -D -m755 "$musl/linuxhello-agent" /usr/libexec/linuxhello/linuxhello-agent
 sudo install -D -m755 "$rel/linuxhello-tpm-provider" /usr/libexec/linuxhello/linuxhello-tpm-provider
 sudo install -D -m755 "$musl/linuxhello-ctl" /usr/bin/linuxhello-ctl
+sudo install -D -m644 "$root/plasma/autostart/linuxhello-notify.desktop" /etc/xdg/autostart/linuxhello-notify.desktop
 sudo install -D -m644 "$sec/dbus/io.github.LinuxHello.Agent1.conf" /usr/share/dbus-1/system.d/io.github.LinuxHello.Agent1.conf
 sudo install -D -m644 "$sec/dbus/io.github.LinuxHello.Agent1.service" /usr/share/dbus-1/system-services/io.github.LinuxHello.Agent1.service
 sudo install -m644 "$sec/apparmor/linuxhello-agent" /etc/apparmor.d/linuxhello-agent

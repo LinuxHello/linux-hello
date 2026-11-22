@@ -172,6 +172,39 @@ pub mod status {
     /// The code of a PIN that expires within 14 days (ADR-0021, amendment of 2026-11-21, point 6).
     pub const PIN_EXPIRES_SOON: &str = "pin-expires-soon";
 
+    /// The code of [`PIN_EXPIRES_SOON`] on the bus: the base code, `: ` and the whole days left,
+    /// rounded up, at least 1, so that a client reads the number without parsing the sentence
+    /// (ADR-0024, amendment of 2026-11-22).
+    #[must_use]
+    pub fn pin_expires_soon_code(days_left: u64) -> String {
+        format!("{PIN_EXPIRES_SOON}: {}", days_left.max(1))
+    }
+
+    /// A code split into its base code and its parameter, if it has one (ADR-0024, point 3 and
+    /// the amendment of 2026-11-22): `context-unsatisfiable: login` is `("context-unsatisfiable",
+    /// Some("login"))`, `tpm-cleared` is `("tpm-cleared", None)`.
+    #[must_use]
+    pub fn split_code(code: &str) -> (&str, Option<&str>) {
+        code.split_once(": ")
+            .map_or((code, None), |(base, parameter)| (base, Some(parameter)))
+    }
+
+    /// The days left of a `pin-expires-soon` code; `None` for any other code or a parameter that
+    /// is not a whole number of at least 1 written in decimal digits.
+    #[must_use]
+    pub fn days_of_pin_expires_soon(code: &str) -> Option<u64> {
+        match split_code(code) {
+            (PIN_EXPIRES_SOON, Some(days))
+                if !days.is_empty()
+                    && !days.starts_with('0')
+                    && days.bytes().all(|b| b.is_ascii_digit()) =>
+            {
+                days.parse().ok()
+            }
+            _ => None,
+        }
+    }
+
     /// The sentence of [`PIN_EXPIRES_SOON`]: the whole days left, rounded up, at least 1.
     #[must_use]
     pub fn pin_expires_soon_sentence(days_left: u64) -> String {
@@ -746,6 +779,35 @@ mod tests {
             assert!(CODES.contains(&code.split(": ").next().unwrap()));
             assert!(code.ends_with(context));
         }
+    }
+
+    #[test]
+    fn a_client_reads_the_days_without_parsing_the_sentence() {
+        use super::status::{
+            days_of_pin_expires_soon, pin_expires_soon_code, split_code, CODES, PIN_EXPIRES_SOON,
+        };
+        assert_eq!(pin_expires_soon_code(5), "pin-expires-soon: 5");
+        assert_eq!(pin_expires_soon_code(0), "pin-expires-soon: 1");
+        assert_eq!(
+            days_of_pin_expires_soon(&pin_expires_soon_code(14)),
+            Some(14)
+        );
+        let code = pin_expires_soon_code(3);
+        let (base, _) = split_code(&code);
+        assert_eq!(base, PIN_EXPIRES_SOON);
+        assert!(CODES.contains(&base));
+        for odd in [
+            "pin-expires-soon",
+            "pin-expires-soon: ",
+            "pin-expires-soon: 05",
+            "pin-expires-soon: 0",
+            "pin-expires-soon: -3",
+            "pin-expires-soon: 3 days",
+            "context-unsatisfiable: 3",
+        ] {
+            assert_eq!(days_of_pin_expires_soon(odd), None, "{odd}");
+        }
+        assert_eq!(split_code("tpm-cleared"), ("tpm-cleared", None));
     }
 
     #[test]

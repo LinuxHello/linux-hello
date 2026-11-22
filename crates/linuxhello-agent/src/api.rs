@@ -1061,8 +1061,8 @@ impl Api {
         context: &str,
     ) -> Result<Vec<(String, String, String)>, ApiError> {
         use linuxhello_dbus::status::{
-            context_unsatisfiable_on_the_bus, PIN_EXPIRED, PIN_EXPIRES_SOON, PIN_LOCK_DAMAGED,
-            POLICY_PIN_ONLY, TPM_CLEARED,
+            context_unsatisfiable_on_the_bus, split_code, PIN_EXPIRED, PIN_EXPIRES_SOON,
+            PIN_LOCK_DAMAGED, POLICY_PIN_ONLY, TPM_CLEARED,
         };
         let uid = caller.uid.ok_or(ApiError::Denied)?;
         let prompt = parse_prompt(prompt_id)?;
@@ -1081,7 +1081,7 @@ impl Api {
         let shown = |code: &str| {
             [POLICY_PIN_ONLY, PIN_LOCK_DAMAGED, TPM_CLEARED].contains(&code)
                 || code == this_context
-                || (signed_in && [PIN_EXPIRES_SOON, PIN_EXPIRED].contains(&code))
+                || (signed_in && [PIN_EXPIRES_SOON, PIN_EXPIRED].contains(&split_code(code).0))
         };
         Ok(self
             .status_items(subject)?
@@ -1101,10 +1101,11 @@ impl Api {
     fn status_items(&self, uid: u32) -> Result<Vec<StatusItem>, ApiError> {
         use crate::pinrecord::Expiry;
         use linuxhello_dbus::status::{
-            context_unsatisfiable_on_the_bus, pin_expires_soon_sentence, pin_locked_sentence,
-            tpm_limit_low_sentence, Severity, PIN_EXPIRED, PIN_EXPIRED_SENTENCE, PIN_EXPIRES_SOON,
-            PIN_LOCKED, PIN_LOCK_DAMAGED, PIN_LOCK_DAMAGED_SENTENCE, POLICY_PIN_ONLY,
-            POLICY_PIN_ONLY_SENTENCE, TPM_CLEARED, TPM_CLEARED_SENTENCE, TPM_LIMIT_LOW,
+            context_unsatisfiable_on_the_bus, pin_expires_soon_code, pin_expires_soon_sentence,
+            pin_locked_sentence, tpm_limit_low_sentence, Severity, PIN_EXPIRED,
+            PIN_EXPIRED_SENTENCE, PIN_LOCKED, PIN_LOCK_DAMAGED, PIN_LOCK_DAMAGED_SENTENCE,
+            POLICY_PIN_ONLY, POLICY_PIN_ONLY_SENTENCE, TPM_CLEARED, TPM_CLEARED_SENTENCE,
+            TPM_LIMIT_LOW,
         };
         let policy = self.policy_of(uid)?;
         let (layer, reason) = match &policy {
@@ -1182,7 +1183,7 @@ impl Api {
             match crate::pinrecord::expiry(changed_at, (self.clock)(), days) {
                 Expiry::Current => {}
                 Expiry::ExpiresSoon { days_left } => items.push(StatusItem {
-                    code: PIN_EXPIRES_SOON.to_string(),
+                    code: pin_expires_soon_code(days_left),
                     severity: Severity::Warning,
                     sentence: pin_expires_soon_sentence(days_left),
                     detail: None,
@@ -2055,13 +2056,24 @@ mod tests {
         assert_eq!(soon.len(), 1, "{soon:?}");
         assert_eq!(
             (soon[0].0.as_str(), soon[0].1.as_str()),
-            ("pin-expires-soon", "warning")
+            ("pin-expires-soon: 14", "warning")
         );
         assert!(soon[0].2.contains("14 days"), "{soon:?}");
         assert!(expiry_status(thirty, Some(85 * 86_400)).is_empty());
         // Part of a day left counts as a whole day.
         let part = expiry_status(thirty, Some(70 * 86_400 + 1));
         assert!(part[0].2.contains("in 1 day."), "{part:?}");
+    }
+
+    #[test]
+    fn pin_expires_soon_carries_the_days_as_its_parameter() {
+        use linuxhello_dbus::status::days_of_pin_expires_soon;
+        let thirty = Some("[pin]\nexpiry_days = 30\n");
+        for (set_on_day, days) in [(84, 14), (80, 10), (71, 1)] {
+            let soon = expiry_status(thirty, Some(set_on_day * 86_400));
+            assert_eq!(days_of_pin_expires_soon(&soon[0].0), Some(days), "{soon:?}");
+            assert!(soon[0].2.contains(&format!("in {days} day")), "{soon:?}");
+        }
     }
 
     #[test]
@@ -2447,7 +2459,10 @@ mod tests {
             assert!(CODES.contains(&base), "unknown code {code}");
             if let Some(parameter) = parameter {
                 assert!(
-                    CONTEXTS.contains(&parameter) || parameter == OTHER_CONTEXT,
+                    (base == "context-unsatisfiable"
+                        && (CONTEXTS.contains(&parameter) || parameter == OTHER_CONTEXT))
+                        || (base == "pin-expires-soon"
+                            && linuxhello_dbus::status::days_of_pin_expires_soon(code).is_some()),
                     "unknown parameter {code}"
                 );
             }

@@ -46,7 +46,7 @@ fi
 sudo apparmor_parser -R /etc/apparmor.d/linuxhello-agent /etc/apparmor.d/linuxhello-tpm-provider 2>/dev/null || true
 sudo rm -f /usr/lib/x86_64-linux-gnu/security/pam_linuxhello.so \
   /usr/libexec/linuxhello/linuxhello-agent /usr/libexec/linuxhello/linuxhello-tpm-provider \
-  /usr/bin/linuxhello-ctl \
+  /usr/bin/linuxhello-ctl /etc/xdg/autostart/linuxhello-notify.desktop \
   /usr/share/dbus-1/system.d/io.github.LinuxHello.Agent1.conf \
   /usr/share/dbus-1/system-services/io.github.LinuxHello.Agent1.service \
   /etc/apparmor.d/linuxhello-agent /etc/apparmor.d/linuxhello-tpm-provider \
