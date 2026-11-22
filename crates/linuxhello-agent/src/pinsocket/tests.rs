@@ -201,8 +201,32 @@ fn a_second_control_call_of_a_process_replaces_the_prompt_too() {
 
 #[test]
 fn too_many_waiting_control_calls_are_refused() {
+    // Sixty-four users with one call each fill the table; the one after them is refused.
     let (socket, _path, _dir) = socket();
-    for pid in 0..MAX_EXPECTATIONS {
+    for n in 0..MAX_EXPECTATIONS {
+        let caller = Process {
+            uid: 1000 + u32::try_from(n).unwrap(),
+            pid: 1,
+        };
+        socket
+            .expect(caller, caller.uid, target_of(caller.uid, 1))
+            .unwrap();
+    }
+    let one_more = Process {
+        uid: 9000,
+        pid: 9999,
+    };
+    assert_eq!(
+        socket.expect(one_more, 9000, target_of(9000, 1)),
+        Err(TooMany)
+    );
+}
+
+#[test]
+fn one_user_cannot_fill_the_table() {
+    // R-15, #357: of the 64 places, one user may hold eight; another user is not refused.
+    let (socket, _path, _dir) = socket();
+    for pid in 0..MAX_EXPECTATIONS_PER_USER {
         let caller = Process {
             uid: 1000,
             pid: u32::try_from(pid).unwrap(),
@@ -214,8 +238,40 @@ fn too_many_waiting_control_calls_are_refused() {
         pid: 9999,
     };
     assert_eq!(
-        socket.expect(one_more, 1000, target_of(1000, 1)),
+        socket.expect(one_more, 1000, target_of(1000, 2)),
         Err(TooMany)
+    );
+    let other = Process { uid: 1001, pid: 1 };
+    assert_eq!(socket.expect(other, 1001, target_of(1001, 3)), Ok(()));
+}
+
+#[test]
+fn a_client_that_trickles_bytes_is_dropped_on_time() {
+    // One byte every 400 ms keeps every single read inside its limit, but the whole frame is not
+    // there after two seconds, so the connection is dropped and the next client is served (R-15).
+    let (socket, path, _dir) = socket();
+    socket.expect(me(), 1000, target_of(1000, 1)).unwrap();
+    let started = Instant::now();
+    let mut got = Vec::new();
+    thread::scope(|scope| {
+        let client = scope.spawn(|| {
+            let mut stream = UnixStream::connect(&path).unwrap();
+            stream.write_all(&[0, 200]).ok();
+            for _ in 0..20 {
+                thread::sleep(Duration::from_millis(400));
+                if stream.write_all(b"1").is_err() {
+                    break;
+                }
+            }
+        });
+        socket.serve_one(&mut |s| got.push(s.subject)).unwrap();
+        client.join().unwrap();
+    });
+    assert!(got.is_empty());
+    assert!(
+        started.elapsed() < Duration::from_secs(4),
+        "{:?}",
+        started.elapsed()
     );
 }
 
