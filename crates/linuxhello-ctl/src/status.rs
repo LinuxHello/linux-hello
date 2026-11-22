@@ -24,6 +24,8 @@
 use std::io::{ErrorKind, Write};
 use std::path::Path;
 
+pub mod notify;
+
 use crate::ask;
 use crate::probe::Host;
 use linuxhello_agent::policy::{load, Policy, UserPolicyStore};

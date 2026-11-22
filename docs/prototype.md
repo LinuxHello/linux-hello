@@ -173,6 +173,8 @@ The question names the methods that run. While it waits for your PIN, the finger
 
 For each place, try a finger that is enrolled, a finger that is not, your face, someone else's face or a covered camera, a wrong PIN, and an empty Enter. Note anything that feels wrong, even when it does what the list above says: this is the first time anyone uses these flows.
 
+**After you sign in to Plasma**, a desktop notification tells you when your PIN expires within 14 days, has expired, or when something severe is wrong, such as a TPM that no longer holds your key. It comes from `linuxhello-ctl notify`, which the desktop starts once at login (`/etc/xdg/autostart/linuxhello-notify.desktop`). With nothing to report, nothing appears.
+
 One thing to watch on the lock screen: Plasma has its own fingerprint check, which also asks fprintd for the reader. If both want the reader at once, one of them may be refused. Write down which one shows a message.
 
 ### 7. What to send back
