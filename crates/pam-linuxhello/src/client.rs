@@ -375,8 +375,11 @@ pub fn authenticate_at(
     let Some(context) = request.context.filter(|c| CONTEXTS.contains(c)) else {
         return Code::Unavailable;
     };
+    // A name that is no user is "unavailable", not "unknown": `PAM_USER_UNKNOWN` ends the stack under
+    // `default=die` without a password prompt, which would tell an observer at the console which
+    // names exist; "unavailable" lets `pam_unix` ask for a password for every name alike (#359).
     let Some(uid) = request.uid else {
-        return Code::UserUnknown;
+        return Code::Unavailable;
     };
     // A person at another machine (sudo inside an SSH session) is not at the sensor or the camera
     // here: the fingerprint of whoever sits at this machine must not answer for them. Nothing is

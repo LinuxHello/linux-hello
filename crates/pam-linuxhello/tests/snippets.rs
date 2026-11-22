@@ -7,8 +7,10 @@ use std::path::Path;
 /// The services whose snippets are shipped.
 const SERVICES: [&str; 3] = ["login", "unlock", "sudo"];
 
-/// The control field that makes "unavailable" fall through and every other failure final.
-const CONTROL: &str = "[success=done authinfo_unavail=ignore default=die]";
+/// The control field that makes "unavailable" fall through, and a module that cannot be loaded as
+/// well (`module_unknown`: after a library upgrade that breaks the module nobody may be locked out
+/// of sudo and login, #359), and every other failure final.
+const CONTROL: &str = "[success=done authinfo_unavail=ignore module_unknown=ignore default=die]";
 
 /// The `auth` lines of a snippet as (control, module), in the order they are written.
 fn auth_lines(service: &str) -> Vec<(String, String)> {

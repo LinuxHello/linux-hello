@@ -486,7 +486,9 @@ fn a_missing_or_unknown_context_is_unavailable() {
             &request,
             &mut Person::default()
         ),
-        Code::UserUnknown
+        // Not "unknown": that would end the stack with no password prompt for a name that is no
+        // user, which tells an observer at the console which names exist (#359).
+        Code::Unavailable
     );
 }
 

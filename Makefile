@@ -50,6 +50,7 @@ unsafe-policy:
 hygiene:
 	bash scripts/ci/test-repo-hygiene.sh
 	bash scripts/ci/repo-hygiene.sh
+	bash scripts/ci/test-pam-insert.sh
 
 no-tpm-in-agent:
 	bash scripts/ci/agent-links-no-tpm.sh
