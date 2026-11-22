@@ -6,7 +6,7 @@ use std::os::unix::net::UnixListener;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use super::bus::tests::{listen, signal, Peer};
+use super::bus::tests::{listen, signal, unreadable_signal, Peer};
 use super::wire::Value;
 use super::*;
 
@@ -21,6 +21,8 @@ struct Script {
     /// in `asked_status`, not in `calls`.
     status: VecDeque<Option<Vec<(String, String, String)>>>,
     asked_status: Vec<String>,
+    /// When the signals are used up the connection fails, instead of "nothing before the deadline".
+    then_fail: bool,
 }
 
 impl Agent for Script {
@@ -41,7 +43,10 @@ impl Agent for Script {
     }
 
     fn signal(&mut self, _prompt: &str, _deadline: Instant) -> Result<Option<Signal>, Fault> {
-        Ok(self.signals.pop_front().flatten())
+        match self.signals.pop_front() {
+            None if self.then_fail => Err(Fault),
+            next => Ok(next.flatten()),
+        }
     }
 
     fn conditions(
@@ -668,6 +673,99 @@ fn a_wrong_pin_then_a_silent_reader_never_falls_through_to_the_password() {
             Some("error: Wrong PIN.")
         );
     }
+}
+
+#[test]
+fn a_connection_fault_after_a_wrong_pin_stays_denied() {
+    // The PIN was refused; whatever goes wrong with the bus afterwards must not turn that into
+    // "unavailable", which goes on to the password prompt (P-32, R-03, #346).
+    let mut agent = Script {
+        signals: [active(&["fingerprint", "pin"]), active(&["fingerprint"])].into(),
+        then_fail: true,
+        ..Script::default()
+    };
+    let mut socket = Socket {
+        accept: true,
+        ..Socket::default()
+    };
+    let mut person = Person {
+        answers: [Some("1111")].into(),
+        ..Person::default()
+    };
+    assert_eq!(go(&mut agent, &mut socket, &mut person), Code::Denied);
+    assert_eq!(
+        person.shown.last().map(String::as_str),
+        Some("error: Wrong PIN.")
+    );
+    // Before any PIN, the same fault is still "unavailable".
+    let mut agent = Script {
+        signals: [active(&["fingerprint", "pin"])].into(),
+        then_fail: true,
+        ..Script::default()
+    };
+    let mut person = Person {
+        answers: [Some("")].into(),
+        ..Person::default()
+    };
+    assert_eq!(
+        go(&mut agent, &mut Socket::default(), &mut person),
+        Code::Unavailable
+    );
+}
+
+#[test]
+fn a_hostile_signal_cannot_switch_linux_hello_off() {
+    // R-03 (#346) end to end on a fake bus: a connection that is not the Agent sends a signal the
+    // codec cannot read, and the Agent itself sends one with a type it does not know, in the middle
+    // of a sign-in. The sign-in still ends as the Agent says.
+    let (dir, path, listener) = listen();
+    let server = fake_agent(listener, |peer| {
+        for _ in 0..4 {
+            let call = peer.read();
+            let body = if call.member.as_deref() == Some("GetPromptStatus") {
+                vec![Value::Triples(vec![])]
+            } else {
+                vec![]
+            };
+            peer.reply(&call, body);
+        }
+        let prompt = |id: &str| Value::Str(id.to_string());
+        peer.send_raw(&unreadable_signal("Result", ":1.99"));
+        peer.send(&signal(
+            "ActiveMethods",
+            ":1.5",
+            vec![prompt("PROMPT"), Value::Strs(vec!["fingerprint".into()])],
+        ));
+        peer.send_raw(&unreadable_signal("Result", ":1.99"));
+        peer.send_raw(&unreadable_signal("MethodEnded", ":1.5"));
+        peer.send(&signal(
+            "Result",
+            ":1.5",
+            vec![
+                prompt("PROMPT"),
+                prompt("failure"),
+                prompt("not-recognised"),
+                Value::U32(0),
+            ],
+        ));
+        let close = peer.read();
+        assert_eq!(close.member.as_deref(), Some("ClosePrompt"));
+        peer.reply(&close, vec![]);
+    });
+    let mut agent = BusAgent::connect(&path, &FAST).unwrap();
+    let mut person = Person::default();
+    let code = run(
+        &mut agent,
+        &mut SocketPin(&dir.path().join("pin")),
+        &mut person,
+        "PROMPT",
+        1000,
+        "sudo",
+        &FAST,
+        Instant::now(),
+    );
+    assert_eq!(code, Code::Denied, "{:?}", person.shown);
+    server.join().unwrap();
 }
 
 #[test]

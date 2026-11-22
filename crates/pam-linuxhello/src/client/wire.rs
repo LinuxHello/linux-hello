@@ -337,13 +337,28 @@ impl Reader<'_> {
     }
 }
 
-/// Reads a whole message, as [`total_length`] measured it.
+/// The header of a message that has been read, and where its body is. The body is decoded only
+/// when it is wanted ([`Parts::body`]): a message that will not be used must not be able to fail
+/// the exchange by what its body holds (review finding R-03, #346).
+#[derive(Clone, Debug)]
+pub struct Parts {
+    /// The message with an empty body.
+    pub message: Message,
+    /// The signature of the body.
+    signature: String,
+    /// Where the body starts in the bytes.
+    body_start: usize,
+    /// Whether the bytes are little-endian.
+    little: bool,
+}
+
+/// Reads the header of a whole message, as [`total_length`] measured it, and checks the length of
+/// the body against it; the body itself is not decoded.
 ///
 /// # Errors
 ///
-/// [`Malformed`] for anything that is not a well-formed message whose body has only the types `s`,
-/// `u`, `x` and `as`.
-pub fn parse(bytes: &[u8]) -> Result<Message, Malformed> {
+/// [`Malformed`] for anything that is not a well-formed header.
+pub fn parse_header(bytes: &[u8]) -> Result<Parts, Malformed> {
     let head: &[u8; 16] = bytes
         .get(..16)
         .and_then(|h| h.try_into().ok())
@@ -400,60 +415,98 @@ pub fn parse(bytes: &[u8]) -> Result<Message, Malformed> {
     if bytes.len() - body_start != body_length {
         return Err(Malformed);
     }
-    // The body is aligned from its own start, which is a multiple of 8 from the message's.
-    let mut types = signature.as_str();
-    while !types.is_empty() {
-        if let Some(rest) = types.strip_prefix("a(sss)") {
-            // The length counts the elements' bytes, from after the padding to the first one.
-            let n = usize::try_from(r.u32()?).map_err(|_| Malformed)?;
-            r.align(8)?;
-            let end = r.at.checked_add(n).ok_or(Malformed)?;
-            let mut items = Vec::new();
-            while r.at < end {
+    Ok(Parts {
+        message,
+        signature,
+        body_start,
+        little: bytes[0] == b'l',
+    })
+}
+
+impl Parts {
+    /// The decoded body of the message whose `bytes` these are the parts of.
+    ///
+    /// # Errors
+    ///
+    /// [`Malformed`] for a body whose types are not only `s`, `u`, `x`, `as` and `a(sss)`, or that
+    /// does not fit its signature.
+    pub fn body(&self, bytes: &[u8]) -> Result<Vec<Value>, Malformed> {
+        let mut r = Reader {
+            bytes,
+            at: self.body_start,
+            little: self.little,
+        };
+        let mut body = Vec::new();
+        // The body is aligned from its own start, which is a multiple of 8 from the message's.
+        let mut types = self.signature.as_str();
+        while !types.is_empty() {
+            if let Some(rest) = types.strip_prefix("a(sss)") {
+                // The length counts the elements' bytes, from after the padding to the first one.
+                let n = usize::try_from(r.u32()?).map_err(|_| Malformed)?;
                 r.align(8)?;
-                items.push((r.string()?, r.string()?, r.string()?));
-            }
-            if r.at != end {
-                return Err(Malformed);
-            }
-            message.body.push(Value::Triples(items));
-            types = rest;
-        } else if let Some(rest) = types.strip_prefix("as") {
-            let n = usize::try_from(r.u32()?).map_err(|_| Malformed)?;
-            let end = r.at.checked_add(n).ok_or(Malformed)?;
-            let mut items = Vec::new();
-            while r.at < end {
-                items.push(r.string()?);
-            }
-            if r.at != end {
-                return Err(Malformed);
-            }
-            message.body.push(Value::Strs(items));
-            types = rest;
-        } else if let Some(rest) = types.strip_prefix('s') {
-            message.body.push(Value::Str(r.string()?));
-            types = rest;
-        } else if let Some(rest) = types.strip_prefix('u') {
-            message.body.push(Value::U32(r.u32()?));
-            types = rest;
-        } else if let Some(rest) = types.strip_prefix('x') {
-            r.align(8)?;
-            let b = r.take(8)?;
-            let bytes: [u8; 8] = b.try_into().map_err(|_| Malformed)?;
-            message.body.push(Value::I64(if r.little {
-                i64::from_le_bytes(bytes)
+                let end = r.at.checked_add(n).ok_or(Malformed)?;
+                let mut items = Vec::new();
+                while r.at < end {
+                    r.align(8)?;
+                    items.push((r.string()?, r.string()?, r.string()?));
+                }
+                if r.at != end {
+                    return Err(Malformed);
+                }
+                body.push(Value::Triples(items));
+                types = rest;
+            } else if let Some(rest) = types.strip_prefix("as") {
+                let n = usize::try_from(r.u32()?).map_err(|_| Malformed)?;
+                let end = r.at.checked_add(n).ok_or(Malformed)?;
+                let mut items = Vec::new();
+                while r.at < end {
+                    items.push(r.string()?);
+                }
+                if r.at != end {
+                    return Err(Malformed);
+                }
+                body.push(Value::Strs(items));
+                types = rest;
+            } else if let Some(rest) = types.strip_prefix('s') {
+                body.push(Value::Str(r.string()?));
+                types = rest;
+            } else if let Some(rest) = types.strip_prefix('u') {
+                body.push(Value::U32(r.u32()?));
+                types = rest;
+            } else if let Some(rest) = types.strip_prefix('x') {
+                r.align(8)?;
+                let b = r.take(8)?;
+                let eight: [u8; 8] = b.try_into().map_err(|_| Malformed)?;
+                body.push(Value::I64(if r.little {
+                    i64::from_le_bytes(eight)
+                } else {
+                    i64::from_be_bytes(eight)
+                }));
+                types = rest;
             } else {
-                i64::from_be_bytes(bytes)
-            }));
-            types = rest;
-        } else {
+                return Err(Malformed);
+            }
+        }
+        if r.at != bytes.len() {
             return Err(Malformed);
         }
+        Ok(body)
     }
-    if r.at != bytes.len() {
-        return Err(Malformed);
-    }
-    Ok(message)
+}
+
+/// Reads a whole message, as [`total_length`] measured it.
+///
+/// # Errors
+///
+/// [`Malformed`] for anything that is not a well-formed message whose body has only the types `s`,
+/// `u`, `x` and `as`.
+pub fn parse(bytes: &[u8]) -> Result<Message, Malformed> {
+    let parts = parse_header(bytes)?;
+    let body = parts.body(bytes)?;
+    Ok(Message {
+        body,
+        ..parts.message
+    })
 }
 
 /// A message of any kind with the given header fields and body, for the fake bus of the tests.

@@ -195,6 +195,8 @@ impl BusAgent {
         let Some(Value::Str(owner)) = reply.into_iter().next() else {
             return Err(Fault);
         };
+        // From here on only the Agent's own signals are read at all (R-03, #346).
+        bus.trust_signals_from(owner.clone());
         Ok(Self {
             bus,
             owner,
@@ -459,7 +461,14 @@ fn steps(
         Code::Denied
     };
     loop {
-        let Some(signal) = agent.signal(prompt, until)? else {
+        let heard = match agent.signal(prompt, until) {
+            Ok(heard) => heard,
+            // Once a PIN was refused, nothing that goes wrong afterwards may turn that into "unavailable",
+            // which would go on to the password prompt (P-32, review finding R-03, #346).
+            Err(Fault) if pin_refused => return Ok(refused(conversation)),
+            Err(fault) => return Err(fault),
+        };
+        let Some(signal) = heard else {
             return Ok(if pin_refused {
                 refused(conversation)
             } else {
