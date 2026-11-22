@@ -80,8 +80,8 @@ profile linuxhello-agent /usr/libexec/linuxhello/linuxhello-agent flags=(attach_
   /sys/class/video4linux/** r,
   /sys/devices/** r,
 
-  # The only device: the TPM resource manager.
-  /dev/tpmrm0 rw,
+  # The TPM device is not here: the Agent reaches the TPM only through the provider's socket
+  # (below) and never opens the device (R-09, #351).
 
   # State: root-key blobs and prompt data.
   /var/lib/linuxhello/ rw,

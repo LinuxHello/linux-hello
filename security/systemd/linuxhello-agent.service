@@ -37,7 +37,8 @@ UMask=0077
 # The admin policy layer is read-only for the Agent.
 ReadOnlyPaths=/etc/linuxhello
 
-# Sandbox. The only device is the TPM resource manager; there is no network but the system bus.
+# Sandbox. There is no device and no network but the system bus. The Agent reaches the TPM only
+# through the provider's socket and never opens the TPM device (R-09, #351).
 NoNewPrivileges=yes
 # No core dump of a process that holds a PIN or a stretched key: a core file would write it to disk.
 # The Agent also marks itself not dumpable when it starts (PR_SET_DUMPABLE), which keeps other
@@ -63,7 +64,6 @@ SocketBindDeny=any
 # without it systemd refuses to start the unit at all (seen on Ubuntu 26.04: status 244/BPF).
 RestrictAddressFamilies=AF_UNIX
 DevicePolicy=closed
-DeviceAllow=/dev/tpmrm0 rw
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectKernelLogs=yes

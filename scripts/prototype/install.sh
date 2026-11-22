@@ -87,6 +87,9 @@ fi
 step "installing the services (the same files and places a package would use)"
 sec=$root/security
 sudo systemd-sysusers "$sec/systemd/linuxhello.sysusers"
+# An earlier install put the Agent's user in the group of the TPM device; sysusers never removes a
+# member. The Agent reaches the TPM only through the provider's socket (R-09, #351).
+if id -nG linuxhello 2>/dev/null | tr ' ' '\n' | grep -qx tss; then sudo gpasswd -d linuxhello tss >/dev/null; fi
 sudo install -D -m755 "$musl/linuxhello-agent" /usr/libexec/linuxhello/linuxhello-agent
 sudo install -D -m755 "$rel/linuxhello-tpm-provider" /usr/libexec/linuxhello/linuxhello-tpm-provider
 sudo install -D -m755 "$musl/linuxhello-ctl" /usr/bin/linuxhello-ctl
