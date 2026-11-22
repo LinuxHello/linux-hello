@@ -127,7 +127,7 @@ fn agent_unit_allows_no_device() {
     let s = service_settings();
     assert_eq!(only(&s, "DevicePolicy"), "closed");
     assert!(
-        s.get("DeviceAllow").is_none(),
+        !s.contains_key("DeviceAllow"),
         "the Agent never opens a device itself: {:?}",
         s.get("DeviceAllow")
     );
@@ -145,6 +145,17 @@ fn agent_unit_refuses_to_start_unless_apparmor_enforces_its_profile() {
     );
     let profile = read("apparmor/linuxhello-agent");
     assert!(profile.contains("profile linuxhello-agent "));
+}
+
+/// A permanent fault (a profile that is not enforced, a TPM with an owner password) must not restart
+/// the service every second for ever (review finding R-29, #371).
+#[test]
+fn agent_unit_backs_off_instead_of_restarting_every_second() {
+    let s = service_settings();
+    assert_eq!(only(&s, "Restart"), "on-failure");
+    assert_eq!(only(&s, "RestartSec"), "1");
+    assert_eq!(only(&s, "RestartSteps"), "5");
+    assert_eq!(only(&s, "RestartMaxDelaySec"), "60");
 }
 
 #[test]

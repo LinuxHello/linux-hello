@@ -19,7 +19,12 @@ AppArmorProfile=linuxhello-agent
 User=linuxhello
 Group=linuxhello
 Restart=on-failure
+# A fault that never goes away (a profile that is not enforced, a TPM with an owner password) must
+# not restart the service every second for ever: the pause grows from one second to a minute in
+# five steps (systemd 254 or newer; review finding R-29, #371).
 RestartSec=1
+RestartSteps=5
+RestartMaxDelaySec=60
 # The Agent pings the service manager from its bus loop (notify.rs). A loop that hangs stops the
 # pings and the unit is restarted. Only the main process may notify, and the profile allows the
 # notification socket, so a unit line alone would not be enough (#191).

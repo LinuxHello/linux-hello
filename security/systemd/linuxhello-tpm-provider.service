@@ -17,7 +17,15 @@ Group=linuxhello-tpm
 # kernel then lets nobody else connect.
 SupplementaryGroups=linuxhello
 Restart=on-failure
+# The same back-off as the Agent's: a permanent fault restarts the provider ever more slowly
+# (systemd 254 or newer; review finding R-29, #371).
 RestartSec=1
+RestartSteps=5
+RestartMaxDelaySec=60
+# The provider holds one TPM connection and serves one client at a time; it needs little.
+MemoryMax=128M
+TasksMax=16
+LimitNOFILE=256
 
 # The directory of the socket: the provider's, and nobody else can change it.
 RuntimeDirectory=linuxhello-tpm

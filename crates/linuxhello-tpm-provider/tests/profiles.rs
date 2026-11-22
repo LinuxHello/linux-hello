@@ -110,6 +110,25 @@ fn the_provider_refuses_to_start_unless_apparmor_enforces_its_profile() {
     );
 }
 
+/// A permanent fault (a profile that is not enforced, a TPM with an owner password) must not restart
+/// a service every second for ever (review finding R-29, #371).
+#[test]
+fn the_unit_backs_off_instead_of_restarting_every_second() {
+    let s = service();
+    assert_eq!(only(&s, "Restart"), "on-failure");
+    assert_eq!(only(&s, "RestartSec"), "1");
+    assert_eq!(only(&s, "RestartSteps"), "5");
+    assert_eq!(only(&s, "RestartMaxDelaySec"), "60");
+}
+
+#[test]
+fn the_provider_unit_limits_its_memory_tasks_and_files() {
+    let s = service();
+    assert_eq!(only(&s, "MemoryMax"), "128M");
+    assert_eq!(only(&s, "TasksMax"), "16");
+    assert_eq!(only(&s, "LimitNOFILE"), "256");
+}
+
 #[test]
 fn the_provider_has_a_runtime_directory_that_only_it_can_change() {
     let unit = service();
