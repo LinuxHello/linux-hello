@@ -1,0 +1,5 @@
+module io.github.LinuxHello.AuthPrompt
+AuthPrompt 1.0 AuthPrompt.qml
+MethodTile 1.0 MethodTile.qml
+ConditionCard 1.0 ConditionCard.qml
+Prompt 1.0 prompt.js
