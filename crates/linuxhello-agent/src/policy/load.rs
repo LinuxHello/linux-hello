@@ -93,12 +93,23 @@ pub struct PinOnly {
 /// The reason names the path and what is wrong, never the file's content
 /// (`pin_only_reason_names_the_file_not_its_content`).
 pub fn load(admin_dir: &Path, user_file: &Path, admin_owner_uid: u32) -> Policy {
-    let admin = match admin_layers(admin_dir, admin_owner_uid) {
-        Ok(layers) => layers,
+    let (admin, bad_file) = match read_admin_layers(admin_dir, admin_owner_uid) {
+        Ok(read) => read,
         Err(reason) => {
             return Policy::PinOnly(create_pin_only_state(None, Fault::AdminLayer, reason))
         }
     };
+    if let Some(reason) = bad_file {
+        // One admin file cannot be trusted: the files that can still count, so that a typo in one
+        // does not lower the minimum length, the lockout or the factors of the others
+        // (`a_fault_in_one_admin_file_keeps_the_rules_of_the_others`, R-10, #352).
+        let base = merge(&admin, None).ok();
+        return Policy::PinOnly(create_pin_only_state(
+            base.as_ref(),
+            Fault::AdminLayer,
+            reason,
+        ));
+    }
 
     let user_layer = match read_optional_layer(user_file) {
         Ok(layer) => layer,
@@ -140,9 +151,22 @@ pub fn load(admin_dir: &Path, user_file: &Path, admin_owner_uid: u32) -> Policy 
 /// included), has the wrong owner or mode, is larger than
 /// [`MAX_POLICY_FILE_BYTES`], cannot be read, is not UTF-8 or does not parse.
 pub fn admin_layers(admin_dir: &Path, admin_owner_uid: u32) -> Result<Vec<Layer>, String> {
+    match read_admin_layers(admin_dir, admin_owner_uid)? {
+        (layers, None) => Ok(layers),
+        (_, Some(reason)) => Err(reason),
+    }
+}
+
+/// The admin layers that could be read, and the reason for the first file that could not (the
+/// files after it are still read). A fault of the directory itself is an error: nothing in it
+/// can be trusted then.
+fn read_admin_layers(
+    admin_dir: &Path,
+    admin_owner_uid: u32,
+) -> Result<(Vec<Layer>, Option<String>), String> {
     let metadata = match fs::metadata(admin_dir) {
         Ok(metadata) => metadata,
-        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok((Vec::new(), None)),
         Err(_) => return Err(describe(admin_dir, "cannot be examined")),
     };
     if !metadata.is_dir() {
@@ -168,12 +192,16 @@ pub fn admin_layers(admin_dir: &Path, admin_owner_uid: u32) -> Result<Vec<Layer>
     paths.sort();
 
     let mut layers = Vec::new();
+    let mut first_fault = None;
     for path in paths {
-        let layer =
-            read_layer(&path, Some(admin_owner_uid)).map_err(|what| describe(&path, &what))?;
-        layers.push(layer);
+        match read_layer(&path, Some(admin_owner_uid)) {
+            Ok(layer) => layers.push(layer),
+            Err(what) => {
+                first_fault.get_or_insert_with(|| describe(&path, &what));
+            }
+        }
     }
-    Ok(layers)
+    Ok((layers, first_fault))
 }
 
 /// Reads the layer at `path`, or `None` when nothing exists there.
@@ -374,6 +402,38 @@ mod tests {
         let (_tmp, admin_dir, user_file, uid) = setup();
         write(&admin_dir.join("10-site.toml"), b"invalid = toml", 0o644);
         assert!(reason(load(&admin_dir, &user_file, uid)).ends_with("10-site.toml: does not parse"));
+    }
+
+    #[test]
+    fn a_fault_in_one_admin_file_keeps_the_rules_of_the_others() {
+        // R-10, #352: a typo in one admin file used to give the defaults (six characters, five
+        // tries, one factor) and drop what the good file demanded.
+        let (_tmp, admin_dir, user_file, uid) = setup();
+        write(
+            &admin_dir.join("10-site.toml"),
+            b"[pin]\nmin_length = 12\nlockout_attempts = 3\n\
+              [context.sudo]\nmethods = [\"pin\", \"fingerprint\"]\nfactors = 2\n",
+            0o644,
+        );
+        write(
+            &admin_dir.join("20-typo.toml"),
+            b"[pin]\nmin_lenght = 4\n",
+            0o644,
+        );
+        let Policy::PinOnly(pin) = load(&admin_dir, &user_file, uid) else {
+            panic!("expected the PIN-only state");
+        };
+        assert!(
+            pin.reason.ends_with("20-typo.toml: does not parse"),
+            "{}",
+            pin.reason
+        );
+        let rules = pin.layer.pin.expect("the PIN rules of the good file");
+        assert_eq!((rules.min_length, rules.lockout_attempts), (Some(12), Some(3)));
+        assert_eq!(pin.layer.context["sudo"].factors, Some(2));
+        for ctx in pin.layer.context.values() {
+            assert_eq!(ctx.methods, vec!["pin".to_string()]);
+        }
     }
 
     #[test]
