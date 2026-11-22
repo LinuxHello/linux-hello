@@ -110,6 +110,44 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
 
+  # The Agent Link (plasma/linuxhello-plasma), the QML plugin through which the Plasma screens reach
+  # the Agent: a Cargo workspace of its own because it builds against Qt (ADR-0028). It runs in an
+  # Ubuntu 26.04 container with Rust and Qt 6 from Ubuntu's archive, because the 24.04 runners have
+  # Qt 6.4. Not in quality-gates.txt yet; making it required is the maintainer's setting.
+  plasma:
+    name: plasma
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-24.04
+    container: ubuntu:26.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install Rust and Qt 6 from Ubuntu's archive
+        run: |
+          apt-get update -qq
+          DEBIAN_FRONTEND=noninteractive apt-get install --yes --no-install-recommends \
+            ca-certificates cargo rustc rustfmt rust-clippy g++ pkg-config \
+            qt6-base-dev qt6-base-dev-tools qt6-declarative-dev
+      - name: fmt, clippy and the tests of the Agent Link
+        working-directory: plasma/linuxhello-plasma
+        env:
+          QMAKE: /usr/lib/qt6/bin/qmake
+        run: |
+          cargo fmt --check
+          cargo clippy --all-targets -- -D warnings
+          cargo test
+
+  plasma-deny:
+    name: plasma-deny
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          manifest-path: plasma/linuxhello-plasma/Cargo.toml
+
   cargo-audit:
     name: cargo-audit
     needs: changes

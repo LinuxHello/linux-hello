@@ -1,4 +1,7 @@
 # Files allowed to contain #[allow(unsafe_code)], one repository-relative path per line.
-# Only modules in the TPM provider and the PAM module may appear here (AGENTS.md invariant 4),
-# and each addition needs the maintainer's review.
+# Only modules in the TPM provider, the PAM module and the Agent Link may appear here (AGENTS.md
+# invariant 4), and each addition needs the maintainer's review.
 crates/pam-linuxhello/src/entry.rs
+# The cxx-qt bridge declaration of the Agent Link; cxx-qt expands it into unsafe glue. Allowed by
+# the maintainer on 2026-11-22 (ADR-0028).
+plasma/linuxhello-plasma/src/bridge.rs
