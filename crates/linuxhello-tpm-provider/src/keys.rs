@@ -32,14 +32,15 @@ use std::str::FromStr;
 
 use tss_esapi::attributes::SessionAttributesBuilder;
 use tss_esapi::constants::response_code::Tss2ResponseCodeKind;
-use tss_esapi::constants::{PropertyTag, SessionType};
+use tss_esapi::constants::{CapabilityType, PropertyTag, SessionType};
 use tss_esapi::handles::KeyHandle;
 use tss_esapi::interface_types::algorithm::HashingAlgorithm;
 use tss_esapi::interface_types::key_bits::RsaKeyBits;
 use tss_esapi::interface_types::resource_handles::Hierarchy;
 use tss_esapi::interface_types::session_handles::AuthSession;
 use tss_esapi::structures::{
-    Auth, Private, Public, RsaExponent, SymmetricDefinition, SymmetricDefinitionObject,
+    Auth, CapabilityData, Private, Public, RsaExponent, SymmetricDefinition,
+    SymmetricDefinitionObject,
 };
 use tss_esapi::traits::{Marshall, UnMarshall};
 use tss_esapi::utils::create_restricted_decryption_rsa_public;
@@ -95,16 +96,38 @@ impl Tpm {
         Ok(Self { context, primary })
     }
 
-    /// The limits the TPM reports for wrong authorisations. Only reads; changes nothing.
+    /// The limits the TPM reports for wrong authorisations, read from the TPM at each call. Only
+    /// reads; changes nothing.
+    ///
+    /// An administrator can change these at any time (`tpm2_dictionarylockout`), so they are asked
+    /// with `GetCapability` itself: `Context::get_tpm_property` of tss-esapi keeps every value it
+    /// once read for the life of the connection, and the provider keeps one connection for its
+    /// whole life (`the_limits_follow_a_change_made_while_the_provider_runs`).
     ///
     /// # Errors
     ///
     /// [`TpmError::Failed`] when the TPM does not report a value.
     pub fn limits(&mut self) -> Result<TpmLimits, TpmError> {
-        let mut read = |tag: PropertyTag, name: &str| -> Result<u32, TpmError> {
-            self.context
-                .get_tpm_property(tag)
-                .map_err(classify)?
+        // The three are consecutive variable properties, from TPM2_PT_MAX_AUTH_FAIL on.
+        let (data, _) = self
+            .context
+            .execute_without_session(|ctx| {
+                ctx.get_capability(
+                    CapabilityType::TpmProperties,
+                    PropertyTag::MaxAuthFail.into(),
+                    3,
+                )
+            })
+            .map_err(classify)?;
+        let CapabilityData::TpmProperties(properties) = data else {
+            return Err(TpmError::Failed(
+                "the TPM answered with another kind of data".to_string(),
+            ));
+        };
+        let read = |tag: PropertyTag, name: &str| -> Result<u32, TpmError> {
+            properties
+                .find(tag)
+                .map(|property| property.value())
                 .ok_or_else(|| TpmError::Failed(format!("the TPM does not report {name}")))
         };
         Ok(TpmLimits {

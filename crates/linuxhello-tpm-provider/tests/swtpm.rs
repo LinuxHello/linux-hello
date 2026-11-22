@@ -145,6 +145,31 @@ fn the_tpm_reports_its_own_dictionary_attack_limits() {
     );
 }
 
+#[test]
+fn the_limits_follow_a_change_made_while_the_provider_runs() {
+    let Some(soft) = SoftTpm::start() else { return };
+    if set_limits(&soft, 3, 111, 222).is_none() {
+        assert!(
+            std::env::var("LH_REQUIRE_SWTPM").is_err(),
+            "tpm2-tools are required here"
+        );
+        eprintln!("SKIPPED: tpm2_dictionarylockout is not installed or refused");
+        return;
+    }
+    // One connection, as the provider keeps for its whole life: the first answer must not stick.
+    let mut tpm = soft.open();
+    assert_eq!(tpm.limits().map(|l| l.max_tries), Ok(3));
+    set_limits(&soft, 100, 10, 10).expect("the second change");
+    assert_eq!(
+        tpm.limits(),
+        Ok(TpmLimits {
+            max_tries: 100,
+            interval_secs: 10,
+            recovery_secs: 10
+        })
+    );
+}
+
 /// Sets the dictionary-attack parameters of the TPM so that three wrong authorisations lock it, with
 /// the tools of tpm2-tools; `None` when they are not installed.
 fn lock_after_three(soft: &SoftTpm) -> Option<()> {
