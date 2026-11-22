@@ -36,6 +36,7 @@ fn pam_never_succeeds_when_agent_is_unreachable() {
                 context: Some(context),
                 service: "sudo",
                 terminal: "/dev/pts/1",
+                remote_host: "",
                 uid: Some(1000),
             };
             let code = authenticate_at(

@@ -3,5 +3,5 @@
 # and pam_unix after it keeps the account password working. A success of Linux Hello ends the
 # stack; "unavailable" is ignored so the password is asked; any other answer (a wrong PIN, a
 # refused face) fails the attempt at once and never falls through to the password.
-auth [success=done authinfo_unavail=ignore default=die] pam_linuxhello.so context=sudo
+auth [success=done authinfo_unavail=ignore module_unknown=ignore default=die] pam_linuxhello.so context=sudo
 auth required pam_unix.so try_first_pass

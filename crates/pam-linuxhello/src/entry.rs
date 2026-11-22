@@ -36,6 +36,8 @@ const PAM_USER_UNKNOWN: c_int = 10;
 const PAM_SERVICE: c_int = 1;
 /// The item `PAM_TTY`.
 const PAM_TTY: c_int = 3;
+/// The item `PAM_RHOST`: the machine the person is signing in from, when they are not at this one.
+const PAM_RHOST: c_int = 4;
 /// The item `PAM_CONV`.
 const PAM_CONV: c_int = 5;
 /// The item `PAM_XDISPLAY`.
@@ -276,10 +278,13 @@ unsafe fn authenticate(
         // SAFETY: as above.
         terminal = unsafe { item_text(pamh, PAM_XDISPLAY) };
     }
+    // SAFETY: as above.
+    let remote_host = unsafe { item_text(pamh, PAM_RHOST) };
     let request = Request {
         context: context.as_deref(),
         service: &service,
         terminal: &terminal,
+        remote_host: &remote_host,
         uid,
     };
     match client::authenticate(&request, &mut conversation) {

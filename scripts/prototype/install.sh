@@ -48,7 +48,9 @@ step() { printf '\n==> %s\n' "$*"; }
 
 # The line every PAM file gets, and the marker that finds it again.
 MARK="# linux-hello prototype"
-pam_line() { printf 'auth [success=done authinfo_unavail=ignore default=die] pam_linuxhello.so context=%s %s\n' "$1" "$MARK"; }
+# module_unknown=ignore: a module that cannot be loaded (a library upgrade that broke it) must not end
+# the stack, or nobody could sign in to sudo or the console (#359).
+pam_line() { printf 'auth [success=done authinfo_unavail=ignore module_unknown=ignore default=die] pam_linuxhello.so context=%s %s\n' "$1" "$MARK"; }
 
 [[ $EUID -ne 0 ]] || die "run as your own user, not root; the script asks sudo for each change"
 [[ -c /dev/tpmrm0 ]] || die "no TPM (/dev/tpmrm0): Linux Hello keeps the PIN key in the TPM"
@@ -142,17 +144,14 @@ done
 busctl --system list --no-pager 2>/dev/null | grep -q '^io.github.LinuxHello.Agent1 ' \
   || die "the Agent did not start: journalctl -u linuxhello-agent -u linuxhello-tpm-provider -b"
 
-# Adds the Linux Hello line before the first auth line (or "@include common-auth") of a PAM file,
-# once, keeping the original as <file>.linuxhello-orig the first time.
+# Adds the Linux Hello line to a PAM file, once, keeping the original as <file>.linuxhello-orig the
+# first time. Where it goes is pam-insert.awk's rule: directly before "@include common-auth", so that
+# /etc/nologin and the delay after a failure still apply to a Linux Hello sign-in.
 add_to_pam() { # file, context
   local file=$1 context=$2
   [[ -f "$file.linuxhello-orig" ]] || sudo cp -p "$file" "$file.linuxhello-orig"
   local line tmp; line=$(pam_line "$context"); tmp=$(mktemp)
-  awk -v line="$line" -v mark="$MARK" '
-    index($0, mark) { next }                       # an earlier Linux Hello line goes
-    !done && ($1 == "auth" || $0 ~ /^@include[ \t]+common-auth/) { print line; done = 1 }
-    { print }
-    END { if (!done) exit 3 }' "$file" > "$tmp" \
+  awk -v line="$line" -v mark="$MARK" -f "$root/scripts/prototype/pam-insert.awk" "$file" > "$tmp" \
     || { rm -f "$tmp"; die "$file has no auth line to put Linux Hello before"; }
   sudo install -m644 "$tmp" "$file"
   rm -f "$tmp"

@@ -6,7 +6,7 @@ use std::os::unix::net::UnixListener;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use super::bus::tests::{listen, signal, Peer};
+use super::bus::tests::{listen, signal, unreadable_signal, Peer};
 use super::wire::Value;
 use super::*;
 
@@ -21,6 +21,8 @@ struct Script {
     /// in `asked_status`, not in `calls`.
     status: VecDeque<Option<Vec<(String, String, String)>>>,
     asked_status: Vec<String>,
+    /// When the signals are used up the connection fails, instead of "nothing before the deadline".
+    then_fail: bool,
 }
 
 impl Agent for Script {
@@ -41,7 +43,10 @@ impl Agent for Script {
     }
 
     fn signal(&mut self, _prompt: &str, _deadline: Instant) -> Result<Option<Signal>, Fault> {
-        Ok(self.signals.pop_front().flatten())
+        match self.signals.pop_front() {
+            None if self.then_fail => Err(Fault),
+            next => Ok(next.flatten()),
+        }
     }
 
     fn conditions(
@@ -351,6 +356,97 @@ fn the_prompt_is_always_closed() {
 }
 
 #[test]
+fn a_remote_session_never_reaches_the_agent() {
+    // sudo inside an SSH session: the person is not at the sensor or the camera of this machine.
+    // The module answers "unavailable" (so the password follows) without a word to the bus (R-04, #347).
+    for host in ["203.0.113.7", "laptop.example", "::2", "localhost.example"] {
+        let (dir, path, listener) = listen();
+        listener.set_nonblocking(true).unwrap();
+        let request = Request {
+            context: Some("sudo"),
+            service: "sudo",
+            terminal: "/dev/pts/1",
+            remote_host: host,
+            uid: Some(1000),
+        };
+        let code = authenticate_at(
+            &path,
+            &dir.path().join("pin"),
+            &FAST,
+            &request,
+            &mut Person::default(),
+        );
+        assert_eq!(code, Code::Unavailable, "{host}");
+        assert!(listener.accept().is_err(), "{host}: the bus was contacted");
+    }
+}
+
+/// A session file of logind as `sessions` holds it, and the file of this process's session id.
+fn logind(id: &str, session: &str) -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf) {
+    let dir = tempfile::tempdir().unwrap();
+    let sessions = dir.path().join("sessions");
+    std::fs::create_dir(&sessions).unwrap();
+    std::fs::write(sessions.join("2"), session).unwrap();
+    let own = dir.path().join("sessionid");
+    std::fs::write(&own, format!("{id}\n")).unwrap();
+    (dir, own, sessions)
+}
+
+#[test]
+fn a_session_is_at_this_machine_only_when_logind_says_so() {
+    let local = "UID=1000\nACTIVE=1\nREMOTE=0\nSEAT=seat0\nVTNR=2\nTYPE=tty\n";
+    let (_d, own, dir) = logind("2", local);
+    assert!(session_at_this_machine(&own, &dir));
+    // Each way a session is not at this machine, or cannot be shown to be.
+    for (what, id, text) in [
+        ("an SSH session", "2", "ACTIVE=1\nREMOTE=1\nTYPE=tty\n"),
+        (
+            "a remote session that names a seat",
+            "2",
+            "ACTIVE=1\nREMOTE=1\nSEAT=seat0\n",
+        ),
+        (
+            "a session without a seat",
+            "2",
+            "ACTIVE=1\nREMOTE=0\nTYPE=tty\n",
+        ),
+        (
+            "a session behind another one",
+            "2",
+            "ACTIVE=0\nREMOTE=0\nSEAT=seat0\n",
+        ),
+        (
+            "a session with no remote flag",
+            "2",
+            "ACTIVE=1\nSEAT=seat0\n",
+        ),
+        ("a process outside any session", "4294967295", local),
+        ("a session logind does not know", "7", local),
+        ("an id that is not a number", "../2", local),
+        ("an empty id", "", local),
+    ] {
+        let (_d, own, dir) = logind(id, text);
+        assert!(!session_at_this_machine(&own, &dir), "{what}");
+    }
+    // No logind at all.
+    let (dir, _, _) = logind("2", local);
+    assert!(!session_at_this_machine(
+        &dir.path().join("no-sessionid"),
+        &dir.path().join("sessions")
+    ));
+}
+
+#[test]
+fn a_session_at_this_machine_is_not_remote() {
+    for host in ["", "localhost", "127.0.0.1", "::1"] {
+        assert!(is_local_host(host), "{host}");
+    }
+    for host in ["203.0.113.7", "10.0.0.1", "example.org", " ", "localhost "] {
+        assert!(!is_local_host(host), "{host}");
+    }
+}
+
+#[test]
 fn a_missing_or_unknown_context_is_unavailable() {
     let dir = tempfile::tempdir().unwrap();
     // No bus at all: the context is refused before anything is reached, and a valid one then
@@ -360,6 +456,7 @@ fn a_missing_or_unknown_context_is_unavailable() {
             context,
             service: "sudo",
             terminal: "/dev/pts/1",
+            remote_host: "",
             uid: Some(1000),
         };
         assert_eq!(
@@ -378,6 +475,7 @@ fn a_missing_or_unknown_context_is_unavailable() {
         context: Some("sudo"),
         service: "sudo",
         terminal: "",
+        remote_host: "",
         uid: None,
     };
     assert_eq!(
@@ -388,7 +486,9 @@ fn a_missing_or_unknown_context_is_unavailable() {
             &request,
             &mut Person::default()
         ),
-        Code::UserUnknown
+        // Not "unknown": that would end the stack with no password prompt for a name that is no
+        // user, which tells an observer at the console which names exist (#359).
+        Code::Unavailable
     );
 }
 
@@ -421,6 +521,7 @@ fn pam_returns_within_its_deadline_when_the_agent_hangs() {
         context: Some("sudo"),
         service: "sudo",
         terminal: "/dev/pts/1",
+        remote_host: "",
         uid: Some(1000),
     };
     let started = Instant::now();
@@ -671,6 +772,99 @@ fn a_wrong_pin_then_a_silent_reader_never_falls_through_to_the_password() {
 }
 
 #[test]
+fn a_connection_fault_after_a_wrong_pin_stays_denied() {
+    // The PIN was refused; whatever goes wrong with the bus afterwards must not turn that into
+    // "unavailable", which goes on to the password prompt (P-32, R-03, #346).
+    let mut agent = Script {
+        signals: [active(&["fingerprint", "pin"]), active(&["fingerprint"])].into(),
+        then_fail: true,
+        ..Script::default()
+    };
+    let mut socket = Socket {
+        accept: true,
+        ..Socket::default()
+    };
+    let mut person = Person {
+        answers: [Some("1111")].into(),
+        ..Person::default()
+    };
+    assert_eq!(go(&mut agent, &mut socket, &mut person), Code::Denied);
+    assert_eq!(
+        person.shown.last().map(String::as_str),
+        Some("error: Wrong PIN.")
+    );
+    // Before any PIN, the same fault is still "unavailable".
+    let mut agent = Script {
+        signals: [active(&["fingerprint", "pin"])].into(),
+        then_fail: true,
+        ..Script::default()
+    };
+    let mut person = Person {
+        answers: [Some("")].into(),
+        ..Person::default()
+    };
+    assert_eq!(
+        go(&mut agent, &mut Socket::default(), &mut person),
+        Code::Unavailable
+    );
+}
+
+#[test]
+fn a_hostile_signal_cannot_switch_linux_hello_off() {
+    // R-03 (#346) end to end on a fake bus: a connection that is not the Agent sends a signal the
+    // codec cannot read, and the Agent itself sends one with a type it does not know, in the middle
+    // of a sign-in. The sign-in still ends as the Agent says.
+    let (dir, path, listener) = listen();
+    let server = fake_agent(listener, |peer| {
+        for _ in 0..4 {
+            let call = peer.read();
+            let body = if call.member.as_deref() == Some("GetPromptStatus") {
+                vec![Value::Triples(vec![])]
+            } else {
+                vec![]
+            };
+            peer.reply(&call, body);
+        }
+        let prompt = |id: &str| Value::Str(id.to_string());
+        peer.send_raw(&unreadable_signal("Result", ":1.99"));
+        peer.send(&signal(
+            "ActiveMethods",
+            ":1.5",
+            vec![prompt("PROMPT"), Value::Strs(vec!["fingerprint".into()])],
+        ));
+        peer.send_raw(&unreadable_signal("Result", ":1.99"));
+        peer.send_raw(&unreadable_signal("MethodEnded", ":1.5"));
+        peer.send(&signal(
+            "Result",
+            ":1.5",
+            vec![
+                prompt("PROMPT"),
+                prompt("failure"),
+                prompt("not-recognised"),
+                Value::U32(0),
+            ],
+        ));
+        let close = peer.read();
+        assert_eq!(close.member.as_deref(), Some("ClosePrompt"));
+        peer.reply(&close, vec![]);
+    });
+    let mut agent = BusAgent::connect(&path, &FAST).unwrap();
+    let mut person = Person::default();
+    let code = run(
+        &mut agent,
+        &mut SocketPin(&dir.path().join("pin")),
+        &mut person,
+        "PROMPT",
+        1000,
+        "sudo",
+        &FAST,
+        Instant::now(),
+    );
+    assert_eq!(code, Code::Denied, "{:?}", person.shown);
+    server.join().unwrap();
+}
+
+#[test]
 fn a_wrong_pin_then_a_finger_that_matches_still_signs_in() {
     let (code, _) = wrong_pin_with_the_reader_running(result("success", "", 0));
     assert_eq!(code, Code::Success);
@@ -742,6 +936,7 @@ fn an_unreachable_agent_is_announced() {
         context: Some("sudo"),
         service: "sudo",
         terminal: "/dev/pts/1",
+        remote_host: "",
         uid: Some(1000),
     };
     let mut person = Person::default();

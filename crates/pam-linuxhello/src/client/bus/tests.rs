@@ -51,6 +51,11 @@ impl Peer {
         parse(&bytes).unwrap()
     }
 
+    /// Sends `bytes` as they are.
+    pub(crate) fn send_raw(&mut self, bytes: &[u8]) {
+        self.writer.write_all(bytes).unwrap();
+    }
+
     /// Sends `message`.
     pub(crate) fn send(&mut self, message: &Message) {
         self.writer.write_all(&encode_for_tests(message)).unwrap();
@@ -97,6 +102,20 @@ pub(crate) fn signal(member: &str, sender: &str, body: Vec<Value>) -> Message {
         sender: Some(sender.into()),
         body,
     }
+}
+
+/// A signal whose body the codec cannot read: the one argument has the type `i`, which the Agent
+/// never sends and the codec does not model. The bytes of a well-formed signal with a `u` argument,
+/// with the type in the header changed.
+pub(crate) fn unreadable_signal(member: &str, sender: &str) -> Vec<u8> {
+    let mut bytes = encode_for_tests(&signal(member, sender, vec![Value::U32(5)]));
+    let at = bytes
+        .windows(7)
+        .position(|w| w == [8, 1, b'g', 0, 1, b'u', 0])
+        .expect("the signature field");
+    bytes[at + 5] = b'i';
+    assert!(parse(&bytes).is_err(), "the codec must not model `i`");
+    bytes
 }
 
 #[test]
@@ -177,6 +196,7 @@ fn a_call_returns_its_reply_and_signals_that_came_first_are_kept() {
         });
     });
     let mut bus = Bus::connect(&path, Duration::from_millis(500)).unwrap();
+    bus.trust_signals_from(":1.5".into());
     let soon = || Instant::now() + Duration::from_secs(2);
     let body = bus
         .call("d", "/p", "i", "OpenPrompt", &[Arg::Str("p")], soon())
@@ -206,6 +226,7 @@ fn no_signal_before_the_deadline_is_none_and_the_connection_stays_usable() {
         thread::sleep(Duration::from_millis(300));
     });
     let mut bus = Bus::connect(&path, Duration::from_millis(500)).unwrap();
+    bus.trust_signals_from(":1.5".into());
     let started = Instant::now();
     assert_eq!(
         bus.next_signal(Instant::now() + Duration::from_millis(100)),
@@ -235,4 +256,131 @@ fn a_bus_that_closes_is_unreachable() {
         bus.next_signal(Instant::now() + Duration::from_secs(1)),
         Err(BusError::Unreachable)
     );
+}
+
+#[test]
+fn a_signal_nobody_may_send_is_dropped_unread() {
+    // The system bus lets any user send a signal to any connection. With the Agent's connection
+    // trusted, a signal of another sender is dropped by its header: its body, which the codec cannot
+    // read, does not end the exchange (R-03, #346).
+    let (_dir, path, listener) = listen();
+    let server = thread::spawn(move || {
+        let (stream, _) = listener.accept().unwrap();
+        let mut peer = Peer::new(stream);
+        peer.accept_auth();
+        peer.hello();
+        peer.send_raw(&unreadable_signal("Result", ":1.99"));
+        peer.send(&signal("Closed", ":1.5", vec![Value::Str("p".into())]));
+        thread::sleep(Duration::from_millis(200));
+    });
+    let mut bus = Bus::connect(&path, Duration::from_millis(500)).unwrap();
+    bus.trust_signals_from(":1.5".into());
+    let heard = bus
+        .next_signal(Instant::now() + Duration::from_secs(2))
+        .unwrap()
+        .unwrap();
+    assert_eq!(heard.member.as_deref(), Some("Closed"));
+    assert_eq!(heard.sender.as_deref(), Some(":1.5"));
+    server.join().unwrap();
+}
+
+#[test]
+fn a_signal_whose_body_cannot_be_read_is_skipped_not_an_error() {
+    // Even from the trusted sender: a signal with an argument type the codec does not know, as a
+    // future version of the Agent might send, must not break every sign-in (R-03, #346).
+    let (_dir, path, listener) = listen();
+    let server = thread::spawn(move || {
+        let (stream, _) = listener.accept().unwrap();
+        let mut peer = Peer::new(stream);
+        peer.accept_auth();
+        peer.hello();
+        let call = peer.read();
+        peer.send_raw(&unreadable_signal("MethodEnded", ":1.5"));
+        peer.reply(&call, vec![]);
+        peer.send_raw(&unreadable_signal("MethodEnded", ":1.5"));
+        peer.send(&signal("Closed", ":1.5", vec![Value::Str("p".into())]));
+        thread::sleep(Duration::from_millis(200));
+    });
+    let mut bus = Bus::connect(&path, Duration::from_millis(500)).unwrap();
+    bus.trust_signals_from(":1.5".into());
+    let soon = || Instant::now() + Duration::from_secs(2);
+    // The reply to a call is still read, with the unreadable signal before it skipped.
+    assert!(bus
+        .call("d", "/p", "i", "Subscribe", &[], soon())
+        .unwrap()
+        .is_empty());
+    let heard = bus.next_signal(soon()).unwrap().unwrap();
+    assert_eq!(heard.member.as_deref(), Some("Closed"));
+    server.join().unwrap();
+}
+
+#[test]
+fn a_flood_of_signals_while_a_call_waits_is_bounded() {
+    let (_dir, path, listener) = listen();
+    let server = thread::spawn(move || {
+        let (stream, _) = listener.accept().unwrap();
+        let mut peer = Peer::new(stream);
+        peer.accept_auth();
+        peer.hello();
+        let call = peer.read();
+        for _ in 0..(MAX_QUEUED * 4) {
+            peer.send(&signal("Closed", ":1.5", vec![Value::Str("p".into())]));
+        }
+        peer.reply(&call, vec![]);
+    });
+    let mut bus = Bus::connect(&path, Duration::from_millis(500)).unwrap();
+    bus.trust_signals_from(":1.5".into());
+    bus.call(
+        "d",
+        "/p",
+        "i",
+        "Subscribe",
+        &[],
+        Instant::now() + Duration::from_secs(2),
+    )
+    .unwrap();
+    assert_eq!(bus.queue.len(), MAX_QUEUED);
+    server.join().unwrap();
+}
+
+#[test]
+fn signals_before_the_agent_is_known_are_dropped() {
+    // While the module looks up the Agent's name, a connection that floods it with signals must
+    // fill nothing: no signal is kept until a sender is trusted, and what is kept after that is
+    // the trusted sender's alone (R-03, #346).
+    let (_dir, path, listener) = listen();
+    let server = thread::spawn(move || {
+        let (stream, _) = listener.accept().unwrap();
+        let mut peer = Peer::new(stream);
+        peer.accept_auth();
+        peer.hello();
+        let call = peer.read();
+        for _ in 0..(MAX_QUEUED * 2) {
+            peer.send(&signal("Closed", ":1.99", vec![Value::Str("p".into())]));
+        }
+        peer.reply(&call, vec![]);
+        peer.send(&signal("Closed", ":1.5", vec![Value::Str("p".into())]));
+        thread::sleep(Duration::from_millis(200));
+    });
+    let mut bus = Bus::connect(&path, Duration::from_millis(500)).unwrap();
+    bus.call(
+        "d",
+        "/p",
+        "i",
+        "GetNameOwner",
+        &[],
+        Instant::now() + Duration::from_secs(2),
+    )
+    .unwrap();
+    assert!(
+        bus.queue.is_empty(),
+        "nothing is kept before a sender is trusted"
+    );
+    bus.trust_signals_from(":1.5".into());
+    let heard = bus
+        .next_signal(Instant::now() + Duration::from_secs(2))
+        .unwrap()
+        .unwrap();
+    assert_eq!(heard.sender.as_deref(), Some(":1.5"));
+    server.join().unwrap();
 }

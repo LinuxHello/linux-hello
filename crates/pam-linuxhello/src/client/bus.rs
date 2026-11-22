@@ -8,6 +8,13 @@
 //! messages until the reply to that call arrives. Signals that arrive while it waits for a reply
 //! are kept in order for the caller. Every read has a deadline, so a bus or an Agent that hangs
 //! costs at most that time. Nothing runs in the background.
+//!
+//! What it does not read it does not decode. The system bus lets any user send a signal to any
+//! connection, and a message's body is not checked by the bus, so a body is decoded only when it is
+//! the reply to the module's own call, or a signal of the connection that owns the Agent's name
+//! ([`Bus::trust_signals_from`]); a signal of another sender is dropped by its header, and a signal
+//! whose body the codec cannot read is skipped. One hostile message therefore cannot end an
+//! attempt as "unavailable" (review finding R-03, #346, `a_signal_nobody_may_send_is_dropped_unread`).
 
 use std::collections::VecDeque;
 use std::io::{self, Read, Write};
@@ -63,6 +70,17 @@ fn left(deadline: Instant) -> Result<Duration, BusError> {
     Ok((deadline - now).max(Duration::from_millis(1)))
 }
 
+/// The most signals kept while a call waits for its reply.
+const MAX_QUEUED: usize = 64;
+
+/// A message read from the socket whose body has not been decoded.
+struct Raw {
+    /// The header.
+    parts: wire::Parts,
+    /// The whole message.
+    bytes: Vec<u8>,
+}
+
 /// One connection to the bus.
 pub struct Bus {
     /// The socket.
@@ -71,6 +89,9 @@ pub struct Bus {
     serial: u32,
     /// Signals read while waiting for a reply, oldest first.
     queue: VecDeque<Message>,
+    /// The only sender whose signals are read. Until it is known no signal is read at all: the
+    /// module has subscribed to nothing yet, so any signal that arrives is from someone else.
+    trusted: Option<String>,
 }
 
 impl Bus {
@@ -86,10 +107,37 @@ impl Bus {
             stream,
             serial: 0,
             queue: VecDeque::new(),
+            trusted: None,
         };
         bus.authenticate(deadline)?;
         bus.call(BUS_NAME, BUS_PATH, BUS_NAME, "Hello", &[], deadline)?;
         Ok(bus)
+    }
+
+    /// From now on only the signals sent by the connection `name` are read; the signals of every
+    /// other sender are dropped by their header, without their body being decoded. Before this is
+    /// called every signal is dropped, so a flood sent while the module looks up the Agent's name
+    /// cannot fill the queue and crowd out what the Agent says later
+    /// (`signals_before_the_agent_is_known_are_dropped`, R-03).
+    pub fn trust_signals_from(&mut self, name: String) {
+        self.queue
+            .retain(|m| m.sender.as_deref() == Some(name.as_str()));
+        self.trusted = Some(name);
+    }
+
+    /// The message of `raw` as a signal this connection may read: from the trusted sender, with a
+    /// body the codec can read. `None` otherwise, and always before a sender is trusted (the signal
+    /// is skipped, not an error).
+    fn usable(&self, raw: Raw) -> Option<Message> {
+        let trusted = self.trusted.as_deref()?;
+        if raw.parts.message.sender.as_deref() != Some(trusted) {
+            return None;
+        }
+        let body = raw.parts.body(&raw.bytes).ok()?;
+        Some(Message {
+            body,
+            ..raw.parts.message
+        })
     }
 
     /// The `EXTERNAL` exchange: no identity is sent, so the bus uses the one of the socket.
@@ -151,7 +199,7 @@ impl Bus {
     /// Reads the next message from the socket, before `deadline`. With `idle`, a deadline that
     /// passes before the first byte arrives is `Ok(None)`; once a message has begun, the rest of it
     /// must follow before the same deadline.
-    fn read_message(&mut self, deadline: Instant, idle: bool) -> Result<Option<Message>, BusError> {
+    fn read_message(&mut self, deadline: Instant, idle: bool) -> Result<Option<Raw>, BusError> {
         let mut head = [0_u8; 16];
         match self.fill(&mut head[..1], deadline) {
             Ok(()) => {}
@@ -163,7 +211,8 @@ impl Bus {
         let mut bytes = vec![0_u8; total];
         bytes[..16].copy_from_slice(&head);
         self.fill(&mut bytes[16..], deadline)?;
-        Ok(Some(wire::parse(&bytes)?))
+        let parts = wire::parse_header(&bytes)?;
+        Ok(Some(Raw { parts, bytes }))
     }
 
     /// Calls `member` and returns the body of its reply, before `deadline`. Signals that arrive
@@ -187,15 +236,26 @@ impl Bus {
         let bytes = wire::method_call(serial, destination, path, interface, member, args)?;
         self.write(&bytes, deadline)?;
         loop {
-            let Some(message) = self.read_message(deadline, false)? else {
+            let Some(raw) = self.read_message(deadline, false)? else {
                 return Err(BusError::Timeout);
             };
+            let message = &raw.parts.message;
             match message.kind {
-                Kind::Return if message.reply_serial == Some(serial) => return Ok(message.body),
-                Kind::Error if message.reply_serial == Some(serial) => {
-                    return Err(BusError::Refused(message.error_name.unwrap_or_default()))
+                Kind::Return if message.reply_serial == Some(serial) => {
+                    return Ok(raw.parts.body(&raw.bytes)?)
                 }
-                Kind::Signal => self.queue.push_back(message),
+                Kind::Error if message.reply_serial == Some(serial) => {
+                    return Err(BusError::Refused(
+                        message.error_name.clone().unwrap_or_default(),
+                    ))
+                }
+                Kind::Signal => {
+                    if let Some(signal) = self.usable(raw) {
+                        if self.queue.len() < MAX_QUEUED {
+                            self.queue.push_back(signal);
+                        }
+                    }
+                }
                 _ => {}
             }
         }
@@ -214,7 +274,11 @@ impl Bus {
         loop {
             match self.read_message(deadline, true)? {
                 None => return Ok(None),
-                Some(message) if message.kind == Kind::Signal => return Ok(Some(message)),
+                Some(raw) if raw.parts.message.kind == Kind::Signal => {
+                    if let Some(signal) = self.usable(raw) {
+                        return Ok(Some(signal));
+                    }
+                }
                 Some(_) => {}
             }
         }

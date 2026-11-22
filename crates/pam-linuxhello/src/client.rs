@@ -107,6 +107,8 @@ pub struct Request<'a> {
     pub service: &'a str,
     /// The terminal or display, for the prompt id.
     pub terminal: &'a str,
+    /// The machine the person signs in from (`PAM_RHOST`); empty for a session at this machine.
+    pub remote_host: &'a str,
     /// The user being authenticated; `None` when the name is not a user.
     pub uid: Option<u32>,
 }
@@ -195,6 +197,8 @@ impl BusAgent {
         let Some(Value::Str(owner)) = reply.into_iter().next() else {
             return Err(Fault);
         };
+        // From here on only the Agent's own signals are read at all (R-03, #346).
+        bus.trust_signals_from(owner.clone());
         Ok(Self {
             bus,
             owner,
@@ -293,8 +297,63 @@ impl PinPost for SocketPin<'_> {
     }
 }
 
+/// Whether `host`, the `PAM_RHOST` of a session, names this machine: nothing, or the loopback
+/// address, as `sudo` and a display manager at this machine leave it. Anything else is a person at
+/// another machine, for whom no sensor or camera here may answer (review finding R-04, #347).
+pub fn is_local_host(host: &str) -> bool {
+    matches!(host, "" | "localhost" | "127.0.0.1" | "::1")
+}
+
+/// Where the kernel names the logind session of this process (the audit session id), and where
+/// systemd-logind keeps one small file per session, readable by everyone.
+const SESSION_ID_FILE: &str = "/proc/self/sessionid";
+/// The directory of those files.
+const SESSIONS_DIR: &str = "/run/systemd/sessions";
+
+/// The contexts in which the person may be anywhere: `sudo` runs inside whatever session the
+/// program was started from, an SSH session included. At the login and lock screens the person is
+/// at the machine by the nature of the service.
+const NEEDS_LOCAL_SEAT: [&str; 2] = ["sudo", "session"];
+
+/// Whether the process `session_id_file` belongs to is in a logind session that is at this machine:
+/// a session of a seat, which is not remote, and in front. A session of nobody (a process outside
+/// logind), a missing file and anything unreadable are "no": the answer is never a guess. The
+/// facts are logind's, set by the service that made the session (sshd marks its sessions remote
+/// through `PAM_RHOST`), and not by anything a program in the session can change, unlike its
+/// environment (R-04, #347, `a_session_is_at_this_machine_only_when_logind_says_so`).
+pub fn session_at_this_machine(session_id_file: &Path, sessions_dir: &Path) -> bool {
+    let Ok(id) = std::fs::read_to_string(session_id_file) else {
+        return false;
+    };
+    let id = id.trim();
+    // 4294967295 is "no session".
+    if id.is_empty() || id == "4294967295" || !id.bytes().all(|b| b.is_ascii_digit()) {
+        return false;
+    }
+    let Ok(text) = std::fs::read_to_string(sessions_dir.join(id)) else {
+        return false;
+    };
+    let value = |key: &str| {
+        text.lines()
+            .find_map(|line| line.strip_prefix(key)?.strip_prefix('='))
+    };
+    value("REMOTE") == Some("0")
+        && value("ACTIVE") == Some("1")
+        && value("SEAT").is_some_and(|seat| !seat.is_empty())
+}
+
 /// Authenticates `request` against the Agent on the system bus, asking through `conversation`.
+/// For `sudo` and `session` the process must be in a logind session at this machine
+/// ([`session_at_this_machine`]); otherwise nothing is asked of the Agent and the answer is
+/// "unavailable", so that a shell reached over SSH asks for the password.
 pub fn authenticate(request: &Request<'_>, conversation: &mut dyn Conversation) -> Code {
+    if request
+        .context
+        .is_some_and(|context| NEEDS_LOCAL_SEAT.contains(&context))
+        && !session_at_this_machine(Path::new(SESSION_ID_FILE), Path::new(SESSIONS_DIR))
+    {
+        return Code::Unavailable;
+    }
     authenticate_at(
         Path::new(SYSTEM_BUS),
         Path::new(PIN_SOCKET),
@@ -316,9 +375,18 @@ pub fn authenticate_at(
     let Some(context) = request.context.filter(|c| CONTEXTS.contains(c)) else {
         return Code::Unavailable;
     };
+    // A name that is no user is "unavailable", not "unknown": `PAM_USER_UNKNOWN` ends the stack under
+    // `default=die` without a password prompt, which would tell an observer at the console which
+    // names exist; "unavailable" lets `pam_unix` ask for a password for every name alike (#359).
     let Some(uid) = request.uid else {
-        return Code::UserUnknown;
+        return Code::Unavailable;
     };
+    // A person at another machine (sudo inside an SSH session) is not at the sensor or the camera
+    // here: the fingerprint of whoever sits at this machine must not answer for them. Nothing is
+    // asked of the Agent, and the stack goes on to the password (`a_remote_session_never_reaches_the_agent`).
+    if !is_local_host(request.remote_host) {
+        return Code::Unavailable;
+    }
     let Ok(mut agent) = BusAgent::connect(bus, limits) else {
         conversation.info(UNAVAILABLE_LINE);
         return Code::Unavailable;
@@ -459,7 +527,14 @@ fn steps(
         Code::Denied
     };
     loop {
-        let Some(signal) = agent.signal(prompt, until)? else {
+        let heard = match agent.signal(prompt, until) {
+            Ok(heard) => heard,
+            // Once a PIN was refused, nothing that goes wrong afterwards may turn that into "unavailable",
+            // which would go on to the password prompt (P-32, review finding R-03, #346).
+            Err(Fault) if pin_refused => return Ok(refused(conversation)),
+            Err(fault) => return Err(fault),
+        };
+        let Some(signal) = heard else {
             return Ok(if pin_refused {
                 refused(conversation)
             } else {
