@@ -19,7 +19,7 @@ use crate::audit::{Audit, Event};
 use crate::methods::pin::KeyProbe;
 use crate::orchestrator::Cancel;
 use crate::pinlock::service::{wall_clock_seconds, LockStatus, PinLockService};
-use crate::pinsocket::{PinSocket, Process};
+use crate::pinsocket::{PinSocket, PinTarget, Process};
 use crate::policy::load::Policy;
 use crate::policy::schema::parse_layer;
 use crate::policy::user_store::{StoreError, UserPolicyStore, MAX_POLICY_BYTES};
@@ -949,7 +949,14 @@ impl Api {
             .ok_or(ApiError::Denied)?;
         let pid = process.ok_or(ApiError::Denied)?;
         socket
-            .expect(Process { uid, pid }, subject)
+            .expect(
+                Process { uid, pid },
+                subject,
+                PinTarget {
+                    opener: uid,
+                    prompt,
+                },
+            )
             .map_err(|_| ApiError::LimitReached)
     }
 
