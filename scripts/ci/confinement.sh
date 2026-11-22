@@ -82,9 +82,17 @@ LHUID=$(id -u lh)
 cat > /tmp/opener.py <<'PY'
 import sys, time, dbus
 N, P = "io.github.LinuxHello.Agent1", "/io/github/LinuxHello/Agent1"
-dbus.Interface(dbus.SystemBus().get_object(N, P), N).OpenPrompt(sys.argv[1], dbus.Int64(int(sys.argv[2])))
+import os
+agent = dbus.Interface(dbus.SystemBus().get_object(N, P), N)
+agent.OpenPrompt(sys.argv[1], dbus.Int64(int(sys.argv[2])))
 print("OPENED", flush=True)
-time.sleep(int(sys.argv[3]))
+# Only the connection that opened a prompt may report on it (ADR-0014, amendment of 2026-11-22),
+# so this process reports once when the flow check below asks it to.
+for _ in range(int(sys.argv[3]) * 10):
+    if os.path.exists("/tmp/report-now"):
+        os.remove("/tmp/report-now")
+        agent.ReportState(sys.argv[1], "State", ["scanning"])
+    time.sleep(0.1)
 PY
 chmod 644 /tmp/opener.py
 sudo -u lh python3 /tmp/opener.py $ID $LHUID 90 > /tmp/opener.out 2>&1 &
@@ -223,7 +231,8 @@ sudo -u nobody python3 /tmp/flow.py bystander $ID > /tmp/by.out 2>&1 &
 sleep 2
 sudo -u nobody busctl --system emit $P $N State ss $ID forged-by-nobody >/dev/null 2>&1
 sudo -u lh busctl --system emit $P $N State ss $ID forged-by-lh >/dev/null 2>&1
-call lh $N $P $N ReportState ssas $ID State 1 scanning >/dev/null
+check "another_connection_of_the_user_cannot_report" 'call lh $N $P $N ReportState ssas $ID State 1 scanning | grep -q "not allowed"'
+sudo -u lh touch /tmp/report-now
 wait
 check "a_subscriber_hears_the_agents_signal" 'grep -c "HEARD State .*scanning" /tmp/sub.out | grep -qx 1'
 check "forged_signals_reach_nobody" '! grep -q forged /tmp/sub.out /tmp/by.out'

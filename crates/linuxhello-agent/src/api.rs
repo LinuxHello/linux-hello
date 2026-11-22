@@ -237,7 +237,13 @@ pub struct Api {
     key_probe: Option<Arc<dyn KeyProbe>>,
     /// The time in seconds since the Unix epoch; the wall clock, replaced in tests.
     clock: fn() -> u64,
+    /// The connections that called `WatchPrompts`, with their uid (ADR-0014, amendment of
+    /// 2026-11-22).
+    watchers: Vec<(u32, Peer)>,
 }
+
+/// The most connections of one user that may watch for prompts.
+const MAX_WATCHERS_PER_USER: usize = 4;
 
 impl Api {
     /// An API over an empty store with the given settings.
@@ -250,6 +256,7 @@ impl Api {
             pin_lock: None,
             key_probe: None,
             clock: wall_clock_seconds,
+            watchers: Vec::new(),
         }
     }
 
@@ -398,6 +405,7 @@ impl Api {
     /// audited.
     pub fn peer_left(&mut self, peer: &str) -> usize {
         let peer = Peer(peer.to_string());
+        self.watchers.retain(|(_, watcher)| *watcher != peer);
         let removed = self.store.drop_opener(&peer) + self.store.drop_subscriber(&peer);
         self.stop_orphans();
         removed
@@ -447,6 +455,7 @@ impl Api {
     ) -> Result<Vec<Notification>, ApiError> {
         let uid = caller.uid.ok_or(ApiError::Denied)?;
         let prompt = parse_prompt(prompt_id)?;
+        self.require_opener(caller, uid, &prompt)?;
         let signal = SIGNALS
             .iter()
             .find(|spec| spec.name == signal)
@@ -609,6 +618,7 @@ impl Api {
     fn close_prompt_unaudited(&mut self, caller: &Caller, prompt_id: &str) -> Result<(), ApiError> {
         let uid = caller.uid.ok_or(ApiError::Denied)?;
         let prompt = parse_prompt(prompt_id)?;
+        self.require_opener(caller, uid, &prompt)?;
         self.store.close(uid, &prompt)?;
         self.stop_orphans();
         Ok(())
@@ -630,6 +640,65 @@ impl Api {
         let uid = caller.uid.ok_or(ApiError::Denied)?;
         let store = self.user_policies.as_ref().ok_or(ApiError::Unavailable)?;
         store.get(uid).map_err(ApiError::from)
+    }
+
+    /// Refuses a caller that is not the connection that opened the prompt
+    /// (`only_the_opener_may_report_or_close_a_prompt`, ADR-0014 amendment of 2026-11-22).
+    fn require_opener(&self, caller: &Caller, uid: u32, prompt: &PromptId) -> Result<(), ApiError> {
+        let peer = caller.peer.map(|p| Peer(p.as_str().to_string()));
+        Ok(self.store.check_opener(uid, prompt, peer.as_ref())?)
+    }
+
+    /// Registers the connection `peer` of the caller as a watcher, which is told by
+    /// `PromptStarted` when a prompt it may read starts (ADR-0014, amendment of 2026-11-22). A
+    /// second call from the same connection changes nothing.
+    ///
+    /// # Errors
+    ///
+    /// [`ApiError::Denied`] without a caller uid; [`ApiError::LimitReached`] when the user already
+    /// has four watching connections.
+    pub fn watch_prompts(&mut self, caller: Caller, peer: &str) -> Result<(), ApiError> {
+        let result = self.watch_prompts_unaudited(&caller, peer);
+        self.audited(&caller, result)
+    }
+
+    /// The work of [`Api::watch_prompts`], without the audit record.
+    fn watch_prompts_unaudited(&mut self, caller: &Caller, peer: &str) -> Result<(), ApiError> {
+        let uid = caller.uid.ok_or(ApiError::Denied)?;
+        let peer = Peer(peer.to_string());
+        if self.watchers.iter().any(|(_, p)| *p == peer) {
+            return Ok(());
+        }
+        if self.watchers.iter().filter(|(u, _)| *u == uid).count() >= MAX_WATCHERS_PER_USER {
+            return Err(ApiError::LimitReached);
+        }
+        self.watchers.push((uid, peer));
+        Ok(())
+    }
+
+    /// The `PromptStarted` signals for a prompt that `opener_uid` opened and that now starts in
+    /// `context`: to a watcher of the same uid, and to a watcher whose uid is a prompt host when
+    /// root opened it for the login screen (`a_watcher_is_told_when_its_own_prompt_starts`,
+    /// `a_prompt_host_is_told_only_about_root_logins`).
+    pub fn started_notes(
+        &self,
+        opener_uid: u32,
+        prompt: &PromptId,
+        context: &str,
+    ) -> Vec<Notification> {
+        self.watchers
+            .iter()
+            .filter(|(uid, _)| {
+                *uid == opener_uid
+                    || (opener_uid == 0 && context == "login" && self.store.is_prompt_host(*uid))
+            })
+            .map(|(_, peer)| Notification {
+                peer: peer.clone(),
+                signal: "PromptStarted",
+                prompt_id: prompt.as_str().to_string(),
+                values: vec![context.to_string()],
+            })
+            .collect()
     }
 
     /// Starts the authentication of a prompt (`Authenticate`, ADR-0023 amendment 2026-11-19):
@@ -1341,7 +1410,7 @@ mod tests {
         // A subscriber leaving removes only its subscription.
         assert_eq!(api.peer_left(":1.2"), 1);
         let told = api
-            .report_state(USER, &shared, "State", &["scanning"])
+            .report_state(on_peer(1000, ":1.1"), &shared, "State", &["scanning"])
             .unwrap();
         assert!(told.is_empty());
         // The opener leaving removes both prompts.
@@ -2473,6 +2542,84 @@ mod tests {
     }
 
     #[test]
+    fn only_the_opener_may_report_or_close_a_prompt() {
+        let mut api = Api::new(Config::new(vec![]));
+        let id = prompt("mine");
+        api.open_prompt_from(on_peer(1000, ":1.1"), ":1.1", &id, Some(1000))
+            .unwrap();
+        // Another connection of the same user is refused, as for a prompt that does not exist.
+        let other = on_peer(1000, ":1.2");
+        assert_eq!(
+            api.report_state(other, &id, "State", &["scanning"]).err(),
+            Some(ApiError::Denied)
+        );
+        assert_eq!(api.close_prompt(other, &id), Err(ApiError::Denied));
+        assert_eq!(
+            api.close_prompt(other, &prompt("nothing")),
+            Err(ApiError::Denied)
+        );
+        // It may still read the prompt, and the opener may change it.
+        assert!(api.get_state(other, &id).is_ok());
+        assert!(api
+            .report_state(on_peer(1000, ":1.1"), &id, "State", &["scanning"])
+            .is_ok());
+        assert_eq!(api.close_prompt(on_peer(1000, ":1.1"), &id), Ok(()));
+    }
+
+    #[test]
+    fn a_watcher_is_told_when_its_own_prompt_starts() {
+        let mut api = Api::new(Config::new(vec![]));
+        api.watch_prompts(on_peer(1000, ":1.9"), ":1.9").unwrap();
+        api.watch_prompts(on_peer(1001, ":1.8"), ":1.8").unwrap();
+        let id = PromptId::parse(&prompt("lock")).unwrap();
+        let notes = api.started_notes(1000, &id, "unlock");
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        assert_eq!(notes[0].peer, Peer(":1.9".into()));
+        assert_eq!(notes[0].signal, "PromptStarted");
+        assert_eq!(notes[0].values, ["unlock"]);
+        // A watcher that left is told nothing.
+        api.peer_left(":1.9");
+        assert!(api.started_notes(1000, &id, "unlock").is_empty());
+    }
+
+    #[test]
+    fn a_prompt_host_is_told_only_about_root_logins() {
+        let mut api = Api::new(Config::new(vec![990]));
+        api.watch_prompts(on_peer(990, ":1.3"), ":1.3").unwrap();
+        api.watch_prompts(on_peer(1000, ":1.4"), ":1.4").unwrap();
+        let id = PromptId::parse(&prompt("greeter")).unwrap();
+        let told = |api: &Api, opener, context| {
+            api.started_notes(opener, &id, context)
+                .into_iter()
+                .map(|n| n.peer.0)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(told(&api, 0, "login"), [":1.3"]);
+        for context in ["sudo", "unlock", "session"] {
+            assert!(told(&api, 0, context).is_empty(), "{context}");
+        }
+        // A prompt a user opened is told to that user only, never to the host.
+        assert_eq!(told(&api, 1000, "login"), [":1.4"]);
+    }
+
+    #[test]
+    fn watchers_are_limited_per_user() {
+        let mut api = Api::new(Config::new(vec![]));
+        for n in 0..4 {
+            let peer = format!(":1.{n}");
+            api.watch_prompts(on_peer(1000, &peer), &peer).unwrap();
+        }
+        // The same connection again changes nothing; a fifth is refused.
+        assert!(api.watch_prompts(on_peer(1000, ":1.0"), ":1.0").is_ok());
+        assert_eq!(
+            api.watch_prompts(on_peer(1000, ":1.4"), ":1.4"),
+            Err(ApiError::LimitReached)
+        );
+        // Another user has its own four.
+        assert!(api.watch_prompts(on_peer(1001, ":1.5"), ":1.5").is_ok());
+    }
+
+    #[test]
     fn expect_pin_for_another_users_prompt_is_denied() {
         let (mut api, recorder, socket, _path, _dir) = pin_setup();
         let id = prompt("p1");
@@ -2806,7 +2953,7 @@ mod tests {
         api.subscribe(USER, ":1.5", &id).unwrap();
         api.subscribe(USER, ":1.6", &id).unwrap();
         api.unsubscribe(USER, ":1.6", &id).unwrap();
-        api.close_prompt(USER, &id).unwrap();
+        api.close_prompt(on_peer(1000, ":1.1"), &id).unwrap();
         let notes = api.take_closures();
         assert_eq!(
             notes,

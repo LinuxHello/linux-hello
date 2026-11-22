@@ -61,10 +61,12 @@ pub const CAPABILITIES: &[&str] = &[
     "GetStatusDetails",
     "GetUserPolicy",
     "ListFingerprints",
+    "PromptStarted",
     "Reset",
     "SetPin",
     "SetUserPolicy",
     "Unsubscribe",
+    "WatchPrompts",
 ];
 
 /// What `GetStatus` reports (ADR-0024): conditions with a code from a closed set, a severity and
@@ -544,6 +546,13 @@ pub const SIGNALS: &[SignalSpec] = &[
         delivery: Delivery::Unicast,
         args: &["prompt_id", "step", "done", "needed"],
     },
+    // Sent by the Agent to a watcher when a prompt it may read starts, never reported by a client
+    // (ADR-0014, amendment of 2026-11-22).
+    SignalSpec {
+        name: "PromptStarted",
+        delivery: Delivery::Unicast,
+        args: &["prompt_id", "context"],
+    },
 ];
 
 #[cfg(test)]
@@ -772,7 +781,7 @@ mod tests {
 
     #[test]
     fn signals_carry_no_user_or_session_data() {
-        assert_eq!(SIGNALS.len(), 6);
+        assert_eq!(SIGNALS.len(), 7);
         let expected_names = [
             "MethodsAvailable",
             "ActiveMethods",
@@ -780,14 +789,16 @@ mod tests {
             "Result",
             "Closed",
             "EnrolProgress",
+            "PromptStarted",
         ];
-        let expected_args: [&[&str]; 6] = [
+        let expected_args: [&[&str]; 7] = [
             &["prompt_id", "methods"],
             &["prompt_id", "methods"],
             &["prompt_id", "state"],
             &["prompt_id", "result", "reason", "retry_after"],
             &["prompt_id"],
             &["prompt_id", "step", "done", "needed"],
+            &["prompt_id", "context"],
         ];
 
         for (i, sig) in SIGNALS.iter().enumerate() {

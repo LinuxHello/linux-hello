@@ -4,8 +4,8 @@
 //! screen, a `sudo` conversation). The PAM module opens it and reports the live state; the
 //! prompt component reads it. The store decides who may do what, as ADR-0014 and its
 //! amendment of 2026-11-16 require: only root or the user being authenticated can open a
-//! prompt for that user; a prompt belongs to the uid that opened it, and only that uid can
-//! change or close it; only that uid, and for a prompt that root opened the subject user
+//! prompt for that user; a prompt belongs to the uid that opened it, and only the connection
+//! that opened it can change or close it (ADR-0014, amendment of 2026-11-22); only that uid, and for a prompt that root opened the subject user
 //! and the configured prompt-host users, can read it or be told about changes; a refusal about a prompt the caller did not open looks the
 //! same whether the prompt exists or not (`open` tells a caller only about its own prompts);
 //! and no user can fill the store.
@@ -18,7 +18,7 @@
 //! `open_does_not_reveal_whether_a_prompt_exists`). Every process of one uid is the same
 //! caller to the store: it cannot tell the PAM module from another process of that user, and
 //! by decision (ADR-0014, amendment 2026-11-16) it is not meant to. A process of the user can
-//! report on, close or subscribe to the user's prompts, so the state a prompt shows is an
+//! read and subscribe to the user's prompts, but not report on or close one it did not open, so the state a prompt shows is an
 //! indicator and carries no authority; the authentication itself is decided by the Agent.
 //!
 //! The store takes the caller's uid as an argument. The D-Bus layer reads it from the bus
@@ -454,6 +454,36 @@ impl StateStore {
             removed += before - entry.subscribers.len();
         }
         removed
+    }
+
+    /// Whether the prompt that `reporter_uid` opened was opened by exactly the connection
+    /// `opener` (`None` only for a prompt opened without a connection, as the request layer's
+    /// own tests do; every caller on the bus has one).
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Denied`] for a prompt that does not exist, is another user's or has another
+    /// opener, one answer for all.
+    pub fn check_opener(
+        &self,
+        reporter_uid: u32,
+        prompt: &PromptId,
+        opener: Option<&Peer>,
+    ) -> Result<(), Error> {
+        let entry = self
+            .prompts
+            .get(&(reporter_uid, prompt.clone()))
+            .ok_or(Error::Denied)?;
+        if entry.opener.as_ref() == opener {
+            Ok(())
+        } else {
+            Err(Error::Denied)
+        }
+    }
+
+    /// Whether `uid` is one of the configured prompt hosts.
+    pub fn is_prompt_host(&self, uid: u32) -> bool {
+        self.config.prompt_hosts.contains(&uid)
     }
 
     /// Closes the prompt and forgets its state and subscribers. The id can be opened again.

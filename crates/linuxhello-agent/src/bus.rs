@@ -728,6 +728,23 @@ impl AgentService {
         )
     }
 
+    /// Registers the calling connection to be told by `PromptStarted` when a prompt it may read
+    /// starts: its own user's, and for a prompt host root's login prompts (ADR-0014, amendment of
+    /// 2026-11-22).
+    async fn watch_prompts(
+        &mut self,
+        #[zbus(header)] header: Header<'_>,
+        #[zbus(connection)] connection: &Connection,
+    ) -> Result<(), AgentError> {
+        let caller = caller_of(connection, header.sender()).await;
+        let sender = header
+            .sender()
+            .ok_or_else(|| to_bus(ApiError::Denied))?
+            .as_str()
+            .to_string();
+        self.api.watch_prompts(caller, &sender).map_err(to_bus)
+    }
+
     /// Subscribes the calling connection to the prompt's signals.
     async fn subscribe(
         &mut self,
@@ -805,6 +822,12 @@ impl AgentService {
             .api
             .begin_authentication(caller, prompt_id, context)
             .map_err(to_bus)?;
+        for note in &self
+            .api
+            .started_notes(start.opener_uid, &start.prompt, context)
+        {
+            send(connection, note).await;
+        }
         let Some(updates) = self.updates.clone() else {
             self.api.agent_report(
                 start.opener_uid,

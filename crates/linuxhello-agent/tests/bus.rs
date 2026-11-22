@@ -1217,3 +1217,43 @@ fn private_tempdir() -> tempfile::TempDir {
         .tempdir()
         .expect("a temporary directory")
 }
+
+#[test]
+fn a_watching_connection_hears_prompt_started_and_cannot_close_the_prompt() {
+    let daemon = Daemon::start();
+    let dir = private_tempdir();
+    run(async {
+        let _service = serve_fakes(
+            &daemon,
+            UserPolicyStore::new(dir.path()),
+            Some(50),
+            std::sync::Arc::default(),
+        )
+        .await;
+        let opener = connect(&daemon).await;
+        let screen = connect(&daemon).await;
+        call(&screen, "WatchPrompts", &()).await.expect("watch");
+        let mut started = signals(&screen, "PromptStarted").await;
+        let id = pid("watched");
+        call(&opener, "OpenPrompt", &(id.as_str(), i64::from(my_uid())))
+            .await
+            .expect("open the prompt");
+        call(&opener, "Authenticate", &(id.as_str(), "unlock"))
+            .await
+            .expect("authenticate");
+        let signal = next_within(&mut started, 3_000)
+            .await
+            .expect("a PromptStarted signal");
+        let (prompt, context): (String, String) = signal.body().deserialize().unwrap();
+        assert_eq!((prompt.as_str(), context.as_str()), (id.as_str(), "unlock"));
+        // The screen follows it, but may not close it: only the opener may.
+        call(&screen, "Subscribe", &(id.as_str(),))
+            .await
+            .expect("the same user may subscribe");
+        let closed = call(&screen, "ClosePrompt", &(id.as_str(),)).await;
+        assert!(
+            is_error(&closed, "io.github.LinuxHello.Error.Denied"),
+            "{closed:?}"
+        );
+    });
+}
