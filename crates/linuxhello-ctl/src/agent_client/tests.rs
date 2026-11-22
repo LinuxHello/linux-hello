@@ -105,7 +105,7 @@ fn world() -> World {
         let inbox = Arc::new(PinInbox::default());
         let sink = Arc::clone(&inbox);
         PinSocket::serve_forever(Arc::clone(&socket), move |s| {
-            sink.deliver(s.subject, s.pin);
+            sink.deliver_to(&s.target, s.pin);
         });
         let lock = Arc::new(PinLockService::start(
             PinLockFile::new(dir.path().join("pinlock.toml"), uid),

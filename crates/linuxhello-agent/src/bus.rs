@@ -41,7 +41,7 @@ use crate::methods::pin::enrol::{run_change, run_check, run_set, CheckJob, Job, 
 use crate::methods::pin::{KeyProbe, PinInbox, PinVerifier};
 use crate::orchestrator::{Method, Orchestrator, Reporter};
 use crate::pinlock::service::{wall_clock_seconds, PinLockService};
-use crate::pinsocket::PinSocket;
+use crate::pinsocket::{PinSocket, PinTarget};
 use crate::policy::user_store::UserPolicyStore;
 use crate::state::{Config, Outcome, Update};
 
@@ -56,7 +56,7 @@ const AUTH_DEADLINE: Duration = Duration::from_secs(60);
 /// Makes the methods an authentication runs, for the user being authenticated. The Agent has
 /// none yet (the fingerprint, face and PIN methods are later slices of #195), so the default makes
 /// no method and every authentication fails at once with no methods offered.
-pub type MethodFactory = Arc<dyn Fn(u32) -> Vec<Box<dyn Method>> + Send + Sync>;
+pub type MethodFactory = Arc<dyn Fn(u32, &PinTarget) -> Vec<Box<dyn Method>> + Send + Sync>;
 
 /// A report of the orchestrator for the prompt that `uid` opened, on its way to the state store.
 pub struct AgentUpdate {
@@ -135,7 +135,7 @@ impl AgentService {
             pin_socket: None,
             pin_change: None,
             lock: None,
-            methods: Arc::new(|_| Vec::new()),
+            methods: Arc::new(|_, _| Vec::new()),
             auth_deadline: AUTH_DEADLINE,
             updates: None,
             fingerprints: None,
@@ -189,7 +189,7 @@ impl AgentService {
             pin_socket: None,
             pin_change: None,
             lock: None,
-            methods: Arc::new(|_| Vec::new()),
+            methods: Arc::new(|_, _| Vec::new()),
             auth_deadline: AUTH_DEADLINE,
             updates: None,
             fingerprints: None,
@@ -205,6 +205,18 @@ impl AgentService {
             api: self.api.with_shared_pin_lock(pin_lock),
             ..self
         }
+    }
+
+    /// Ends a job that could not be given a wait for its prompt, because that prompt already has
+    /// one: the prompt must not stay "running" (the way `Authenticate` ends without an updates
+    /// channel), and the caller is told the service cannot do it now.
+    fn end_unwaited(&mut self, prompt: &PromptId, opener: u32) -> AgentError {
+        self.api.agent_report(
+            opener,
+            prompt,
+            Update::Result(Outcome::new(PromptResult::Failure)),
+        );
+        to_bus(ApiError::Unavailable)
     }
 
     /// Starts the job of `SetPin` or `ChangePin` on a thread of its own.
@@ -231,8 +243,14 @@ impl AgentService {
             .api
             .begin_pin_change(caller, prompt_id, change, has_pin)
             .map_err(to_bus)?;
-        // Registered before the call returns, so that a PIN sent right after it is not lost.
-        let wait = pin_change.inbox.wait_for(start.subject);
+        // Registered before the call returns, so that a PIN sent right after it is not lost. It
+        // waits for the PINs announced for this prompt and for no other (P-46).
+        let Some(wait) = pin_change.inbox.wait_for_prompt(PinTarget {
+            opener: start.opener_uid,
+            prompt: start.prompt.clone(),
+        }) else {
+            return Err(self.end_unwaited(&start.prompt, start.opener_uid));
+        };
         std::thread::spawn(move || {
             let job = Job {
                 subject: start.subject,
@@ -848,7 +866,12 @@ impl AgentService {
             );
             return Err(to_bus(ApiError::Unavailable));
         };
-        let methods = (self.methods)(start.subject);
+        // The PIN method waits for the PIN announced for this prompt and for no other (P-46).
+        let target = PinTarget {
+            opener: start.opener_uid,
+            prompt: start.prompt.clone(),
+        };
+        let methods = (self.methods)(start.subject, &target);
         let deadline = self.auth_deadline;
         std::thread::spawn(move || {
             let mut reporter = ChannelReporter {
@@ -955,8 +978,14 @@ impl AgentService {
             .api
             .begin_pin_change(caller, prompt_id, true, has_pin)
             .map_err(to_bus)?;
-        // Registered before the call returns, so that a PIN sent right after it is not lost.
-        let wait = pin_change.inbox.wait_for(start.subject);
+        // Registered before the call returns, so that a PIN sent right after it is not lost. It
+        // waits for the PINs announced for this prompt and for no other (P-46).
+        let Some(wait) = pin_change.inbox.wait_for_prompt(PinTarget {
+            opener: start.opener_uid,
+            prompt: start.prompt.clone(),
+        }) else {
+            return Err(self.end_unwaited(&start.prompt, start.opener_uid));
+        };
         let finger = finger.to_string();
         std::thread::spawn(move || {
             let ran = catch_unwind(AssertUnwindSafe(|| {
