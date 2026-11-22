@@ -227,6 +227,34 @@ fn a_provider_that_goes_away_is_not_a_wrong_pin_when_a_pin_is_checked() {
     assert_eq!(down.verify(1000, b"wrong"), Err(VerifyError));
 }
 
+#[test]
+fn a_change_with_no_provider_is_not_a_wrong_pin() {
+    // R-18, #360: with the default history of zero the change went straight to the TPM, and the
+    // client's answer for a missing provider was read as a wrong current PIN, which counts.
+    let Some(s) = stack() else { return };
+    s.verifier.enrol(1000, b"1234").unwrap();
+    let dir = private_tempdir();
+    let down = TpmVerifier::new(
+        PinRecordStore::new(&s.records, me()),
+        dir.path().join("none.sock"),
+    )
+    .with_params(Params::MINIMUM);
+    for pin in [&b"1234"[..], b"wrong"] {
+        assert!(
+            matches!(
+                down.change_pin(1000, pin, b"5678", 0),
+                Err(EnrolError::Tpm(_))
+            ),
+            "{pin:?}: a provider that is down is a fault, not a wrong PIN"
+        );
+    }
+    // The control: with the provider back, a wrong current PIN is a wrong PIN.
+    assert_eq!(
+        s.verifier.change_pin(1000, b"wrong", b"5678", 0),
+        Err(EnrolError::WrongPin)
+    );
+}
+
 /// The record as text, for what a test must not find in it.
 fn record_text(s: &Stack) -> String {
     std::fs::read_to_string(s.records.join("1000").join("pin-root.toml")).unwrap()

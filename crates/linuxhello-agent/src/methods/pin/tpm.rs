@@ -137,13 +137,17 @@ impl TpmVerifier {
         let keep = usize::try_from(history)
             .unwrap_or(MAX_HISTORY)
             .min(MAX_HISTORY);
+        // The TPM must first accept the current PIN, always: the answer of `change_auth` cannot tell a
+        // wrong PIN from an outage, so a change that began there would count a provider that did
+        // not answer as a wrong PIN (`a_change_with_no_provider_is_not_a_wrong_pin`, R-18, #360).
+        // `verify` tells them apart: a wrong PIN is `Ok(false)`, a fault is an error.
+        match self.client.verify(record.blobs.clone(), old_auth.clone()) {
+            Ok(true) => {}
+            Ok(false) => return Err(EnrolError::WrongPin),
+            Err(other) => return Err(EnrolError::Tpm(other)),
+        }
         if keep > 0 && !record.history.is_empty() {
-            // Only now is the history asked: the TPM must first accept the current PIN.
-            match self.client.verify(record.blobs.clone(), old_auth.clone()) {
-                Ok(true) => {}
-                Ok(false) => return Err(EnrolError::WrongPin),
-                Err(other) => return Err(EnrolError::Tpm(other)),
-            }
+            // Only now is the history asked.
             for entry in record.history.iter().take(keep) {
                 let hash = stretch(new, &entry.salt, &entry.params).map_err(EnrolError::BadPin)?;
                 if same(hash.as_bytes(), &entry.hash) {
@@ -168,11 +172,8 @@ impl TpmVerifier {
         let blobs = self
             .client
             .change_auth(record.blobs, old_auth, new_auth)
-            .map_err(|error| match error {
-                // The TPM refuses a wrong current authorisation as any other refusal.
-                ClientError::Failed => EnrolError::WrongPin,
-                other => EnrolError::Tpm(other),
-            })?;
+            // The current PIN was accepted just above, so a refusal now is a fault and not a wrong PIN.
+            .map_err(EnrolError::Tpm)?;
         let history: Vec<HistoryEntry> = remembered
             .into_iter()
             .chain(record.history)
