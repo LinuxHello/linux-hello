@@ -36,6 +36,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+use linuxhello_dbus::PromptId;
 use zeroize::Zeroizing;
 
 /// The longest PIN a frame may carry, in bytes. A longer frame is refused unread.
@@ -65,10 +66,24 @@ pub struct Process {
     pub pid: u32,
 }
 
-/// A PIN that arrived, and who it is for. It has no `Debug` so that no log line can print it.
+/// The prompt a control call was made for: the user who opened it and its identifier. It holds no
+/// secret.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct PinTarget {
+    /// The user who opened the prompt, which keys it in the store.
+    pub opener: u32,
+    /// The prompt.
+    pub prompt: PromptId,
+}
+
+/// A PIN that arrived, and who and which prompt it is for. It has no `Debug` so that no log line
+/// can print it.
 pub struct Submission {
     /// The user the control call named.
     pub subject: u32,
+    /// The prompt the control call named; a PIN is handed only to the job that runs on it
+    /// (`a_submission_names_the_prompt_its_control_call_named`, P-46, R-01).
+    pub target: PinTarget,
     /// The process that sent it.
     pub from: Process,
     /// The PIN as sent. It is overwritten when the value is dropped.
@@ -81,6 +96,8 @@ struct Expectation {
     caller: Process,
     /// The user whose PIN it is.
     subject: u32,
+    /// The prompt it was made for.
+    target: PinTarget,
     /// When it was made.
     made: Instant,
 }
@@ -164,14 +181,15 @@ impl PinSocket {
         Self { ttl, ..self }
     }
 
-    /// Records a control call: `caller` asked to send the PIN of `subject`. The caller is the
-    /// peer the bus reported; the rule that root or the subject may ask is the control call's.
-    /// A second call by the same process replaces the first.
+    /// Records a control call: `caller` asked to send the PIN of `subject` for the prompt
+    /// `target`. The caller is the peer the bus reported; the rule that root or the subject may
+    /// ask is the control call's. A second call by the same process replaces the first, prompt
+    /// and all.
     ///
     /// # Errors
     ///
     /// [`TooMany`] when 64 callers already wait.
-    pub fn expect(&self, caller: Process, subject: u32) -> Result<(), TooMany> {
+    pub fn expect(&self, caller: Process, subject: u32, target: PinTarget) -> Result<(), TooMany> {
         let mut table = self
             .expectations
             .lock()
@@ -185,20 +203,23 @@ impl PinSocket {
         table.waiting.push(Expectation {
             caller,
             subject,
+            target,
             made: now,
         });
         Ok(())
     }
 
-    /// Takes the control call of `caller`, if one is waiting and has not expired.
-    fn take(&self, caller: Process) -> Option<u32> {
+    /// Takes the control call of `caller`, if one is waiting and has not expired: the subject and
+    /// the prompt it named.
+    fn take(&self, caller: Process) -> Option<(u32, PinTarget)> {
         let mut table = self
             .expectations
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
         table.expire(Instant::now(), self.ttl);
         let at = table.waiting.iter().position(|e| e.caller == caller)?;
-        Some(table.waiting.remove(at).subject)
+        let taken = table.waiting.remove(at);
+        Some((taken.subject, taken.target))
     }
 
     /// Accepts one connection and handles it: reads the peer credentials, takes the caller's
@@ -248,7 +269,7 @@ impl PinSocket {
             return false;
         };
         // Identity first: a connection without a control call of its own touches nothing.
-        let Some(subject) = self.take(from) else {
+        let Some((subject, target)) = self.take(from) else {
             return false;
         };
         if stream.set_read_timeout(Some(CLIENT_TIMEOUT)).is_err()
@@ -259,7 +280,12 @@ impl PinSocket {
         let Some(pin) = read_frame(stream) else {
             return false;
         };
-        sink(Submission { subject, from, pin });
+        sink(Submission {
+            subject,
+            target,
+            from,
+            pin,
+        });
         true
     }
 }

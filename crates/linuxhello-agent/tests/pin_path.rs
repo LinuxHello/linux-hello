@@ -70,7 +70,7 @@ async fn world() -> World {
     let inbox = Arc::new(PinInbox::default());
     let sink_inbox = Arc::clone(&inbox);
     PinSocket::serve_forever(Arc::clone(&socket), move |s| {
-        sink_inbox.deliver(s.subject, s.pin);
+        sink_inbox.deliver_to(&s.target, s.pin);
     });
     let limits = Limits {
         max_attempts: 2,
@@ -84,14 +84,18 @@ async fn world() -> World {
     let verifier: Arc<dyn PinVerifier> = Arc::new(Right1234);
     let methods: MethodFactory = {
         let (inbox, lock) = (Arc::clone(&inbox), Arc::clone(&lock));
-        Arc::new(move |subject| {
-            vec![Box::new(PinMethod::new(
+        Arc::new(move |subject, target| {
+            PinMethod::for_prompt(
                 subject,
-                Arc::clone(&inbox),
+                target.clone(),
+                &inbox,
                 Arc::clone(&lock),
                 Arc::clone(&verifier),
                 wall_clock_seconds,
-            ))]
+            )
+            .into_iter()
+            .map(|method| Box::new(method) as Box<dyn linuxhello_agent::orchestrator::Method>)
+            .collect()
         })
     };
     let service = serve_with_extras(
@@ -198,6 +202,48 @@ fn wrong_pins_fail_and_then_lock_the_user_and_the_status_says_so() {
         assert!(
             status[0].2.starts_with("Your PIN is locked for "),
             "{status:?}"
+        );
+    });
+}
+
+#[test]
+fn a_sign_in_keeps_its_pin_when_another_prompt_of_the_user_starts_a_job() {
+    // Review finding R-01 (#344, P-46): a job on another prompt of the same user must neither take
+    // the PIN of this sign-in nor end its wait.
+    run(async {
+        let world = world().await;
+        let victim = connect(&world.daemon).await;
+        let other = connect(&world.daemon).await;
+        let (y, x) = (pid("c1"), pid("c2"));
+        for (client, id) in [(&victim, &y), (&other, &x)] {
+            call(client, "OpenPrompt", &(id.as_str(), i64::from(my_uid())))
+                .await
+                .expect("open the prompt");
+            call(client, "Subscribe", &(id.as_str(),))
+                .await
+                .expect("subscribe");
+        }
+        let mut heard_victim = signals(&victim, "Result").await;
+        let mut heard_other = signals(&other, "Result").await;
+        call(&victim, "Authenticate", &(y.as_str(), "login"))
+            .await
+            .expect("authenticate on Y");
+        call(&other, "Authenticate", &(x.as_str(), "login"))
+            .await
+            .expect("authenticate on X after Y");
+        call(&victim, "ExpectPin", &(y.as_str(),))
+            .await
+            .expect("expect a PIN");
+        assert_eq!(send_pin(&world.socket, b"1234"), REPLY_ACCEPTED);
+        let signal = next_within(&mut heard_victim, 5_000)
+            .await
+            .expect("a Result signal on Y");
+        let (_prompt, result, _reason, _seconds): (String, String, String, u32) =
+            signal.body().deserialize().expect("the signal");
+        assert_eq!(result, "success");
+        assert!(
+            next_within(&mut heard_other, 500).await.is_none(),
+            "the sign-in on X heard a result for a PIN typed at Y"
         );
     });
 }

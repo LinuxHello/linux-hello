@@ -82,7 +82,7 @@ async fn world() -> World {
     let inbox = Arc::new(PinInbox::default());
     let sink = Arc::clone(&inbox);
     PinSocket::serve_forever(Arc::clone(&socket), move |s| {
-        sink.deliver(s.subject, s.pin);
+        sink.deliver_to(&s.target, s.pin);
     });
     let lock = Arc::new(PinLockService::start(
         PinLockFile::new(dir.path().join("pinlock.toml"), my_uid()),
@@ -135,10 +135,25 @@ async fn open(client: &zbus::Connection, world: &World) {
 
 /// Announces one PIN and sends it.
 async fn announce_and_send(client: &zbus::Connection, world: &World, pin: &[u8]) {
-    call(client, "ExpectPin", &(world.id.as_str(),))
+    announce_and_send_on(client, &world.id, world, pin).await;
+}
+
+/// Announces one PIN for the prompt `id` and sends it. Both connections of a test are one process,
+/// and the socket keeps one announcement per process, so each PIN is announced and sent before
+/// the next is announced.
+async fn announce_and_send_on(client: &zbus::Connection, id: &str, world: &World, pin: &[u8]) {
+    call(client, "ExpectPin", &(id,))
         .await
         .expect("expect a PIN");
     assert_eq!(send_pin(&world.socket, pin), REPLY_ACCEPTED);
+}
+
+/// Opens the prompt `id` as `client` and subscribes to it.
+async fn open_prompt(client: &zbus::Connection, id: &str) {
+    call(client, "OpenPrompt", &(id, i64::from(my_uid())))
+        .await
+        .expect("open the prompt");
+    call(client, "Subscribe", &(id,)).await.expect("subscribe");
 }
 
 /// The `(result, reason, seconds)` of the next `Result` signal.
@@ -278,4 +293,79 @@ fn private_tempdir() -> tempfile::TempDir {
         .permissions(std::fs::Permissions::from_mode(0o700))
         .tempdir()
         .expect("a temporary directory")
+}
+
+#[test]
+fn a_pin_typed_at_one_prompt_never_reaches_a_change_pin_on_another() {
+    // Review finding R-01 (#344, P-46). V is the person's real prompt Y and has a PIN change
+    // running (the way a settings page does); A is a program of the same user that opened prompt
+    // X and started its own `ChangePin` after V's. The PINs V types at Y must reach Y and only Y.
+    run(async {
+        let world = world().await;
+        let victim = connect(&world.daemon).await;
+        let attacker = connect(&world.daemon).await;
+        let (y, x) = (pid("a1"), pid("a2"));
+        world.memory.set(my_uid(), b"123456").unwrap();
+        open_prompt(&victim, &y).await;
+        open_prompt(&attacker, &x).await;
+        let mut heard_victim = signals(&victim, "Result").await;
+        let mut heard_attacker = signals(&attacker, "Result").await;
+        call(&victim, "ChangePin", &(y.as_str(),))
+            .await
+            .expect("V changes the PIN");
+        call(&attacker, "ChangePin", &(x.as_str(),))
+            .await
+            .expect("A starts a change after V");
+
+        // V types its current PIN and a new one at Y.
+        announce_and_send_on(&victim, &y, &world, b"123456").await;
+        announce_and_send_on(&victim, &y, &world, b"567890").await;
+        assert_eq!(result_of(&mut heard_victim).await.0, "success");
+        assert_eq!(world.memory.0.lock().unwrap()[&my_uid()], b"567890");
+        // A heard nothing for X from V's PINs, and the PIN was never changed to one A chose.
+        assert!(
+            next_within(&mut heard_attacker, 500).await.is_none(),
+            "A's job took a PIN that was typed at another prompt"
+        );
+
+        // A's own PINs, with a wrong current PIN, end X in a failure that counts one wrong PIN.
+        announce_and_send_on(&attacker, &x, &world, b"000000").await;
+        announce_and_send_on(&attacker, &x, &world, b"999999").await;
+        assert_eq!(
+            result_of(&mut heard_attacker).await,
+            ("failure".to_string(), "not-recognised".to_string(), 0)
+        );
+        assert_eq!(world.memory.0.lock().unwrap()[&my_uid()], b"567890");
+    });
+}
+
+#[test]
+fn a_job_on_another_prompt_does_not_end_the_job_that_waits() {
+    run(async {
+        let world = world().await;
+        let victim = connect(&world.daemon).await;
+        let attacker = connect(&world.daemon).await;
+        let (y, x) = (pid("b1"), pid("b2"));
+        world.memory.set(my_uid(), b"123456").unwrap();
+        open_prompt(&victim, &y).await;
+        open_prompt(&attacker, &x).await;
+        let mut heard_victim = signals(&victim, "Result").await;
+        call(&victim, "ChangePin", &(y.as_str(),))
+            .await
+            .expect("V changes the PIN");
+        // A starts a job on its own prompt and ends it again.
+        call(&attacker, "ChangePin", &(x.as_str(),))
+            .await
+            .expect("A starts a change");
+        call(&attacker, "ClosePrompt", &(x.as_str(),))
+            .await
+            .expect("A closes its prompt");
+        async_io::Timer::after(Duration::from_millis(300)).await;
+
+        // V's PINs still complete the change on Y.
+        announce_and_send_on(&victim, &y, &world, b"123456").await;
+        announce_and_send_on(&victim, &y, &world, b"567890").await;
+        assert_eq!(result_of(&mut heard_victim).await.0, "success");
+        assert_eq!(world.memory.0.lock().unwrap()[&my_uid()], b"567890");
+    });
 }

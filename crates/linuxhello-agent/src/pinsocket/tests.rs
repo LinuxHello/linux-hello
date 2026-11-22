@@ -19,6 +19,15 @@ fn me() -> Process {
     }
 }
 
+/// A prompt of the user `uid` as a control call names it: the 64 hexadecimal characters of a
+/// prompt id, made from `n`.
+fn target_of(uid: u32, n: u8) -> PinTarget {
+    PinTarget {
+        opener: uid,
+        prompt: PromptId::parse(&format!("{n:064x}")).unwrap(),
+    }
+}
+
 /// A socket in a private directory, and the directory.
 fn socket() -> (PinSocket, PathBuf, TempDir) {
     let dir = crate::private_tempdir();
@@ -53,11 +62,26 @@ fn frame(pin: &[u8]) -> Vec<u8> {
 
 /// Runs one client against the socket and returns its reply and what the sink got.
 fn exchange(socket: &PinSocket, path: &PathBuf, bytes: &[u8]) -> (u8, Vec<(u32, Vec<u8>)>) {
+    let (reply, got) = exchange_targets(socket, path, bytes);
+    (
+        reply,
+        got.into_iter()
+            .map(|(subject, _, pin)| (subject, pin))
+            .collect(),
+    )
+}
+
+/// Like [`exchange`], and says which prompt each PIN was announced for.
+fn exchange_targets(
+    socket: &PinSocket,
+    path: &PathBuf,
+    bytes: &[u8],
+) -> (u8, Vec<(u32, PinTarget, Vec<u8>)>) {
     let mut got = Vec::new();
     let reply = thread::scope(|scope| {
         let client = scope.spawn(|| send(path, bytes));
         socket
-            .serve_one(&mut |s| got.push((s.subject, s.pin.to_vec())))
+            .serve_one(&mut |s| got.push((s.subject, s.target.clone(), s.pin.to_vec())))
             .unwrap();
         client.join().unwrap()
     });
@@ -67,7 +91,7 @@ fn exchange(socket: &PinSocket, path: &PathBuf, bytes: &[u8]) -> (u8, Vec<(u32, 
 #[test]
 fn the_pin_is_accepted_only_for_the_subject_the_bus_named() {
     let (socket, path, _dir) = socket();
-    socket.expect(me(), 4242).unwrap();
+    socket.expect(me(), 4242, target_of(4242, 1)).unwrap();
     let (reply, got) = exchange(&socket, &path, &frame(b"1234"));
     assert_eq!(reply, REPLY_ACCEPTED);
     // The subject comes from the control call; the frame names nobody.
@@ -94,20 +118,30 @@ fn a_caller_of_another_user_cannot_use_the_socket() {
         uid: me().uid,
         pid: me().pid.wrapping_add(1),
     };
-    socket.expect(other_user, me().uid).unwrap();
-    socket.expect(other_process, me().uid).unwrap();
+    socket
+        .expect(other_user, me().uid, target_of(me().uid, 1))
+        .unwrap();
+    socket
+        .expect(other_process, me().uid, target_of(me().uid, 2))
+        .unwrap();
     let (reply, got) = exchange(&socket, &path, &frame(b"1234"));
     assert_eq!(reply, REPLY_REFUSED);
     assert!(got.is_empty());
     // The refused connection did not use up what belongs to the others.
-    assert_eq!(socket.take(other_user), Some(me().uid));
-    assert_eq!(socket.take(other_process), Some(me().uid));
+    assert_eq!(
+        socket.take(other_user).map(|(subject, _)| subject),
+        Some(me().uid)
+    );
+    assert_eq!(
+        socket.take(other_process).map(|(subject, _)| subject),
+        Some(me().uid)
+    );
 }
 
 #[test]
 fn a_control_call_is_used_once() {
     let (socket, path, _dir) = socket();
-    socket.expect(me(), 1000).unwrap();
+    socket.expect(me(), 1000, target_of(1000, 1)).unwrap();
     assert_eq!(exchange(&socket, &path, &frame(b"1234")).0, REPLY_ACCEPTED);
     let (reply, got) = exchange(&socket, &path, &frame(b"1234"));
     assert_eq!(reply, REPLY_REFUSED);
@@ -121,7 +155,7 @@ fn a_control_call_expires() {
     let socket = PinSocket::bind(&path, me().uid)
         .unwrap()
         .with_ttl(Duration::from_millis(50));
-    socket.expect(me(), 1000).unwrap();
+    socket.expect(me(), 1000, target_of(1000, 1)).unwrap();
     thread::sleep(Duration::from_millis(120));
     let (reply, got) = exchange(&socket, &path, &frame(b"1234"));
     assert_eq!(reply, REPLY_REFUSED);
@@ -131,10 +165,38 @@ fn a_control_call_expires() {
 #[test]
 fn a_second_control_call_replaces_the_first() {
     let (socket, path, _dir) = socket();
-    socket.expect(me(), 1000).unwrap();
-    socket.expect(me(), 1001).unwrap();
+    socket.expect(me(), 1000, target_of(1000, 1)).unwrap();
+    socket.expect(me(), 1001, target_of(1001, 2)).unwrap();
     let (_, got) = exchange(&socket, &path, &frame(b"1234"));
     assert_eq!(got, vec![(1001, b"1234".to_vec())]);
+}
+
+#[test]
+fn a_submission_names_the_prompt_its_control_call_named() {
+    // Two processes of one user announce a PIN each, for two prompts. Each PIN arrives with the
+    // prompt of the control call of the process that sent it, never with the other's (R-01, #344).
+    let (socket, path, _dir) = socket();
+    let other = Process {
+        uid: me().uid,
+        pid: me().pid.wrapping_add(1),
+    };
+    let mine = target_of(me().uid, 7);
+    socket
+        .expect(other, me().uid, target_of(me().uid, 8))
+        .unwrap();
+    socket.expect(me(), me().uid, mine.clone()).unwrap();
+    let (reply, got) = exchange_targets(&socket, &path, &frame(b"1234"));
+    assert_eq!(reply, REPLY_ACCEPTED);
+    assert_eq!(got, vec![(me().uid, mine, b"1234".to_vec())]);
+}
+
+#[test]
+fn a_second_control_call_of_a_process_replaces_the_prompt_too() {
+    let (socket, path, _dir) = socket();
+    socket.expect(me(), 1000, target_of(1000, 1)).unwrap();
+    socket.expect(me(), 1000, target_of(1000, 2)).unwrap();
+    let (_, got) = exchange_targets(&socket, &path, &frame(b"1234"));
+    assert_eq!(got, vec![(1000, target_of(1000, 2), b"1234".to_vec())]);
 }
 
 #[test]
@@ -145,13 +207,16 @@ fn too_many_waiting_control_calls_are_refused() {
             uid: 1000,
             pid: u32::try_from(pid).unwrap(),
         };
-        socket.expect(caller, 1000).unwrap();
+        socket.expect(caller, 1000, target_of(1000, 1)).unwrap();
     }
     let one_more = Process {
         uid: 1000,
         pid: 9999,
     };
-    assert_eq!(socket.expect(one_more, 1000), Err(TooMany));
+    assert_eq!(
+        socket.expect(one_more, 1000, target_of(1000, 1)),
+        Err(TooMany)
+    );
 }
 
 #[test]
@@ -171,14 +236,14 @@ fn a_frame_that_is_not_exactly_one_pin_is_refused() {
     ];
     for (name, bytes) in cases {
         let (socket, path, _dir) = socket();
-        socket.expect(me(), 1000).unwrap();
+        socket.expect(me(), 1000, target_of(1000, 1)).unwrap();
         let (reply, got) = exchange(&socket, &path, &bytes);
         assert_eq!(reply, REPLY_REFUSED, "{name}");
         assert!(got.is_empty(), "{name}");
     }
     // The longest PIN is accepted.
     let (socket, path, _dir) = socket();
-    socket.expect(me(), 1000).unwrap();
+    socket.expect(me(), 1000, target_of(1000, 1)).unwrap();
     let longest = vec![b'7'; MAX_PIN_BYTES];
     let (reply, got) = exchange(&socket, &path, &frame(&longest));
     assert_eq!(reply, REPLY_ACCEPTED);
@@ -190,7 +255,7 @@ fn every_refusal_is_the_same_single_byte() {
     // No control call, and a bad frame under a control call, look alike to the client.
     let (socket, path, _dir) = socket();
     let (none, _) = exchange(&socket, &path, &frame(b"1234"));
-    socket.expect(me(), 1000).unwrap();
+    socket.expect(me(), 1000, target_of(1000, 1)).unwrap();
     let (bad, _) = exchange(&socket, &path, &frame(b""));
     assert_eq!(none, bad);
     assert_eq!(none, REPLY_REFUSED);
@@ -242,7 +307,7 @@ fn the_socket_is_open_to_every_user_but_its_directory_is_not() {
 #[test]
 fn a_silent_client_is_dropped() {
     let (socket, path, _dir) = socket();
-    socket.expect(me(), 1000).unwrap();
+    socket.expect(me(), 1000, target_of(1000, 1)).unwrap();
     let mut got = Vec::new();
     thread::scope(|scope| {
         let client = scope.spawn(|| {
@@ -276,6 +341,7 @@ fn pin_buffers_are_cleared_after_use() {
     // printed, so no log line can leak it.
     let held: Zeroizing<Vec<u8>> = Submission {
         subject: 1,
+        target: target_of(1, 1),
         from: me(),
         pin: Zeroizing::new(b"123456".to_vec()),
     }
@@ -325,7 +391,7 @@ fn a_served_socket_hands_an_expected_pin_to_the_sink() {
         sent.send((submission.subject, submission.pin.to_vec()))
             .unwrap();
     });
-    socket.expect(me(), 4242).unwrap();
+    socket.expect(me(), 4242, target_of(4242, 1)).unwrap();
     assert_eq!(send(&path, &frame(b"1234")), REPLY_ACCEPTED);
     let got = received.recv_timeout(Duration::from_secs(2)).unwrap();
     assert_eq!(got, (4242, b"1234".to_vec()));

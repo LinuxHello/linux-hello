@@ -3,7 +3,8 @@
 //!
 //! In plain words: the PIN does not travel through this module's caller. It arrives on the Agent's
 //! PIN socket, from the process that announced it with `ExpectPin`; the socket hands it to the
-//! [`PinInbox`], which gives it to the PIN method that is waiting for that user. The method then:
+//! [`PinInbox`], which gives it to the PIN method that is waiting on the prompt the PIN was
+//! announced for. The method then:
 //!
 //! The method is registered in the inbox from the moment it is made, so that a PIN sent right after
 //! the call that started the authentication is kept for it and not lost.
@@ -20,6 +21,7 @@
 //! C4 component: `methodOrch` ([workspace.dsl](https://github.com/LinuxHello/linux-hello-architecture/blob/main/workspace.dsl))
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
@@ -30,6 +32,7 @@ use zeroize::Zeroizing;
 use crate::orchestrator::{Cancel, Method, MethodEnd};
 use crate::pinlock::service::PinLockService;
 use crate::pinlock::PinLockError;
+use crate::pinsocket::PinTarget;
 
 /// How often a waiting method looks at the cancel flag.
 const CANCEL_POLL: Duration = Duration::from_millis(100);
@@ -98,61 +101,88 @@ impl PinVerifier for NoVerifier {
     }
 }
 
-/// Where the PIN socket hands a PIN to the method that waits for it, by the user it is for.
+/// One wait: where its PIN goes, and the number of the registration that made it, so that a wait
+/// that ends can tell its own entry from a newer one.
+type Slot = (u64, Sender<Zeroizing<Vec<u8>>>);
+
+/// Where the PIN socket hands a PIN to the method that waits for it: by the prompt the PIN was
+/// announced for, never by the user it is for. A PIN typed at one prompt can therefore not be taken
+/// by a job on another prompt of the same user (P-46, review finding R-01, #344); there is no
+/// function that delivers or waits by user (`the_inbox_has_no_wait_by_user`).
 #[derive(Default)]
 pub struct PinInbox {
-    /// The methods that are waiting, by subject.
-    waiting: Mutex<HashMap<u32, Sender<Zeroizing<Vec<u8>>>>>,
+    /// The methods that are waiting, by prompt.
+    waiting: Mutex<HashMap<PinTarget, Slot>>,
+    /// The number of the next registration.
+    next: AtomicU64,
 }
 
 impl PinInbox {
-    /// Hands `pin` to the method that waits for `subject`. Returns whether there was one; if not,
-    /// the PIN is dropped (and wiped) here.
-    pub fn deliver(&self, subject: u32, pin: Zeroizing<Vec<u8>>) -> bool {
+    /// Hands `pin` to the wait of the prompt `target` and to nobody else, a job of the same user
+    /// on another prompt included (`a_pin_goes_only_to_the_wait_of_its_prompt`, P-46). Returns
+    /// whether that prompt has a wait; if not, the PIN is dropped (and wiped) here.
+    pub fn deliver_to(&self, target: &PinTarget, pin: Zeroizing<Vec<u8>>) -> bool {
         let sender = self
             .waiting
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .get(&subject)
-            .cloned();
+            .get(target)
+            .map(|(_, sender)| sender.clone());
         sender.is_some_and(|sender| sender.send(pin).is_ok())
     }
 
-    /// Registers a method that waits for `subject`; the registration ends with the returned guard.
-    pub(crate) fn expect(
+    /// Registers a wait for the prompt `target`, which never replaces another: `None` when that
+    /// prompt already has a wait, which then keeps its PIN
+    /// (`a_second_wait_for_a_prompt_is_refused_and_the_first_keeps_its_pin`, P-46). The
+    /// registration ends with the returned guard.
+    pub(crate) fn expect_for(
         self: &Arc<Self>,
-        subject: u32,
-    ) -> (Waiting, Receiver<Zeroizing<Vec<u8>>>) {
+        target: PinTarget,
+    ) -> Option<(Waiting, Receiver<Zeroizing<Vec<u8>>>)> {
         let (sender, receiver) = channel();
-        self.waiting
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(subject, sender);
-        (
+        let number = self.next.fetch_add(1, Ordering::Relaxed);
+        {
+            let mut waiting = self.waiting.lock().unwrap_or_else(PoisonError::into_inner);
+            if waiting.contains_key(&target) {
+                return None;
+            }
+            waiting.insert(target.clone(), (number, sender));
+        }
+        Some((
             Waiting {
                 inbox: Arc::clone(self),
-                subject,
+                target,
+                number,
             },
             receiver,
-        )
+        ))
     }
 }
 
-/// A registration in the inbox; dropping it removes it.
+/// A registration in the inbox; dropping it removes it, and only it.
 pub(crate) struct Waiting {
     /// The inbox it is in.
     inbox: Arc<PinInbox>,
-    /// Who the method waits for.
-    subject: u32,
+    /// The prompt the wait is for.
+    target: PinTarget,
+    /// The number of this registration.
+    number: u64,
 }
 
 impl Drop for Waiting {
     fn drop(&mut self) {
-        self.inbox
+        let mut waiting = self
+            .inbox
             .waiting
             .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .remove(&self.subject);
+            .unwrap_or_else(PoisonError::into_inner);
+        // Only this registration's own entry goes; the prompt can be waited for again afterwards.
+        if waiting
+            .get(&self.target)
+            .is_some_and(|(number, _)| *number == self.number)
+        {
+            waiting.remove(&self.target);
+        }
     }
 }
 
@@ -173,26 +203,29 @@ pub struct PinMethod {
 }
 
 impl PinMethod {
-    /// The method for `subject`. It starts waiting for a PIN at once, not when it runs: a client
-    /// may send the PIN as soon as its call to start the authentication has returned, which is
-    /// before the orchestrator has started this method on its thread. The registration ends when
-    /// the method is dropped, and replaces an older one for the same user.
-    pub fn new(
+    /// The method for `subject` on the prompt `target`. It starts waiting for a PIN at once, not
+    /// when it runs: a client may send the PIN as soon as its call to start the authentication has
+    /// returned, which is before the orchestrator has started this method on its thread. It is
+    /// registered for that prompt, so that only a PIN announced for it arrives, and it never takes
+    /// the place of another wait. The registration ends when the method is dropped. `None` when
+    /// the prompt already has a wait (P-46).
+    pub fn for_prompt(
         subject: u32,
-        inbox: Arc<PinInbox>,
+        target: PinTarget,
+        inbox: &Arc<PinInbox>,
         lock: Arc<PinLockService>,
         verifier: Arc<dyn PinVerifier>,
         clock: fn() -> u64,
-    ) -> Self {
-        let (registration, receiver) = inbox.expect(subject);
-        Self {
+    ) -> Option<Self> {
+        let (registration, receiver) = inbox.expect_for(target)?;
+        Some(Self {
             subject,
             _registration: registration,
             receiver,
             lock,
             verifier,
             clock,
-        }
+        })
     }
 
     /// What a PIN that arrived comes to.

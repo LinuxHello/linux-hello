@@ -942,13 +942,14 @@ async fn serve_fakes(
     saw_cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) -> zbus::Connection {
     use linuxhello_agent::bus::{serve_with_extras, Extras};
-    let factory: linuxhello_agent::bus::MethodFactory = std::sync::Arc::new(move |_subject| {
-        vec![Box::new(Fake {
-            kind: linuxhello_dbus::AuthMethod::Fingerprint,
-            succeed_after,
-            saw_cancel: std::sync::Arc::clone(&saw_cancel),
-        })]
-    });
+    let factory: linuxhello_agent::bus::MethodFactory =
+        std::sync::Arc::new(move |_subject, _target| {
+            vec![Box::new(Fake {
+                kind: linuxhello_dbus::AuthMethod::Fingerprint,
+                succeed_after,
+                saw_cancel: std::sync::Arc::clone(&saw_cancel),
+            })]
+        });
     serve_with_extras(
         Builder::address(daemon.address.as_str()),
         Config::new(vec![]),

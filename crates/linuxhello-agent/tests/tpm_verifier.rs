@@ -13,6 +13,7 @@ use linuxhello_agent::pinkdf::Params;
 use linuxhello_agent::pinlock::service::{Limits, PinLockService};
 use linuxhello_agent::pinlock::store::PinLockFile;
 use linuxhello_agent::pinrecord::PinRecordStore;
+use linuxhello_agent::pinsocket::PinTarget;
 use linuxhello_tpm_provider::client::TpmClient;
 use linuxhello_tpm_provider::server::Server;
 use linuxhello_tpm_provider::testing::SoftTpm;
@@ -406,25 +407,34 @@ fn one_users_failed_pins_cannot_lock_out_another_user() {
         TpmVerifier::new(PinRecordStore::new(&s.records, me()), &s.socket)
             .with_params(Params::MINIMUM),
     );
-    let mut method_a = PinMethod::new(
+    let prompt_of = |uid: u32, n: u8| PinTarget {
+        opener: uid,
+        prompt: linuxhello_dbus::PromptId::parse(&format!("{n:064x}")).unwrap(),
+    };
+    let (prompt_a, prompt_b) = (prompt_of(1000, 1), prompt_of(1001, 2));
+    let mut method_a = PinMethod::for_prompt(
         1000,
-        Arc::clone(&inbox),
+        prompt_a.clone(),
+        &inbox,
         Arc::clone(&lock),
         Arc::clone(&verifier),
         at_1000,
-    );
-    let mut method_b = PinMethod::new(
+    )
+    .unwrap();
+    let mut method_b = PinMethod::for_prompt(
         1001,
-        Arc::clone(&inbox),
+        prompt_b.clone(),
+        &inbox,
         Arc::clone(&lock),
         Arc::clone(&verifier),
         at_1000,
-    );
+    )
+    .unwrap();
     // User A keeps guessing, far more often than the TPM would stand.
     let mut reached_the_tpm = 0;
     let mut stopped_by_the_agent = false;
     for _ in 0..(tpm_tries + 5) {
-        assert!(inbox.deliver(1000, zeroize::Zeroizing::new(b"wrong-guess".to_vec())));
+        assert!(inbox.deliver_to(&prompt_a, zeroize::Zeroizing::new(b"wrong-guess".to_vec())));
         match method_a.run(&Cancel::default()) {
             MethodEnd::Failure(_) => reached_the_tpm += 1,
             MethodEnd::LockedOut(_) => {
@@ -440,7 +450,7 @@ fn one_users_failed_pins_cannot_lock_out_another_user() {
         "A made {reached_the_tpm} wrong tries at a TPM that locks everybody at {tpm_tries}"
     );
     // B's right PIN still opens B's key: the TPM is not locked out.
-    assert!(inbox.deliver(1001, zeroize::Zeroizing::new(b"pin-of-b".to_vec())));
+    assert!(inbox.deliver_to(&prompt_b, zeroize::Zeroizing::new(b"pin-of-b".to_vec())));
     assert_eq!(method_b.run(&Cancel::default()), MethodEnd::Success);
 }
 

@@ -27,7 +27,7 @@ use linuxhello_agent::orchestrator::Method;
 use linuxhello_agent::pinlock::service::{wall_clock_seconds, Limits, PinLockService};
 use linuxhello_agent::pinlock::store::PinLockFile;
 use linuxhello_agent::pinrecord::PinRecordStore;
-use linuxhello_agent::pinsocket::PinSocket;
+use linuxhello_agent::pinsocket::{PinSocket, PinTarget};
 use linuxhello_agent::policy::load;
 use linuxhello_agent::policy::user_store::UserPolicyStore;
 use linuxhello_agent::state::Config;
@@ -43,23 +43,30 @@ const ADMIN_POLICY_DIR: &str = "/etc/linuxhello/policy.d";
 /// The PIN socket (ADR-0021), in the runtime directory the unit creates for the Agent's user.
 const PIN_SOCKET: &str = "/run/linuxhello/pin.sock";
 
-/// The methods an authentication of the user `subject` runs: face and fingerprint when the
+/// The methods an authentication of the user `subject` on the prompt `target` runs: face and fingerprint when the
 /// account has a name in `/etc/passwd` (a method that is not installed reports itself unavailable
 /// and is not offered), and the PIN. The PIN method is offered only when a verifier can check a PIN,
 /// and none can yet: no user has a PIN record and the provider is not started by anything.
 fn methods_of(
     subject: u32,
+    target: &PinTarget,
     inbox: &Arc<PinInbox>,
     lock: &Arc<PinLockService>,
     verifier: &Arc<dyn PinVerifier>,
 ) -> Vec<Box<dyn Method>> {
-    let mut methods: Vec<Box<dyn Method>> = vec![Box::new(PinMethod::new(
+    // The PIN method waits for the PIN announced for this prompt and for no other; when the prompt
+    // already has a wait, there is no PIN method (P-46).
+    let mut methods: Vec<Box<dyn Method>> = PinMethod::for_prompt(
         subject,
-        Arc::clone(inbox),
+        target.clone(),
+        inbox,
         Arc::clone(lock),
         Arc::clone(verifier),
         wall_clock_seconds,
-    ))];
+    )
+    .into_iter()
+    .map(|method| Box::new(method) as Box<dyn Method>)
+    .collect();
     let passwd = std::fs::read_to_string("/etc/passwd").unwrap_or_default();
     if let Some(name) = username_of(subject, &passwd) {
         methods.push(Box::new(FaceMethod::new(&name)));
@@ -121,7 +128,7 @@ fn serve_pin_socket(inbox: Arc<PinInbox>) -> Option<Arc<PinSocket>> {
             // An accepted PIN goes to the PIN method that waits for its user; if none does, it is
             // wiped here.
             PinSocket::serve_forever(Arc::clone(&socket), move |submission| {
-                inbox.deliver(submission.subject, submission.pin);
+                inbox.deliver_to(&submission.target, submission.pin);
             });
             Some(socket)
         }
@@ -157,8 +164,8 @@ async fn run() -> zbus::Result<()> {
             inbox: Arc::clone(&inbox),
             enrolment: tpm,
         }),
-        methods: Some(Arc::new(move |subject| {
-            methods_of(subject, &inbox, &lock, &verifier)
+        methods: Some(Arc::new(move |subject, target| {
+            methods_of(subject, target, &inbox, &lock, &verifier)
         })),
         auth_deadline: None,
         // The finger calls of the settings page.
