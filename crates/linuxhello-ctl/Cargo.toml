@@ -13,7 +13,7 @@ linuxhello-agent = { path = "../linuxhello-agent" }
 linuxhello-dbus = { path = "../linuxhello-dbus" }
 # Already in the tree through the Agent: the tool talks to the Agent, systemd and fprintd over its
 # own bus connection and starts no program (ADR-0026).
-rustix = { version = "1", default-features = false, features = ["std", "stdio", "termios"] }
+rustix = { version = "1", default-features = false, features = ["std", "stdio", "termios", "fs"] }
 async-io = "2"
 futures-lite = "2"
 serde = "1"

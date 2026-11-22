@@ -19,10 +19,17 @@
 //! removed. A user is a decimal `u32` or the name of a local account in the text of `/etc/passwd`;
 //! accounts from other sources (LDAP, SSSD) are not looked up.
 
-use std::io::{ErrorKind, Write};
+use std::fs::File;
+use std::io::{self, ErrorKind, Read, Write};
+use std::os::fd::OwnedFd;
 use std::path::Path;
 
+use rustix::fs::{AtFlags, Mode, OFlags};
+
 use linuxhello_agent::policy::UserPolicyStore;
+
+/// The largest layer `show` reads, in bytes: the size the Agent itself accepts.
+const MAX_LAYER_BYTES: u64 = 1024 * 1024;
 
 /// The usage line printed on every usage error.
 const USAGE: &str = "usage: linuxhello-ctl policy show|reset --user <name|uid>";
@@ -33,8 +40,9 @@ const USAGE: &str = "usage: linuxhello-ctl policy show|reset --user <name|uid>";
 /// Everything printed goes through `out` and `err`. The result is the exit code: 0 done, 1 failed,
 /// 2 usage error.
 ///
-/// `reset` does not check whether a running Agent keeps the layer in memory: nothing in the Agent's
-/// source loads the layer at run time yet, so this does not promise when the change takes effect.
+/// `reset` does not tell a running Agent: it removes the file, and the Agent reads a user's layer
+/// from the file when it decides, so a change takes effect at the next decision after the file is
+/// gone, not at a moment this command promises.
 pub fn run(
     args: &[String],
     root: &Path,
@@ -51,27 +59,38 @@ pub fn run(
         return usage(err, "not a number or a local account name");
     };
     let path = UserPolicyStore::new(root).path(uid);
-    let fail = |err: &mut dyn Write, e: std::io::Error| {
-        let _ = writeln!(
-            err,
-            "{}: {e} (run as root if this is a permission error)",
-            path.display()
-        );
-        1
+    // Both commands work through descriptors: the state directory, then the user's directory below
+    // it, each opened without following a link, and the file relative to that one. A path that is
+    // checked and then opened again can be swapped in between by the less privileged account that
+    // owns these directories (review finding R-27, #369).
+    let directory = match open_user_directory(root, uid) {
+        Ok(directory) => Some(directory),
+        Err(e) if e.kind() == ErrorKind::NotFound => None,
+        Err(e) => return fail_with(&path, err, &e),
     };
+    let fail = |err: &mut dyn Write, e: io::Error| fail_with(&path, err, &e);
     let none = |err: &mut dyn Write| {
         let _ = writeln!(err, "no user layer stored for uid {uid}");
         0
     };
     if command == "show" {
-        match std::fs::read_to_string(&path) {
-            Ok(text) if out.write_all(text.as_bytes()).is_ok() => 0,
+        match directory
+            .as_ref()
+            .map_or_else(|| Err(ErrorKind::NotFound.into()), read_layer)
+        {
+            Ok(text) if out.write_all(printable(&text).as_bytes()).is_ok() => 0,
             Ok(_) => 1,
             Err(e) if e.kind() == ErrorKind::NotFound => none(err),
             Err(e) => fail(err, e),
         }
     } else {
-        match std::fs::remove_file(&path) {
+        match directory.as_ref().map_or_else(
+            || Err(ErrorKind::NotFound.into()),
+            |directory| {
+                rustix::fs::unlinkat(directory, LAYER_FILE, AtFlags::empty())
+                    .map_err(io::Error::from)
+            },
+        ) {
             Ok(()) => {
                 let _ = writeln!(out, "cleared the user layer of uid {uid}");
                 0
@@ -80,6 +99,81 @@ pub fn run(
             Err(e) => fail(err, e),
         }
     }
+}
+
+/// Reports a failure on `path`.
+fn fail_with(path: &Path, err: &mut dyn Write, e: &io::Error) -> u8 {
+    let _ = writeln!(
+        err,
+        "{}: {e} (run as root if this is a permission error)",
+        path.display()
+    );
+    1
+}
+
+/// The name of the layer in the user's directory.
+const LAYER_FILE: &str = "policy.toml";
+
+/// Opens `<root>/<uid>` for reading as a directory without following a link, relative to `root`,
+/// which is itself opened without following a link. The state directory belongs to the less
+/// privileged `linuxhello` user and these commands run as root: a link in place of either would
+/// make root read or remove a file somewhere else.
+///
+/// # Errors
+///
+/// `NotFound` when there is no such directory; anything else when it is a link, not a directory,
+/// or cannot be opened.
+fn open_user_directory(root: &Path, uid: u32) -> io::Result<OwnedFd> {
+    let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+    let root = rustix::fs::open(root, flags, Mode::empty())?;
+    Ok(rustix::fs::openat(
+        &root,
+        uid.to_string(),
+        flags,
+        Mode::empty(),
+    )?)
+}
+
+/// Reads the layer in `directory` as text: the file must be a regular file (it is opened without
+/// following a link and without blocking, so a FIFO or a link is refused and cannot stall root),
+/// of at most [`MAX_LAYER_BYTES`], and UTF-8.
+fn read_layer(directory: &OwnedFd) -> io::Result<String> {
+    let flags = OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC;
+    let fd = rustix::fs::openat(directory, LAYER_FILE, flags, Mode::empty())?;
+    let file = File::from(fd);
+    let meta = file.metadata()?;
+    if !meta.is_file() {
+        return Err(io::Error::new(
+            ErrorKind::InvalidInput,
+            "not a regular file",
+        ));
+    }
+    if meta.len() > MAX_LAYER_BYTES {
+        return Err(io::Error::new(ErrorKind::InvalidInput, "too large to show"));
+    }
+    let mut text = String::new();
+    file.take(MAX_LAYER_BYTES + 1).read_to_string(&mut text)?;
+    Ok(text)
+}
+
+/// `text` with every character that could act on a terminal written as `\u{..}`: control
+/// characters (also C1, which include U+009B, a one-character escape for control sequences), DEL,
+/// and the characters that change the direction of text (U+202A to U+202E, U+2066 to U+2069, the
+/// marks U+200E, U+200F and U+061C). Newline and tab stay. The file is the user's text and `show`
+/// puts it on the administrator's terminal (R-27, #369).
+fn printable(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        let unsafe_char = (c.is_control() && c != '\n' && c != '\t')
+            || matches!(c, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
+            || matches!(c, '\u{200E}' | '\u{200F}' | '\u{061C}');
+        if unsafe_char {
+            out.push_str(&format!("\\u{{{:04x}}}", u32::from(c)));
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
 
 /// Prints `why` and the usage line to `err` and returns the usage exit code, 2.
@@ -150,6 +244,81 @@ mod tests {
         assert_eq!(out, layer());
         let file = root.path().join("1000").join("policy.toml");
         assert_eq!(fs::read_to_string(file).unwrap(), layer());
+    }
+
+    #[test]
+    fn show_writes_control_and_direction_characters_as_escapes() {
+        // R-27, #369: the TOML parser accepts U+009B and U+202E in a comment; they must not reach
+        // the administrator's terminal as they are.
+        let root = tempfile::tempdir().unwrap();
+        store(
+            root.path(),
+            1000,
+            "# a\u{9b}31m b\u{202e}c \u{7}\u{1b}[2J\nkey = \"v\"\t# ok\n",
+        );
+        let (code, out, _) = go(root.path(), &["policy", "show", "--user", "1000"]);
+        assert_eq!(code, 0);
+        assert!(out.contains("\\u{009b}31m"), "{out}");
+        assert!(out.contains("b\\u{202e}c"), "{out}");
+        assert!(out.contains("\\u{0007}\\u{001b}[2J"), "{out}");
+        assert!(!out
+            .chars()
+            .any(|c| c.is_control() && c != '\n' && c != '\t'));
+        assert!(
+            out.contains("key = \"v\"\t# ok\n"),
+            "newline and tab are kept"
+        );
+    }
+
+    #[test]
+    fn a_layer_that_is_a_link_a_fifo_or_too_large_is_refused() {
+        // R-27, #369: root must not follow what the less privileged account put in its place.
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("1000");
+        fs::create_dir_all(&dir).unwrap();
+        let secret = root.path().join("secret.txt");
+        fs::write(&secret, "not a policy").unwrap();
+        std::os::unix::fs::symlink(&secret, dir.join("policy.toml")).unwrap();
+        let (code, out, err) = go(root.path(), &["policy", "show", "--user", "1000"]);
+        assert_eq!(code, 1, "a link to a file");
+        assert!(out.is_empty() && !err.contains("not a policy"));
+
+        fs::remove_file(dir.join("policy.toml")).unwrap();
+        let fifo = std::ffi::CString::new(dir.join("policy.toml").to_str().unwrap()).unwrap();
+        rustix::fs::mknodat(
+            rustix::fs::CWD,
+            fifo.as_c_str(),
+            rustix::fs::FileType::Fifo,
+            rustix::fs::Mode::from_bits_truncate(0o600),
+            0,
+        )
+        .unwrap();
+        let (code, out, _) = go(root.path(), &["policy", "show", "--user", "1000"]);
+        assert_eq!(
+            (code, out.as_str()),
+            (1, ""),
+            "a FIFO neither blocks nor is read"
+        );
+
+        fs::remove_file(dir.join("policy.toml")).unwrap();
+        let big = fs::File::create(dir.join("policy.toml")).unwrap();
+        big.set_len(MAX_LAYER_BYTES + 1).unwrap();
+        let (code, out, _) = go(root.path(), &["policy", "show", "--user", "1000"]);
+        assert_eq!((code, out.as_str()), (1, ""), "too large");
+    }
+
+    #[test]
+    fn a_user_directory_that_is_a_link_is_refused_by_show_and_reset() {
+        let root = tempfile::tempdir().unwrap();
+        let elsewhere = tempfile::tempdir().unwrap();
+        fs::write(elsewhere.path().join("policy.toml"), layer()).unwrap();
+        std::os::unix::fs::symlink(elsewhere.path(), root.path().join("1000")).unwrap();
+        for command in ["show", "reset"] {
+            let (code, out, err) = go(root.path(), &["policy", command, "--user", "1000"]);
+            assert_eq!(code, 1, "{command}");
+            assert!(out.is_empty() && !err.is_empty(), "{command}: {err}");
+        }
+        assert!(elsewhere.path().join("policy.toml").exists());
     }
 
     #[test]
