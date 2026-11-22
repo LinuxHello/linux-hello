@@ -1,10 +1,12 @@
 # Plasma integration
 
-This folder holds the parts of Linux Hello that a person sees on a KDE Plasma desktop: the prompt on the login and lock screens, the notification after sign-in, and later the page in System Settings. They are written in QML, the language Plasma's screens are made of. None of them starts a program to do Linux Hello's work: they get their information from the Linux Hello Agent, the system service that runs the fingerprint, the face and the PIN ([ADR-0026](https://github.com/LinuxHello/linux-hello-architecture/blob/main/adr/0026-clients-reach-the-agent-directly.md)).
+This folder holds the parts of Linux Hello that a person sees on a KDE Plasma desktop: Linux Hello's own login screen, the prompt on the login and lock screens, the notification after sign-in, and later the page in System Settings. They are written in QML, the language Plasma's screens are made of. None of them starts a program to do Linux Hello's work: they get their information from the Linux Hello Agent, the system service that runs the fingerprint, the face and the PIN ([ADR-0026](https://github.com/LinuxHello/linux-hello-architecture/blob/main/adr/0026-clients-reach-the-agent-directly.md)).
 
 | Folder | What it is | State |
 | :-- | :-- | :-- |
-| [`auth-prompt/`](auth-prompt/) | The Auth Prompt, the shared QML module every Linux Hello screen imports | Built and tested with a fake Agent; not yet connected to the real one |
+| [`auth-prompt/`](auth-prompt/) | The Auth Prompt, the shared QML module every Linux Hello screen imports | Built and tested with a fake Agent; its cards are used by the greeter |
+| [`linuxhello-plasma/`](linuxhello-plasma/) | The Agent Link, the QML plugin in Rust through which the screens reach the Agent and greetd, the login service | Built and tested in the desktop test VM |
+| [`linuxhello-greeter/`](linuxhello-greeter/) | The Linux Hello Greeter, Linux Hello's own login screen for greetd | Built and tested in the desktop test VM with Plasma and Weston |
 | [`autostart/`](autostart/) | The entry that starts `linuxhello-ctl notify` after sign-in, for the PIN expiry and severe conditions | Built |
 
 ## The Auth Prompt
@@ -28,7 +30,7 @@ The module is the folder `auth-prompt/io/github/LinuxHello/AuthPrompt/`, importe
 | `ConditionCard.qml` | One line to read, coloured by its severity: red for an error, orange for a warning, blue for information |
 | `prompt.js` | Works out every tile and card from the Agent's state. All the wording is here, so every screen says the same |
 
-The module reads one object, the Agent's state for the attempt, which the screen hands it as `agentState`. The fields are listed at the top of `prompt.js`: whether the Agent answers, which methods the attempt can use and which run now, how the attempt ended and why, the seconds left of a lockout, the conditions the Agent reports, and how each method ended. The module itself calls nothing. A screen feeds it, today from the fake Agent of the demo and the tests (`auth-prompt/demo/states.js`), later from a part that listens to the Agent's signals on D-Bus (not built yet).
+The module reads one object, the Agent's state for the attempt, which the screen hands it as `agentState`. The fields are listed at the top of `prompt.js`: whether the Agent answers, which methods the attempt can use and which run now, how the attempt ended and why, the seconds left of a lockout, the conditions the Agent reports, and how each method ended. The module itself calls nothing. A screen feeds it: the demo and the tests from a fake Agent (`auth-prompt/demo/states.js`), a real screen from the [Agent Link](linuxhello-plasma/), which listens to the Agent's signals on D-Bus.
 
 ### Running the tests and the demo
 
@@ -46,4 +48,4 @@ QT_QPA_PLATFORM=offscreen python3 plasma/auth-prompt/demo/render.py states.png
 
 draws the eight states into a picture, the one above. It needs PySide6 (`python3-pyside6.qtquick` on Ubuntu).
 
-The tests do not run in this repository's CI yet, because its runners have no Qt.
+CI runs these tests, and the greeter's, in the `plasma` job, in an Ubuntu 26.04 container that has Qt 6.

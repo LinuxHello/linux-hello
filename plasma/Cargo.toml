@@ -1,0 +1,6 @@
+# The Rust crates of Linux Hello's Plasma screens: the Agent Link plugin and the greeter program.
+# A workspace of its own: these crates need Qt to build, and the main workspace's gates do not
+# install it (ADR-0028). Its CI jobs are `plasma` and `plasma-deny` in .github/workflows/ci.yml.
+[workspace]
+resolver = "2"
+members = ["linuxhello-plasma", "linuxhello-greeter"]

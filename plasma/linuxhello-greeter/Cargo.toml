@@ -1,0 +1,24 @@
+[package]
+name = "linuxhello-greeter"
+description = "Linux Hello's own login screen: a greeter for greetd"
+version = "0.0.0"
+edition = "2021"
+rust-version = "1.85"
+license = "LGPL-3.0-or-later"
+repository = "https://github.com/LinuxHello/linux-hello"
+publish = false
+
+[dependencies]
+cxx-qt-lib = { version = "0.10.0", features = ["qt_gui", "qt_qml", "link_qt_object_files"] }
+
+[build-dependencies]
+# Links cxx-qt-lib's start-up code into the program, as cxx-qt asks of every binary.
+cxx-qt-build = { version = "0.10.0", features = ["link_qt_object_files"] }
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "deny"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+missing_docs_in_private_items = "deny"
