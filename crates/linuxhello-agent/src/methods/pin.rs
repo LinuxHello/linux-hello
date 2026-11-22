@@ -228,26 +228,29 @@ impl PinMethod {
         })
     }
 
-    /// What a PIN that arrived comes to.
+    /// What a PIN that arrived comes to. The try is reserved before the verifier, and so the TPM,
+    /// is asked: the tries that run at once are already counted (R-02, #345).
     fn judge(&self, pin: &Zeroizing<Vec<u8>>) -> MethodEnd {
         let now = (self.clock)();
-        match self.lock.check(self.subject, now) {
-            Ok(()) => {}
+        let attempt = match self.lock.reserve(self.subject, now) {
+            Ok(attempt) => attempt,
             Err(PinLockError::Locked { retry_after_secs }) => {
                 return MethodEnd::LockedOut(u32::try_from(retry_after_secs).unwrap_or(u32::MAX));
             }
-            Err(PinLockError::BadRecords) => return MethodEnd::Unavailable,
-        }
+            // No answer, not a wrong PIN: the user's tries are all running, or the file is untrusted.
+            Err(PinLockError::BadRecords | PinLockError::Busy) => return MethodEnd::Unavailable,
+        };
         match self.verifier.verify(self.subject, pin) {
-            Ok(true) => match self.lock.record_pin_success(self.subject) {
+            Ok(true) => match attempt.succeeded() {
                 Ok(()) => MethodEnd::Success,
                 Err(_) => MethodEnd::Unavailable,
             },
-            Ok(false) => match self.lock.record_failure(self.subject, now) {
+            Ok(false) => match attempt.failed(now) {
                 Ok(0) => MethodEnd::Failure(PromptReason::NotRecognised),
                 Ok(seconds) => MethodEnd::LockedOut(u32::try_from(seconds).unwrap_or(u32::MAX)),
                 Err(_) => MethodEnd::Unavailable,
             },
+            // The TPM could not be asked: the try goes back when `attempt` is dropped.
             Err(VerifyError) => MethodEnd::Unavailable,
         }
     }

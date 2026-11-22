@@ -231,3 +231,34 @@ fn a_capped_service_locks_at_the_lowered_limit_and_says_so() {
     let uncapped = PinLockService::start_capped(file_in(&crate::private_tempdir()), policy, None);
     assert_eq!(uncapped.tpm_cap(), None);
 }
+
+#[test]
+fn a_tpm_limit_that_arrives_later_still_caps_the_agents() {
+    // The provider was not up when the Agent started, so the TPM's limit (here 4) was not known and
+    // the policy's five stood. When it is known, the Agent's limit drops to two, a user who already
+    // has two wrong PINs is locked, and a user with one is not (R-02, #345).
+    let dir = crate::private_tempdir();
+    let policy = Limits {
+        max_attempts: 5,
+        ..LIMITS
+    };
+    let service = PinLockService::start_capped(file_in(&dir), policy, None);
+    assert!(!service.tpm_limit_known());
+    assert_eq!(service.tpm_cap(), None);
+    service.record_failure(1000, 1_000).unwrap();
+    service.record_failure(1000, 1_000).unwrap();
+    service.record_failure(1001, 1_000).unwrap();
+    service.apply_tpm_limit(4, 1_000);
+    assert_eq!(
+        service.tpm_cap(),
+        Some(TpmCap {
+            tpm_tries: 4,
+            allowed: 2
+        })
+    );
+    assert_eq!(service.status_of(1000, 1_001), LockStatus::LockedFor(599));
+    assert_eq!(service.status_of(1001, 1_001), LockStatus::Unlocked);
+    // A limit that is not lower changes nothing.
+    service.apply_tpm_limit(200, 1_000);
+    assert_eq!(service.tpm_cap().map(|c| c.allowed), Some(2));
+}

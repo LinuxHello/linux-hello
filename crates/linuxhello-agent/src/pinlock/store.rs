@@ -79,9 +79,10 @@ impl PinLockFile {
         max_attempts: u32,
         lockout_secs: u64,
         max_lockout_secs: u64,
+        now: u64,
     ) -> Result<PinLock, PinLockError> {
         let records = self.read()?;
-        PinLock::restore(max_attempts, lockout_secs, max_lockout_secs, records)
+        PinLock::restore(max_attempts, lockout_secs, max_lockout_secs, now, records)
     }
 
     /// The records in the file: none when there is no file.

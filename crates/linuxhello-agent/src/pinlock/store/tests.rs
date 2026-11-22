@@ -18,7 +18,7 @@ fn counter() -> PinLock {
 
 /// Loads with the settings of `counter`.
 fn load(file: &PinLockFile) -> Result<PinLock, PinLockError> {
-    file.load(3, 60, 3600)
+    file.load(3, 60, 3600, 0)
 }
 
 #[test]
@@ -85,11 +85,19 @@ fn a_file_that_cannot_be_trusted_refuses_every_attempt() {
     assert_eq!(load(&file).err(), Some(PinLockError::BadRecords));
     write(record, 0o644);
     assert_eq!(load(&file).err(), Some(PinLockError::BadRecords));
-    // The same uid twice, and more failures than the limit allows: `restore` refuses both.
+    // The same uid twice: `restore` refuses it.
     write(&format!("{record}{record}"), 0o600);
     assert_eq!(load(&file).err(), Some(PinLockError::BadRecords));
+    // More failures than the limit allows is not a damaged file: that user is locked and nobody
+    // else is (`a_lowered_limit_locks_only_the_users_who_passed_it`, R-13, #355).
     write(&record.replace("failures = 1", "failures = 3"), 0o600);
-    assert_eq!(load(&file).err(), Some(PinLockError::BadRecords));
+    let lock = load(&file).unwrap();
+    assert_eq!(
+        lock.records()[0].failures,
+        0,
+        "the lockout took the place of the count"
+    );
+    assert!(lock.check(1000, 0).is_err());
     // A file owned by someone else.
     write(record, 0o600);
     let other = PinLockFile::new(&path, file.owner_uid.wrapping_add(1));

@@ -175,7 +175,7 @@ pub fn run_change(job: &Job<'_>, wait: &PinWait, cancel: &Cancel) -> Outcome {
                 ..Outcome::new(PromptResult::LockedOut)
             };
         }
-        Err(PinLockError::BadRecords) => return failure(PromptReason::None),
+        Err(PinLockError::BadRecords | PinLockError::Busy) => return failure(PromptReason::None),
     }
     let Some(old) = wait.next(cancel, job.wait) else {
         return failure(PromptReason::Timeout);
@@ -186,15 +186,26 @@ pub fn run_change(job: &Job<'_>, wait: &PinWait, cancel: &Cancel) -> Outcome {
     if !rules_ok(&new, job.rules) {
         return failure(PromptReason::None);
     }
+    // The try is reserved before the TPM is asked, like a sign-in's (R-02, #345).
+    let attempt = match job.lock.reserve(job.subject, now) {
+        Ok(attempt) => attempt,
+        Err(PinLockError::Locked { retry_after_secs }) => {
+            return Outcome {
+                retry_after: u32::try_from(retry_after_secs).unwrap_or(u32::MAX),
+                ..Outcome::new(PromptResult::LockedOut)
+            };
+        }
+        Err(PinLockError::BadRecords | PinLockError::Busy) => return failure(PromptReason::None),
+    };
     match job
         .enrolment
         .change(job.subject, &old, &new, job.rules.history)
     {
-        Ok(()) => match job.lock.record_pin_success(job.subject) {
+        Ok(()) => match attempt.succeeded() {
             Ok(()) => Outcome::new(PromptResult::Success),
             Err(_) => failure(PromptReason::None),
         },
-        Err(EnrolError::WrongPin) => match job.lock.record_failure(job.subject, now) {
+        Err(EnrolError::WrongPin) => match attempt.failed(now) {
             Ok(0) => failure(PromptReason::NotRecognised),
             Ok(seconds) => Outcome {
                 retry_after: u32::try_from(seconds).unwrap_or(u32::MAX),
@@ -239,17 +250,29 @@ pub fn run_check(job: &CheckJob<'_>, wait: &PinWait, cancel: &Cancel) -> Result<
                 ..Outcome::new(PromptResult::LockedOut)
             });
         }
-        Err(PinLockError::BadRecords) => return Err(failure(PromptReason::None)),
+        Err(PinLockError::BadRecords | PinLockError::Busy) => {
+            return Err(failure(PromptReason::None))
+        }
     }
     let Some(pin) = wait.next(cancel, job.wait) else {
         return Err(failure(PromptReason::Timeout));
     };
+    // The try is reserved before the TPM is asked, like a sign-in's (R-02, #345).
+    let attempt = match job.lock.reserve(job.subject, now) {
+        Ok(attempt) => attempt,
+        Err(PinLockError::Locked { retry_after_secs }) => {
+            return Err(Outcome {
+                retry_after: u32::try_from(retry_after_secs).unwrap_or(u32::MAX),
+                ..Outcome::new(PromptResult::LockedOut)
+            });
+        }
+        Err(PinLockError::BadRecords | PinLockError::Busy) => {
+            return Err(failure(PromptReason::None))
+        }
+    };
     match job.verifier.verify(job.subject, &pin) {
-        Ok(true) => job
-            .lock
-            .record_pin_success(job.subject)
-            .map_err(|_| failure(PromptReason::None)),
-        Ok(false) => Err(match job.lock.record_failure(job.subject, now) {
+        Ok(true) => attempt.succeeded().map_err(|_| failure(PromptReason::None)),
+        Ok(false) => Err(match attempt.failed(now) {
             Ok(0) => failure(PromptReason::NotRecognised),
             Ok(seconds) => Outcome {
                 retry_after: u32::try_from(seconds).unwrap_or(u32::MAX),
