@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
-# Property: unsafe code exists only in allow-listed modules of the TPM provider and the PAM module.
-#  1. Every crate root outside those two crates sets #![forbid(unsafe_code)].
+# Property: unsafe code exists only in allow-listed modules of the TPM provider, the PAM module and
+# the Agent Link (the cxx-qt bridge of the Plasma screens, ADR-0028).
+#  1. Every crate root under crates/ outside the first two sets #![forbid(unsafe_code)]; the Agent
+#     Link, which is outside the main workspace, sets #![deny(unsafe_code)] at its root.
 #  2. #[allow(unsafe_code)] appears only in files listed in scripts/ci/unsafe-allowlist.txt,
-#     and every listed file belongs to one of those two crates.
+#     and every listed file belongs to one of those three crates.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 [[ -f Cargo.toml ]] || { echo "::error::run from the repository"; exit 1; }
-EXEMPT=(crates/linuxhello-tpm-provider crates/pam-linuxhello)
+EXEMPT=(crates/linuxhello-tpm-provider crates/pam-linuxhello plasma/linuxhello-plasma)
+AGENT_LINK_ROOT=plasma/linuxhello-plasma/src/lib.rs
 ALLOWLIST=scripts/ci/unsafe-allowlist.txt
 fail=0
 err() { echo "::error::$*"; fail=1; }
@@ -21,14 +24,16 @@ for dir in crates/*/; do
   done
 done
 
+[[ -f "$AGENT_LINK_ROOT" ]] && { grep -q '^#!\[deny(unsafe_code)\]' "$AGENT_LINK_ROOT" || err "$AGENT_LINK_ROOT does not set #![deny(unsafe_code)]"; }
+
 mapfile -t allowed < <(grep -v '^\s*#' "$ALLOWLIST" | sed '/^\s*$/d')
 for f in "${allowed[@]}"; do
   ok=0; for c in "${EXEMPT[@]}"; do [[ "$f" == "$c"/* ]] && ok=1; done
-  [[ $ok == 1 ]] || err "$ALLOWLIST lists $f, outside the TPM provider and the PAM module"
+  [[ $ok == 1 ]] || err "$ALLOWLIST lists $f, outside the TPM provider, the PAM module and the Agent Link"
 done
 while IFS= read -r f; do
   printf '%s\n' "${allowed[@]}" | grep -qxF "$f" || err "$f allows unsafe_code but is not in $ALLOWLIST"
-done < <(grep -rlE '^[[:space:]]*#!?\[allow\(([^)]*[ ,])?unsafe_code' --include='*.rs' crates || true)
+done < <(grep -rlE '^[[:space:]]*#!?\[allow\(([^)]*[ ,])?unsafe_code' --include='*.rs' --exclude-dir=target crates plasma || true)
 
 if [[ $fail == 0 ]]; then echo "unsafe policy holds"; fi
 exit "$fail"

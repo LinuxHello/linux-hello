@@ -34,7 +34,9 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use linuxhello_dbus::{AuthMethod, EnrolStep, PromptId, PromptReason, PromptResult, PromptState};
+use linuxhello_dbus::{
+    AuthMethod, EnrolStep, MethodOutcome, PromptId, PromptReason, PromptResult, PromptState,
+};
 
 /// Settings of a [`StateStore`].
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -111,6 +113,10 @@ pub enum Update {
     State(PromptState),
     /// How the attempt ended, and why.
     Result(Outcome),
+    /// One method of the attempt ended: which, how, the reason for a failure and the seconds of a
+    /// lockout. It changes nothing in the prompt's state; it is only passed on to the subscribers
+    /// (ADR-0014, second amendment of 2026-11-22).
+    MethodEnded(AuthMethod, MethodOutcome, PromptReason, u32),
     /// A step of an enrolment, with the touches done and needed (`0` when not known). It changes
     /// nothing in the prompt's state; it is only passed on to the subscribers.
     Progress(EnrolStep, u32, u32),
@@ -351,7 +357,7 @@ impl StateStore {
             Update::Active(active) => entry.snapshot.active = active,
             Update::State(state) => entry.snapshot.state = state,
             Update::Result(result) => entry.snapshot.result = Some(result),
-            Update::Progress(..) => {}
+            Update::Progress(..) | Update::MethodEnded(..) => {}
         }
         Ok(entry.subscribers.clone())
     }

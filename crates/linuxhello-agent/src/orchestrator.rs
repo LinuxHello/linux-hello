@@ -23,7 +23,7 @@ use std::sync::mpsc::{channel, RecvTimeoutError};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-use linuxhello_dbus::{AuthMethod, PromptReason, PromptResult, PromptState};
+use linuxhello_dbus::{AuthMethod, MethodOutcome, PromptReason, PromptResult, PromptState};
 
 use crate::policy::MethodRule;
 use crate::state::{Outcome, Update};
@@ -252,11 +252,20 @@ impl Stage<'_> {
             };
             match receiver.recv_timeout(left.min(STOP_POLL)) {
                 Ok((index, MethodEnd::Success)) if running.iter().any(|(i, _)| *i == index) => {
+                    reporter.report(Update::MethodEnded(
+                        self.methods[index].0,
+                        MethodOutcome::Matched,
+                        PromptReason::None,
+                        0,
+                    ));
                     cancel.cancel();
                     wait_for_stop(&receiver, running.len().saturating_sub(1));
                     return StageEnd::Won(index);
                 }
                 Ok((index, end)) => {
+                    if let Some(ended) = method_ended(self.methods[index].0, end) {
+                        reporter.report(ended);
+                    }
                     running.retain(|(i, _)| *i != index);
                     if let MethodEnd::LockedOut(seconds) = end {
                         locked_out = Some(seconds);
@@ -280,6 +289,23 @@ impl Stage<'_> {
             }
         }
     }
+}
+
+/// The `MethodEnded` report of a method that ended on its own, `None` for one that was cancelled
+/// (`each_method_that_ends_is_reported_with_its_outcome`,
+/// `a_method_stopped_because_another_won_reports_nothing`).
+fn method_ended(method: AuthMethod, end: MethodEnd) -> Option<Update> {
+    let (outcome, reason, seconds) = match end {
+        MethodEnd::Success => (MethodOutcome::Matched, PromptReason::None, 0),
+        MethodEnd::Failure(PromptReason::None) => {
+            (MethodOutcome::Failed, PromptReason::NotRecognised, 0)
+        }
+        MethodEnd::Failure(reason) => (MethodOutcome::Failed, reason, 0),
+        MethodEnd::Unavailable => (MethodOutcome::Unavailable, PromptReason::None, 0),
+        MethodEnd::LockedOut(seconds) => (MethodOutcome::LockedOut, PromptReason::None, seconds),
+        MethodEnd::Cancelled => return None,
+    };
+    Some(Update::MethodEnded(method, outcome, reason, seconds))
 }
 
 /// The outcome when no method succeeded: locked out if a method said so, else a failure with the

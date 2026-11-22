@@ -877,6 +877,7 @@ impl Api {
             Update::State(_) => "State",
             Update::Result(_) => "Result",
             Update::Progress(..) => "EnrolProgress",
+            Update::MethodEnded(..) => "MethodEnded",
         };
         let wire = wire_values(&update);
         let ended = matches!(update, Update::Result(_));
@@ -1366,6 +1367,12 @@ fn wire_values(update: &Update) -> Vec<String> {
             outcome.result.as_wire().to_string(),
             outcome.reason.as_wire().to_string(),
             outcome.retry_after.to_string(),
+        ],
+        Update::MethodEnded(method, outcome, reason, retry_after) => vec![
+            method.as_wire().to_string(),
+            outcome.as_wire().to_string(),
+            reason.as_wire().to_string(),
+            retry_after.to_string(),
         ],
         Update::Progress(step, done, needed) => vec![
             step.as_wire().to_string(),
@@ -2632,6 +2639,40 @@ mod tests {
         );
         // Another user has its own four.
         assert!(api.watch_prompts(on_peer(1001, ":1.5"), ":1.5").is_ok());
+    }
+
+    #[test]
+    fn a_client_cannot_report_method_ended() {
+        let mut api = Api::new(Config::new(vec![]));
+        let id = prompt("ended");
+        api.open_prompt_from(on_peer(1000, ":1.5"), ":1.5", &id, Some(1000))
+            .unwrap();
+        api.subscribe(on_peer(1000, ":1.5"), ":1.5", &id).unwrap();
+        assert_eq!(
+            api.report_state(
+                on_peer(1000, ":1.5"),
+                &id,
+                "MethodEnded",
+                &["fingerprint", "matched", "", "0"]
+            )
+            .err(),
+            Some(ApiError::InvalidArgument)
+        );
+        // The Agent's own report reaches the subscriber as wire words.
+        let key = PromptId::parse(&id).unwrap();
+        let notes = api.agent_report(
+            1000,
+            &key,
+            Update::MethodEnded(
+                AuthMethod::Pin,
+                linuxhello_dbus::MethodOutcome::Failed,
+                PromptReason::NotRecognised,
+                0,
+            ),
+        );
+        assert_eq!(notes.len(), 1);
+        assert_eq!(notes[0].signal, "MethodEnded");
+        assert_eq!(notes[0].values, ["pin", "failed", "not-recognised", "0"]);
     }
 
     #[test]
