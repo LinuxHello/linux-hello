@@ -292,8 +292,10 @@ impl PinRecordStore {
         })
         .map_err(io::Error::other)?;
         let temporary = dir.join(format!(".{FILE_NAME}.{}", std::process::id()));
-        let result =
-            write_new(&temporary, text.as_bytes()).and_then(|()| fs::rename(&temporary, &path));
+        let result = write_new(&temporary, text.as_bytes())
+            .and_then(|()| fs::rename(&temporary, &path))
+            // The rename is on disk only once its directory is (R-22, #364).
+            .and_then(|()| fs::File::open(dir)?.sync_all());
         if result.is_err() {
             let _ = fs::remove_file(&temporary);
         }
