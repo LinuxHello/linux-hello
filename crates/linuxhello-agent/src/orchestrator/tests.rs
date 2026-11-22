@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
-use linuxhello_dbus::{AuthMethod, PromptReason, PromptResult, PromptState};
+use linuxhello_dbus::{AuthMethod, MethodOutcome, PromptReason, PromptResult, PromptState};
 
 use super::*;
 
@@ -190,10 +190,89 @@ fn the_first_success_wins_and_the_rest_are_cancelled() {
             Update::Methods(vec![AuthMethod::Face, AuthMethod::Fingerprint]),
             Update::Active(vec![AuthMethod::Face, AuthMethod::Fingerprint]),
             Update::State(PromptState::Scanning),
+            Update::MethodEnded(
+                AuthMethod::Fingerprint,
+                MethodOutcome::Matched,
+                PromptReason::None,
+                0
+            ),
             Update::Active(vec![]),
             Update::State(PromptState::Idle),
             Update::Result(Outcome::new(PromptResult::Success)),
         ]
+    );
+}
+
+/// The `MethodEnded` reports among the updates.
+fn ended(updates: &[Update]) -> Vec<(AuthMethod, MethodOutcome, PromptReason, u32)> {
+    updates
+        .iter()
+        .filter_map(|u| match u {
+            Update::MethodEnded(m, o, r, s) => Some((*m, *o, *r, *s)),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn each_method_that_ends_is_reported_with_its_outcome() {
+    let (finger, _, _) = fake(
+        AuthMethod::Fingerprint,
+        Script::FailAfter(20, PromptReason::None),
+    );
+    let (face, _, _) = fake(AuthMethod::Face, Script::UnavailableAfter(60));
+    let (pin, _, _) = fake(AuthMethod::Pin, Script::LockedOutAfter(100, 720));
+    let (_, updates) = go(&rule(), vec![finger, face, pin], 5_000);
+    assert_eq!(
+        ended(&updates),
+        [
+            // A failure without a reason is reported as not recognised, as in `Result`.
+            (
+                AuthMethod::Fingerprint,
+                MethodOutcome::Failed,
+                PromptReason::NotRecognised,
+                0
+            ),
+            (
+                AuthMethod::Face,
+                MethodOutcome::Unavailable,
+                PromptReason::None,
+                0
+            ),
+            (
+                AuthMethod::Pin,
+                MethodOutcome::LockedOut,
+                PromptReason::None,
+                720
+            ),
+        ]
+    );
+    // Each is reported before the list of running methods shrinks.
+    let first_end = updates
+        .iter()
+        .position(|u| matches!(u, Update::MethodEnded(..)))
+        .unwrap();
+    assert_eq!(
+        updates[first_end + 1],
+        Update::Active(vec![AuthMethod::Face, AuthMethod::Pin])
+    );
+}
+
+#[test]
+fn a_method_stopped_because_another_won_reports_nothing() {
+    let (finger, _, _) = fake(AuthMethod::Fingerprint, Script::SucceedAfter(30));
+    let (face, face_cancelled, _) = fake(AuthMethod::Face, Script::UntilCancelled);
+    let (pin, _, _) = fake(AuthMethod::Pin, Script::UntilCancelled);
+    let (_, updates) = go(&rule(), vec![finger, face, pin], 5_000);
+    assert!(face_cancelled.load(Ordering::SeqCst));
+    assert_eq!(
+        ended(&updates),
+        [(
+            AuthMethod::Fingerprint,
+            MethodOutcome::Matched,
+            PromptReason::None,
+            0
+        )]
     );
 }
 
@@ -362,8 +441,20 @@ fn two_factors_need_two_different_methods_in_stages() {
             Update::Methods(vec![AuthMethod::Fingerprint, AuthMethod::Pin]),
             Update::Active(vec![AuthMethod::Fingerprint, AuthMethod::Pin]),
             Update::State(PromptState::Scanning),
+            Update::MethodEnded(
+                AuthMethod::Fingerprint,
+                MethodOutcome::Matched,
+                PromptReason::None,
+                0
+            ),
             Update::Active(vec![AuthMethod::Pin]),
             Update::State(PromptState::WaitingForInput),
+            Update::MethodEnded(
+                AuthMethod::Pin,
+                MethodOutcome::Matched,
+                PromptReason::None,
+                0
+            ),
             Update::Active(vec![]),
             Update::State(PromptState::Idle),
             Update::Result(Outcome::new(PromptResult::Success)),

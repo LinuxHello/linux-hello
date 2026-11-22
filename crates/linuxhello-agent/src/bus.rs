@@ -606,6 +606,18 @@ async fn send(connection: &Connection, note: &Notification) {
                 &(prompt, &note.values),
             )
             .await
+    } else if note.signal == "MethodEnded" {
+        let value = |at: usize| note.values.get(at).map_or("", String::as_str);
+        let seconds: u32 = value(3).parse().unwrap_or(0);
+        connection
+            .emit_signal(
+                peer,
+                AGENT_OBJECT_PATH,
+                AGENT_INTERFACE,
+                note.signal,
+                &(prompt, value(0), value(1), value(2), seconds),
+            )
+            .await
     } else if note.signal == "EnrolProgress" {
         let value = |at: usize| note.values.get(at).map_or("", String::as_str);
         let number = |at: usize| value(at).parse::<u32>().unwrap_or(0);
