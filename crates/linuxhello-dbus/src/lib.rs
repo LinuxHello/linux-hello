@@ -61,6 +61,7 @@ pub const CAPABILITIES: &[&str] = &[
     "GetStatusDetails",
     "GetUserPolicy",
     "ListFingerprints",
+    "MethodEnded",
     "PromptStarted",
     "Reset",
     "SetPin",
@@ -423,6 +424,41 @@ impl PromptReason {
     }
 }
 
+/// How one method of a sign-in attempt ended, as the `MethodEnded` signal names it: a closed set, to
+/// which a new value is an additive change; a client that does not know one treats it as `failed`
+/// (ADR-0014, second amendment of 2026-11-22). A method stopped because another won sends nothing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MethodOutcome {
+    /// The person was recognised.
+    Matched,
+    /// The method ran and did not recognise the person; the reason says more.
+    Failed,
+    /// The method could not run.
+    Unavailable,
+    /// Too many wrong PINs; `retry_after` says for how long.
+    LockedOut,
+}
+
+impl MethodOutcome {
+    /// Every outcome, in wire order.
+    pub const ALL: [Self; 4] = [
+        Self::Matched,
+        Self::Failed,
+        Self::Unavailable,
+        Self::LockedOut,
+    ];
+
+    /// The wire word of the outcome.
+    pub const fn as_wire(self) -> &'static str {
+        match self {
+            Self::Matched => "matched",
+            Self::Failed => "failed",
+            Self::Unavailable => "unavailable",
+            Self::LockedOut => "locked-out",
+        }
+    }
+}
+
 /// A step of an enrolment of a finger or a face, as the `EnrolProgress` signal names it: a closed
 /// set, to which a new step is an additive change (ADR-0027, point 4). The end of an enrolment is
 /// never a step; it is the `Result` signal.
@@ -578,6 +614,13 @@ pub const SIGNALS: &[SignalSpec] = &[
         name: "EnrolProgress",
         delivery: Delivery::Unicast,
         args: &["prompt_id", "step", "done", "needed"],
+    },
+    // Sent by the Agent when one method of an attempt ends, never reported by a client (ADR-0014,
+    // second amendment of 2026-11-22).
+    SignalSpec {
+        name: "MethodEnded",
+        delivery: Delivery::Unicast,
+        args: &["prompt_id", "method", "outcome", "reason", "retry_after"],
     },
     // Sent by the Agent to a watcher when a prompt it may read starts, never reported by a client
     // (ADR-0014, amendment of 2026-11-22).
@@ -745,6 +788,13 @@ mod tests {
     }
 
     #[test]
+    fn method_outcomes_are_a_closed_set() {
+        use super::MethodOutcome;
+        let words: Vec<&str> = MethodOutcome::ALL.iter().map(|o| o.as_wire()).collect();
+        assert_eq!(words, ["matched", "failed", "unavailable", "locked-out"]);
+    }
+
+    #[test]
     fn progress_steps_are_a_closed_set() {
         use super::EnrolStep;
         let words: Vec<&str> = EnrolStep::ALL.iter().map(|s| s.as_wire()).collect();
@@ -843,7 +893,7 @@ mod tests {
 
     #[test]
     fn signals_carry_no_user_or_session_data() {
-        assert_eq!(SIGNALS.len(), 7);
+        assert_eq!(SIGNALS.len(), 8);
         let expected_names = [
             "MethodsAvailable",
             "ActiveMethods",
@@ -851,15 +901,17 @@ mod tests {
             "Result",
             "Closed",
             "EnrolProgress",
+            "MethodEnded",
             "PromptStarted",
         ];
-        let expected_args: [&[&str]; 7] = [
+        let expected_args: [&[&str]; 8] = [
             &["prompt_id", "methods"],
             &["prompt_id", "methods"],
             &["prompt_id", "state"],
             &["prompt_id", "result", "reason", "retry_after"],
             &["prompt_id"],
             &["prompt_id", "step", "done", "needed"],
+            &["prompt_id", "method", "outcome", "reason", "retry_after"],
             &["prompt_id", "context"],
         ];
 
