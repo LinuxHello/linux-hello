@@ -21,7 +21,7 @@ use linuxhello_agent::bus::polkit::Polkit;
 use linuxhello_agent::bus::{bus_alive, serve_with_extras, Extras, Fingerprints, PinChange};
 use linuxhello_agent::methods::fingerprint::{FingerprintMethod, Fprintd};
 use linuxhello_agent::methods::pin::tpm::TpmVerifier;
-use linuxhello_agent::methods::pin::{PinInbox, PinMethod, PinVerifier};
+use linuxhello_agent::methods::pin::{CachedKeyProbe, PinInbox, PinMethod, PinVerifier};
 use linuxhello_agent::methods::{face::FaceMethod, username_of};
 use linuxhello_agent::notify::{watchdog_interval, Notifier};
 use linuxhello_agent::orchestrator::Method;
@@ -179,7 +179,7 @@ async fn run() -> zbus::Result<()> {
         audit: Some(Audit::journal()),
         pin_socket,
         pin_lock: Some(Arc::clone(&lock)),
-        key_probe: Some(tpm.clone()),
+        key_probe: Some(Arc::new(CachedKeyProbe::new(Arc::clone(&tpm)))),
         pin_change: Some(PinChange {
             inbox: Arc::clone(&inbox),
             enrolment: tpm,
