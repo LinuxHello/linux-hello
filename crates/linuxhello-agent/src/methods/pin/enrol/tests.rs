@@ -387,3 +387,82 @@ fn a_change_job_on_another_prompt_never_sees_a_sign_in_pin() {
     assert_eq!(*memory.calls.lock().unwrap(), calls_before);
     assert_eq!(memory.pins.lock().unwrap()[&1000], b"1234");
 }
+
+/// The clock of the two tests below, which they move by hand while a job waits for its PIN.
+static SLOW_NOW: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1_000);
+
+/// Held by a test that moves `SLOW_NOW`, so that the two of them do not run at the same time.
+static SLOW_NOW_OWNER: Mutex<()> = Mutex::new(());
+
+/// The time of `SLOW_NOW`.
+fn slow_now() -> u64 {
+    SLOW_NOW.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+/// Moves `SLOW_NOW` to `to` after 80 ms, then delivers `pins` to the wait of prompt 1: the PINs
+/// arrive well into the job's wait of 300 ms, at a later time than the job started.
+fn deliver_later(inbox: Arc<PinInbox>, to: u64, pins: Vec<Vec<u8>>) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(80));
+        SLOW_NOW.store(to, std::sync::atomic::Ordering::SeqCst);
+        for pin in pins {
+            assert!(inbox.deliver_to(&target(1000, 1), Zeroizing::new(pin)));
+        }
+    })
+}
+
+#[test]
+fn a_lockout_started_by_a_wrong_current_pin_counts_from_when_the_pin_arrived() {
+    // R-22, #364: the time was read before the wait for the PINs, and the lockout was stamped with
+    // it, so a lockout began up to a whole wait early and ended that much early.
+    let _owner = SLOW_NOW_OWNER
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    SLOW_NOW.store(1_000, std::sync::atomic::Ordering::SeqCst);
+    let s = setup();
+    s.memory.set(1000, b"1234").unwrap();
+    let job = Job {
+        clock: slow_now,
+        ..s.job()
+    };
+    s.send(b"0000");
+    s.send(b"5678");
+    run_change(&job, &s.wait, &Cancel::default());
+    let late = deliver_later(
+        Arc::clone(&s.inbox),
+        1_500,
+        vec![b"0000".to_vec(), b"5678".to_vec()],
+    );
+    let outcome = run_change(&job, &s.wait, &Cancel::default());
+    late.join().unwrap();
+    assert_eq!(outcome.result, PromptResult::LockedOut);
+    // Stamped at 1500, the lockout of 600 s lasts until 2100; stamped at 1000 it would end at 1600.
+    assert!(s.lock.check(1000, 2_000).is_err(), "still locked at 2000");
+    assert!(s.lock.check(1000, 2_200).is_ok(), "free again after 2100");
+}
+
+#[test]
+fn a_lockout_started_by_a_wrong_pin_at_an_enrolment_counts_from_when_the_pin_arrived() {
+    // The same for the check of the current PIN before a finger is enrolled (R-22, #364).
+    let _owner = SLOW_NOW_OWNER
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    SLOW_NOW.store(1_000, std::sync::atomic::Ordering::SeqCst);
+    let s = setup();
+    let verifier = Knows(b"2468");
+    let job = CheckJob {
+        subject: 1000,
+        wait: Duration::from_millis(300),
+        lock: &s.lock,
+        verifier: &verifier,
+        clock: slow_now,
+    };
+    s.send(b"0000");
+    assert!(run_check(&job, &s.wait, &Cancel::default()).is_err());
+    let late = deliver_later(Arc::clone(&s.inbox), 1_500, vec![b"0000".to_vec()]);
+    let outcome = run_check(&job, &s.wait, &Cancel::default()).unwrap_err();
+    late.join().unwrap();
+    assert_eq!(outcome.result, PromptResult::LockedOut);
+    assert!(s.lock.check(1000, 2_000).is_err(), "still locked at 2000");
+    assert!(s.lock.check(1000, 2_200).is_ok(), "free again after 2100");
+}
