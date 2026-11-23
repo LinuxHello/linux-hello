@@ -125,6 +125,8 @@ fn the_unit_backs_off_instead_of_restarting_every_second() {
 fn the_provider_unit_limits_its_memory_tasks_and_files() {
     let s = service();
     assert_eq!(only(&s, "MemoryMax"), "128M");
+    // R-28, #370: the values that open a key never go to swap.
+    assert_eq!(only(&s, "MemorySwapMax"), "0");
     assert_eq!(only(&s, "TasksMax"), "16");
     assert_eq!(only(&s, "LimitNOFILE"), "256");
 }

@@ -4,9 +4,11 @@
 //! An [`Event`] holds only a kind, an optional uid and fixed words written in this file. It has
 //! no field for text a caller sent, so a PIN, a policy text or an argument cannot reach the
 //! journal. The journal is written through its native datagram socket, which needs no `unsafe`
-//! and no library. Invalid-argument records are limited per uid ([`RateLimiter`]) so that one
-//! user cannot fill the journal; refusals of the other kinds and policy changes are never
-//! limited. A journal that cannot be written is ignored: an audit failure must not turn a
+//! and no library. Refusal records (denied, limit reached, invalid argument) are limited per uid
+//! and kind ([`RateLimiter`]) so that one user cannot fill the journal and make it drop later
+//! records; when a limit has dropped records, the next record that passes is preceded by one that
+//! says how many were dropped (`refusals_of_every_kind_are_limited_and_the_drops_are_counted`).
+//! Policy changes are never limited. A journal that cannot be written is ignored: an audit failure must not turn a
 //! refusal into a different answer, and the Agent has nowhere else to report it.
 //!
 //! Security properties: `refused_call_is_audited_with_uid_and_reason`,
@@ -48,11 +50,14 @@ const ID_POLICY_PIN_ONLY: &str = "050c3a8220f349669c1a7111fad2fc6d";
 /// How many uids the rate limiter remembers at most.
 const MAX_TRACKED_UIDS: usize = 4096;
 
-/// How many invalid-argument records one uid may cause per window.
-const INVALID_ARGUMENT_BURST: u32 = 5;
+/// `MESSAGE_ID` of a record that says refusal records were dropped by the rate limit.
+const ID_SUPPRESSED: &str = "7d3f2c1e9b8a4f60a5e1c2d3b4a59687";
 
-/// The window of the invalid-argument limit.
-const INVALID_ARGUMENT_WINDOW: Duration = Duration::from_secs(60);
+/// How many refusal records one uid may cause per window, for each kind of refusal.
+const REFUSAL_BURST: u32 = 5;
+
+/// The window of the refusal limit.
+const REFUSAL_WINDOW: Duration = Duration::from_secs(60);
 
 /// What happened.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -70,6 +75,13 @@ enum Kind {
     /// A policy could not be loaded and the Agent fell back to PIN-only; the fault says which
     /// layer was to blame.
     PolicyPinOnly(Fault),
+    /// `count` records of the refusal kind named `of` were dropped by the rate limit.
+    Suppressed {
+        /// The event word of the dropped records.
+        of: &'static str,
+        /// How many were dropped.
+        count: u32,
+    },
 }
 
 /// One audit record: a kind and the uid it concerns. It carries no text from a caller.
@@ -141,6 +153,15 @@ impl Event {
         }
     }
 
+    /// `count` refusal records of `uid` of the kind `of` were dropped by the rate limit.
+    fn suppressed(uid: u32, of: &'static str, count: u32) -> Self {
+        Self {
+            kind: Kind::Suppressed { of, count },
+            uid: Some(uid),
+            peer: None,
+        }
+    }
+
     /// The same event for the connection `peer`, the unique bus name the bus daemon gave the
     /// caller (see [`PeerName`]: it has no form that could carry a caller's own text, P-13).
     #[must_use]
@@ -189,6 +210,13 @@ impl Event {
                 "fallback",
                 "policy fell back to PIN-only",
             ),
+            Kind::Suppressed { .. } => (
+                "4",
+                ID_SUPPRESSED,
+                "suppressed",
+                "limited",
+                "refusal records dropped by the rate limit",
+            ),
         };
         let mut fields = vec![
             ("PRIORITY", priority.to_string()),
@@ -204,6 +232,10 @@ impl Event {
         }
         if let Kind::PolicyPinOnly(fault) = self.kind {
             fields.push(("LH_FAULT", fault.word().to_string()));
+        }
+        if let Kind::Suppressed { of, count } = self.kind {
+            fields.push(("LH_SUPPRESSED_EVENT", of.to_string()));
+            fields.push(("LH_SUPPRESSED_COUNT", count.to_string()));
         }
         fields.push(("LH_OUTCOME", outcome.to_string()));
         fields.push(("MESSAGE", message.to_string()));
@@ -268,6 +300,8 @@ pub struct RateLimiter {
     window: Duration,
     /// For each uid, the times of its allowed events inside the window.
     seen: HashMap<u32, VecDeque<Instant>>,
+    /// For each uid, how many events were refused since one last passed.
+    dropped: HashMap<u32, u32>,
 }
 
 impl RateLimiter {
@@ -277,7 +311,14 @@ impl RateLimiter {
             max,
             window,
             seen: HashMap::new(),
+            dropped: HashMap::new(),
         }
+    }
+
+    /// How many events of `uid` were refused since the last one passed; starts counting again from
+    /// zero.
+    pub fn take_dropped(&mut self, uid: u32) -> u32 {
+        self.dropped.remove(&uid).unwrap_or(0)
     }
 
     /// Whether an event of `uid` at `now` may pass. Remembers at most 4096 uids: a new uid that
@@ -292,6 +333,8 @@ impl RateLimiter {
             if self.seen.len() >= MAX_TRACKED_UIDS {
                 return false;
             }
+            self.dropped
+                .retain(|tracked, _| self.seen.contains_key(tracked));
         }
         let times = self.seen.entry(uid).or_default();
         while times.front().is_some_and(|time| !is_recent(time)) {
@@ -301,17 +344,22 @@ impl RateLimiter {
             times.push_back(now);
             true
         } else {
+            if self.dropped.len() < MAX_TRACKED_UIDS || self.dropped.contains_key(&uid) {
+                let count = self.dropped.entry(uid).or_default();
+                *count = count.saturating_add(1);
+            }
             false
         }
     }
 }
 
-/// The audit trail of the request layer: a sink and the limit on invalid-argument records.
+/// The audit trail of the request layer: a sink and the limits on refusal records.
 pub struct Audit {
     /// Where the records go.
     sink: Box<dyn AuditSink>,
-    /// The limit on invalid-argument records per uid.
-    limiter: Mutex<RateLimiter>,
+    /// The limit on refusal records per uid: denied, limit reached and invalid argument each have
+    /// their own, so a flood of one kind does not hide another.
+    limiters: Mutex<[RateLimiter; 3]>,
 }
 
 impl Audit {
@@ -319,10 +367,9 @@ impl Audit {
     pub fn new(sink: Box<dyn AuditSink>) -> Self {
         Self {
             sink,
-            limiter: Mutex::new(RateLimiter::new(
-                INVALID_ARGUMENT_BURST,
-                INVALID_ARGUMENT_WINDOW,
-            )),
+            limiters: Mutex::new(std::array::from_fn(|_| {
+                RateLimiter::new(REFUSAL_BURST, REFUSAL_WINDOW)
+            })),
         }
     }
 
@@ -336,17 +383,25 @@ impl Audit {
         Self::new(Box::new(NullSink))
     }
 
-    /// Records an event. An invalid-argument event with a uid passes only within the per-uid
-    /// limit; every other event is recorded.
+    /// Records an event. A refusal event with a uid passes only within the per-uid limit of its
+    /// kind, and the first one that passes after some were dropped is preceded by a record that
+    /// says how many; every other event is recorded.
     pub fn record(&self, event: Event) {
-        if let (Kind::InvalidArgument, Some(uid)) = (event.kind, event.uid) {
-            let allowed = self
-                .limiter
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .allow(uid, Instant::now());
-            if !allowed {
+        let slot = match event.kind {
+            Kind::Denied => Some((0, "denied")),
+            Kind::LimitReached => Some((1, "limit_reached")),
+            Kind::InvalidArgument => Some((2, "invalid_argument")),
+            _ => None,
+        };
+        if let (Some((index, word)), Some(uid)) = (slot, event.uid) {
+            let mut limiters = self.limiters.lock().unwrap_or_else(PoisonError::into_inner);
+            if !limiters[index].allow(uid, Instant::now()) {
                 return;
+            }
+            let dropped = limiters[index].take_dropped(uid);
+            drop(limiters);
+            if dropped > 0 {
+                self.sink.record(&Event::suppressed(uid, word, dropped));
             }
         }
         self.sink.record(&event);
@@ -412,6 +467,45 @@ mod tests {
         assert!(!limiter.allow(1000, now));
         assert!(limiter.allow(1001, now));
         assert!(limiter.allow(1000, now + Duration::from_secs(61)));
+    }
+
+    #[test]
+    fn refusals_of_every_kind_are_limited_and_the_drops_are_counted() {
+        // R-12, #354: only invalid-argument records were limited, so a local user could fill the
+        // journal with denied or limit-reached ones.
+        let recorder = Recorder::default();
+        let audit = Audit::new(Box::new(recorder.clone()));
+        for _ in 0..50 {
+            audit.record(Event::denied(Some(1000)));
+            audit.record(Event::limit_reached(Some(1000)));
+            audit.record(Event::invalid_argument(Some(1000)));
+        }
+        let seen = recorder.0.lock().unwrap().len();
+        assert_eq!(seen, 3 * usize::try_from(REFUSAL_BURST).unwrap(), "{seen}");
+        // Another user is not held back, and a record without a uid is not limited.
+        audit.record(Event::denied(Some(1001)));
+        for _ in 0..10 {
+            audit.record(Event::denied(None));
+        }
+        assert_eq!(recorder.0.lock().unwrap().len(), seen + 11);
+    }
+
+    #[test]
+    fn the_drop_count_comes_before_the_next_record_that_passes() {
+        let mut limiter = RateLimiter::new(2, Duration::from_secs(60));
+        let now = Instant::now();
+        for _ in 0..2 {
+            assert!(limiter.allow(7, now));
+        }
+        for _ in 0..4 {
+            assert!(!limiter.allow(7, now));
+        }
+        assert!(limiter.allow(7, now + Duration::from_secs(61)));
+        assert_eq!(limiter.take_dropped(7), 4);
+        assert_eq!(limiter.take_dropped(7), 0, "counting starts again");
+        let fields = Event::suppressed(7, "denied", 4).fields();
+        assert!(fields.contains(&("LH_SUPPRESSED_COUNT", "4".to_string())));
+        assert!(fields.contains(&("LH_SUPPRESSED_EVENT", "denied".to_string())));
     }
 
     #[test]
