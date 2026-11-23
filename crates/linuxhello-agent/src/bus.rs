@@ -35,7 +35,7 @@ use zbus::names::{BusName, UniqueName};
 use zbus::{connection, interface, Connection};
 
 use crate::api::{Api, ApiError, Caller, Notification, PeerName};
-use crate::audit::Audit;
+use crate::audit::{Action, Audit};
 use crate::methods::fingerprint::{Fprintd, FINGERS};
 use crate::methods::pin::enrol::{run_change, run_check, run_set, CheckJob, Job, PinEnrolment};
 use crate::methods::pin::{KeyProbe, PinInbox, PinVerifier};
@@ -1007,6 +1007,8 @@ impl AgentService {
             .api
             .begin_pin_change(caller, prompt_id, true, has_pin)
             .map_err(to_bus)?;
+        self.api
+            .set_job_action(start.opener_uid, &start.prompt, Action::Enrolment);
         // Registered before the call returns, so that a PIN sent right after it is not lost. It
         // waits for the PINs announced for this prompt and for no other (P-46).
         let Some(wait) = pin_change.inbox.wait_for_prompt(PinTarget {
