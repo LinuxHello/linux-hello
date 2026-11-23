@@ -26,6 +26,7 @@ use std::time::{Duration, Instant};
 
 use crate::api::PeerName;
 use crate::policy::load::Fault;
+use linuxhello_dbus::PromptResult;
 
 /// The socket the journal reads native records from.
 const JOURNAL_SOCKET: &str = "/run/systemd/journal/socket";
@@ -50,6 +51,9 @@ const ID_POLICY_PIN_ONLY: &str = "050c3a8220f349669c1a7111fad2fc6d";
 /// How many uids the rate limiter remembers at most.
 const MAX_TRACKED_UIDS: usize = 4096;
 
+/// `MESSAGE_ID` of the end of a job: a sign-in, a PIN set or change, a reset or an enrolment.
+const ID_JOB_ENDED: &str = "a1c4e7f2b3d84a6f9e0c5b7d2f813a46";
+
 /// `MESSAGE_ID` of a record that says refusal records were dropped by the rate limit.
 const ID_SUPPRESSED: &str = "7d3f2c1e9b8a4f60a5e1c2d3b4a59687";
 
@@ -58,6 +62,46 @@ const REFUSAL_BURST: u32 = 5;
 
 /// The window of the refusal limit.
 const REFUSAL_WINDOW: Duration = Duration::from_secs(60);
+
+/// What a job that ended did: the actions of the Agent that change what lets a person in, or that
+/// let them in (review finding R-12, #354).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Action {
+    /// A sign-in: the authentication of a prompt.
+    SignIn,
+    /// The first PIN was set.
+    PinSet,
+    /// The PIN was changed.
+    PinChange,
+    /// The destructive reset of ADR-0003.
+    Reset,
+    /// A fingerprint was enrolled.
+    Enrolment,
+}
+
+impl Action {
+    /// The fixed word that names the action in the record's `LH_EVENT`.
+    const fn word(self) -> &'static str {
+        match self {
+            Self::SignIn => "sign_in",
+            Self::PinSet => "pin_set",
+            Self::PinChange => "pin_change",
+            Self::Reset => "reset",
+            Self::Enrolment => "enrolment",
+        }
+    }
+
+    /// The fixed text of the record's `MESSAGE`.
+    const fn message(self) -> &'static str {
+        match self {
+            Self::SignIn => "sign-in ended",
+            Self::PinSet => "PIN set ended",
+            Self::PinChange => "PIN change ended",
+            Self::Reset => "reset ended",
+            Self::Enrolment => "fingerprint enrolment ended",
+        }
+    }
+}
 
 /// What happened.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -75,6 +119,13 @@ enum Kind {
     /// A policy could not be loaded and the Agent fell back to PIN-only; the fault says which
     /// layer was to blame.
     PolicyPinOnly(Fault),
+    /// A job of the Agent ended with `result` for the user the record's uid names.
+    JobEnded {
+        /// What the job did.
+        action: Action,
+        /// How it ended.
+        result: PromptResult,
+    },
     /// `count` records of the refusal kind named `of` were dropped by the rate limit.
     Suppressed {
         /// The event word of the dropped records.
@@ -153,6 +204,16 @@ impl Event {
         }
     }
 
+    /// A job of `action` ended with `result`; `subject` is the user it was for. Only the action
+    /// and the result (fixed words) are recorded, never anything the user or the job sent.
+    pub fn job_ended(subject: u32, action: Action, result: PromptResult) -> Self {
+        Self {
+            kind: Kind::JobEnded { action, result },
+            uid: Some(subject),
+            peer: None,
+        }
+    }
+
     /// `count` refusal records of `uid` of the kind `of` were dropped by the rate limit.
     fn suppressed(uid: u32, of: &'static str, count: u32) -> Self {
         Self {
@@ -209,6 +270,17 @@ impl Event {
                 "policy_pin_only",
                 "fallback",
                 "policy fell back to PIN-only",
+            ),
+            Kind::JobEnded { action, result } => (
+                match result {
+                    PromptResult::Success => "5",
+                    PromptResult::Cancelled => "6",
+                    PromptResult::Failure | PromptResult::LockedOut => "4",
+                },
+                ID_JOB_ENDED,
+                action.word(),
+                result.as_wire(),
+                action.message(),
             ),
             Kind::Suppressed { .. } => (
                 "4",
@@ -357,9 +429,10 @@ impl RateLimiter {
 pub struct Audit {
     /// Where the records go.
     sink: Box<dyn AuditSink>,
-    /// The limit on refusal records per uid: denied, limit reached and invalid argument each have
-    /// their own, so a flood of one kind does not hide another.
-    limiters: Mutex<[RateLimiter; 3]>,
+    /// The limit on refusal records per uid: denied, limit reached, invalid argument and a job
+    /// that ended without success each have their own, so a flood of one kind does not hide
+    /// another.
+    limiters: Mutex<[RateLimiter; 4]>,
 }
 
 impl Audit {
@@ -383,14 +456,17 @@ impl Audit {
         Self::new(Box::new(NullSink))
     }
 
-    /// Records an event. A refusal event with a uid passes only within the per-uid limit of its
-    /// kind, and the first one that passes after some were dropped is preceded by a record that
+    /// Records an event. A refusal event, or the end of a job that did not succeed, with a uid
+    /// passes only within the per-uid limit of its kind, and the first one that passes after some were dropped is preceded by a record that
     /// says how many; every other event is recorded.
     pub fn record(&self, event: Event) {
         let slot = match event.kind {
             Kind::Denied => Some((0, "denied")),
             Kind::LimitReached => Some((1, "limit_reached")),
             Kind::InvalidArgument => Some((2, "invalid_argument")),
+            Kind::JobEnded { result, .. } if result != PromptResult::Success => {
+                Some((3, "job_ended"))
+            }
             _ => None,
         };
         if let (Some((index, word)), Some(uid)) = (slot, event.uid) {

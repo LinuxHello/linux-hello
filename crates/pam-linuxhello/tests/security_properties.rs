@@ -7,9 +7,9 @@
 
 /// P-12: see `docs/security/properties.md`.
 #[test]
-#[ignore = "placeholder, blocked: the PIN verifier does not exist yet"]
+#[ignore = "placeholder, not blocked: the verifier exists (the Agent's `methods/pin/tpm.rs`); no test of this property is written yet"]
 fn pin_is_never_compared_outside_the_tpm() {
-    unimplemented!("P-12: write this test when it is unblocked");
+    unimplemented!("P-12: write this test");
 }
 
 /// P-20: see `docs/security/properties.md`. With no bus, or a bus on which nobody owns the Agent's
@@ -53,9 +53,9 @@ fn pam_never_succeeds_when_agent_is_unreachable() {
 
 /// P-21: see `docs/security/properties.md`.
 #[test]
-#[ignore = "placeholder, blocked: the PAM entry points do not exist yet"]
+#[ignore = "placeholder, not blocked: the entry points exist (`src/entry.rs`); the test needs a PAM host and is not written yet"]
 fn pam_success_for_another_user_is_not_success() {
-    unimplemented!("P-21: write this test when it is unblocked");
+    unimplemented!("P-21: write this test");
 }
 
 /// Every `.rs` file under `dir`.
