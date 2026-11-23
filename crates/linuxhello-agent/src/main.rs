@@ -24,7 +24,6 @@ use linuxhello_agent::methods::fingerprint::{FingerprintMethod, Fprintd};
 use linuxhello_agent::methods::pin::tpm::TpmVerifier;
 use linuxhello_agent::methods::pin::{CachedKeyProbe, PinInbox, PinMethod, PinVerifier};
 use linuxhello_agent::methods::{face::FaceMethod, username_of};
-use linuxhello_agent::notify::{watchdog_interval, Notifier};
 use linuxhello_agent::orchestrator::Method;
 use linuxhello_agent::pinlock::service::{wall_clock_seconds, Limits, PinLockService};
 use linuxhello_agent::pinlock::store::PinLockFile;
@@ -33,6 +32,7 @@ use linuxhello_agent::pinsocket::{PinSocket, PinTarget};
 use linuxhello_agent::policy::load;
 use linuxhello_agent::policy::user_store::UserPolicyStore;
 use linuxhello_agent::state::Config;
+use linuxhello_dbus::notify::{watchdog_interval, Notifier};
 use linuxhello_tpm_provider::client::TpmClient;
 use zbus::connection::Builder;
 

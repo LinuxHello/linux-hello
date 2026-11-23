@@ -15,7 +15,7 @@ profile linuxhello-agent /usr/libexec/linuxhello/linuxhello-agent flags=(attach_
   # The system bus, over a unix socket only, and the name of ADR-0012.
   network unix stream,
   # The watchdog: one datagram to the service manager's notification socket (linuxhello-agent
-  # notify.rs); nothing else uses a datagram socket.
+  # `linuxhello-dbus` notify.rs); nothing else uses a datagram socket.
   network unix dgram,
   # Unix sockets in the abstract namespace have no file and so no file rule, and any process can
   # listen on any such name. The Agent never connects to one and never listens on one. (Its own

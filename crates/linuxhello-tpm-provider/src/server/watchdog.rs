@@ -7,16 +7,10 @@
 //! Agent without PIN checks until someone restarted it by hand (review finding R-29, #371). A
 //! second thread pings, and stops pinging when the request thread has been inside one request for
 //! longer than [`STUCK_AFTER`]: an idle provider, which is only waiting for a connection, keeps
-//! pinging. Nothing here needs a library: the protocol is one line of text in one datagram.
+//! pinging. The datagram itself is sent by `linuxhello_dbus::notify`, which the Agent uses too.
 
-use std::io;
-use std::os::linux::net::SocketAddrExt;
-use std::os::unix::net::{SocketAddr, UnixDatagram};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
-
-/// The message that tells the service manager the service is still working.
-pub const WATCHDOG: &str = "WATCHDOG=1";
 
 /// How long one request may take before the provider counts as stuck. The longest honest request
 /// is making a key on a slow chip, well below this; the unit's `WatchdogSec` is 60 s.
@@ -64,78 +58,6 @@ impl Busy {
     }
 }
 
-/// Where notifications go: a path, or an abstract name (written `@name` in `NOTIFY_SOCKET`).
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum Target {
-    /// A socket file.
-    Path(String),
-    /// An abstract socket, without its leading `@`.
-    Abstract(String),
-}
-
-/// A connection to the service manager's notification socket.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Notifier {
-    /// The socket to send to.
-    target: Target,
-}
-
-impl Notifier {
-    /// The notifier named by `NOTIFY_SOCKET`, or none when the provider is not started by a service
-    /// manager that wants notifications.
-    pub fn from_env() -> Option<Self> {
-        Self::parse(&std::env::var("NOTIFY_SOCKET").ok()?)
-    }
-
-    /// The notifier for the text of a `NOTIFY_SOCKET` value: an absolute path or `@name`; anything
-    /// else is no socket (`notify_socket_names_are_a_path_or_an_abstract_name`).
-    pub fn parse(value: &str) -> Option<Self> {
-        let target = if let Some(name) = value.strip_prefix('@') {
-            (!name.is_empty()).then(|| Target::Abstract(name.to_string()))?
-        } else if value.starts_with('/') {
-            Target::Path(value.to_string())
-        } else {
-            return None;
-        };
-        Some(Self { target })
-    }
-
-    /// Sends one message in one datagram.
-    ///
-    /// # Errors
-    ///
-    /// The error of creating the socket or sending; the caller logs it and goes on.
-    pub fn send(&self, message: &str) -> io::Result<()> {
-        let socket = UnixDatagram::unbound()?;
-        match &self.target {
-            Target::Path(path) => socket.send_to(message.as_bytes(), path)?,
-            Target::Abstract(name) => {
-                let address = SocketAddr::from_abstract_name(name.as_bytes())?;
-                socket.send_to_addr(message.as_bytes(), &address)?
-            }
-        };
-        Ok(())
-    }
-}
-
-/// How often to ping: half of `WATCHDOG_USEC`, as the service manager recommends, or none when the
-/// unit has no watchdog or the value is not a positive number of microseconds. `WATCHDOG_PID`,
-/// when set, must be this process (`the_ping_interval_is_half_the_watchdog_time`).
-pub fn interval() -> Option<Duration> {
-    if let Ok(pid) = std::env::var("WATCHDOG_PID") {
-        if pid.parse::<u32>().ok()? != std::process::id() {
-            return None;
-        }
-    }
-    interval_from(&std::env::var("WATCHDOG_USEC").ok()?)
-}
-
-/// Half of `usec` microseconds, for a positive whole number.
-pub fn interval_from(usec: &str) -> Option<Duration> {
-    let usec: u64 = usec.trim().parse().ok()?;
-    (usec >= 2).then(|| Duration::from_micros(usec / 2))
-}
-
 /// Whether to send a ping now: unless the request thread is stuck.
 pub fn should_ping(busy: &Busy) -> bool {
     !busy.stuck_for(STUCK_AFTER)
@@ -144,36 +66,6 @@ pub fn should_ping(busy: &Busy) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn the_ping_interval_is_half_the_watchdog_time() {
-        assert_eq!(interval_from("60000000"), Some(Duration::from_secs(30)));
-        assert_eq!(interval_from(" 2 "), Some(Duration::from_micros(1)));
-        for bad in ["", "0", "1", "-5", "abc", "1.5"] {
-            assert_eq!(interval_from(bad), None, "{bad:?}");
-        }
-    }
-
-    #[test]
-    fn notify_socket_names_are_a_path_or_an_abstract_name() {
-        assert!(Notifier::parse("/run/systemd/notify").is_some());
-        assert!(Notifier::parse("@abstract").is_some());
-        for bad in ["", "@", "relative/path", "notify"] {
-            assert_eq!(Notifier::parse(bad), None, "{bad:?}");
-        }
-    }
-
-    #[test]
-    fn a_ping_is_one_datagram_to_the_notify_socket() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("notify");
-        let socket = UnixDatagram::bind(&path).unwrap();
-        let notifier = Notifier::parse(path.to_str().unwrap()).unwrap();
-        notifier.send(WATCHDOG).unwrap();
-        let mut buffer = [0u8; 64];
-        let size = socket.recv(&mut buffer).unwrap();
-        assert_eq!(&buffer[..size], b"WATCHDOG=1");
-    }
 
     #[test]
     fn an_idle_provider_keeps_pinging() {

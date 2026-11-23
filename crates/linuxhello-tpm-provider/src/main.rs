@@ -17,8 +17,9 @@
 use std::path::Path;
 use std::process::ExitCode;
 
+use linuxhello_dbus::notify::{watchdog_interval, Notifier, WATCHDOG};
 use linuxhello_tpm_provider::keys::Tpm;
-use linuxhello_tpm_provider::server::watchdog::{self, Notifier};
+use linuxhello_tpm_provider::server::watchdog;
 use linuxhello_tpm_provider::server::{ids_of, Server};
 
 /// The socket the Agent connects to, in the runtime directory the unit creates.
@@ -88,13 +89,13 @@ fn guard() -> Result<(), String> {
 /// Under a unit with `WatchdogSec=`, starts the thread that tells systemd the provider is alive, and
 /// only while it is not stuck in one request (R-29, #371). Without a watchdog it starts nothing.
 fn start_watchdog(server: &Server) {
-    let (Some(notifier), Some(interval)) = (Notifier::from_env(), watchdog::interval()) else {
+    let (Some(notifier), Some(interval)) = (Notifier::from_env(), watchdog_interval()) else {
         return;
     };
     let busy = server.busy();
     std::thread::spawn(move || loop {
         if watchdog::should_ping(&busy) {
-            if let Err(error) = notifier.send(watchdog::WATCHDOG) {
+            if let Err(error) = notifier.send(WATCHDOG) {
                 eprintln!("linuxhello-tpm-provider: the watchdog ping failed: {error}");
             }
         }

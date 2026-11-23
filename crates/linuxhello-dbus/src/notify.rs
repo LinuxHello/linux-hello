@@ -1,10 +1,11 @@
-//! The service manager's notification socket: how the Agent tells systemd it is alive.
+//! The service manager's notification socket: how a Linux Hello service tells systemd it is alive.
 //!
 //! systemd gives a service a datagram socket in `NOTIFY_SOCKET` and, when the unit sets
 //! `WatchdogSec=`, the interval in `WATCHDOG_USEC`. The service must send `WATCHDOG=1` within that
 //! interval or systemd restarts it. The Agent sends it only after a call over the bus to its own
-//! name has been answered, so a hung bus loop stops the pings and the unit is restarted
-//! (`a_watchdog_ping_is_one_datagram_to_the_notify_socket`). It needs no library: the protocol is
+//! name has been answered, so a hung bus loop stops the pings; the TPM provider sends it only while
+//! it is not stuck in one request; in both the unit is then restarted
+//! (`a_watchdog_ping_is_one_datagram_to_the_notify_socket`). One copy serves both services. It needs no library: the protocol is
 //! one line of text in one datagram.
 //!
 //! C4 component: `dbusApi` ([workspace.dsl](https://github.com/LinuxHello/linux-hello-architecture/blob/main/workspace.dsl))
@@ -34,7 +35,7 @@ pub struct Notifier {
 }
 
 impl Notifier {
-    /// The notifier named by `NOTIFY_SOCKET`, or none when the Agent is not started by a service
+    /// The notifier named by `NOTIFY_SOCKET`, or none when the service is not started by a service
     /// manager that wants notifications.
     pub fn from_env() -> Option<Self> {
         Self::parse(&std::env::var("NOTIFY_SOCKET").ok()?)
@@ -70,7 +71,7 @@ impl Notifier {
         Ok(())
     }
 
-    /// Tells the service manager the Agent is alive.
+    /// Tells the service manager the service is alive.
     ///
     /// # Errors
     ///

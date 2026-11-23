@@ -25,8 +25,8 @@ profile linuxhello-tpm-provider /usr/libexec/linuxhello/linuxhello-tpm-provider 
   /run/linuxhello-tpm/ rw,
   /run/linuxhello-tpm/tpm.sock rw,
 
-  # The watchdog: one datagram to the service manager's notification socket (the provider's
-  # server/watchdog.rs); nothing else uses a datagram socket. A unit line alone would not be enough.
+  # The watchdog: one datagram to the service manager's notification socket (`linuxhello-dbus`
+  # notify.rs, sent from the provider's main.rs); nothing else uses a datagram socket. A unit line alone would not be enough.
   network unix dgram,
   /run/systemd/notify w,
 

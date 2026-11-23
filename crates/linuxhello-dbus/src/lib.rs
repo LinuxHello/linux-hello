@@ -12,6 +12,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod notify;
 pub mod restart;
 
 /// Well-known bus name of the Agent.
