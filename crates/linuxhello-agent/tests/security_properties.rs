@@ -231,13 +231,6 @@ fn account_password_never_unlocks_a_key() {
     unimplemented!("P-17: write this test");
 }
 
-/// P-19: see `docs/security/properties.md`.
-#[test]
-#[ignore = "placeholder, not blocked: the Agent's reset exists (`begin_reset` in `src/api.rs`); no test of this property is written yet"]
-fn reset_without_account_authentication_is_refused() {
-    unimplemented!("P-19: write this test");
-}
-
 /// P-24 for the Agent: started outside its AppArmor profile, as every test runs, the program
 /// refuses at once, before it touches the bus, and says why.
 #[test]
