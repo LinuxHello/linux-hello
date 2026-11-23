@@ -256,11 +256,14 @@ async fn serve(connection: &Connection, follow: &Follow, publish: &impl Fn(Strin
 }
 
 /// The listening loop, for as long as the object lives: connect with `connect`, run a session, and
-/// when it ends say "not reachable" and try again after a wait that grows from [`RETRY_FIRST`] to
+/// when it ends say "not reachable" and try again after a wait that grows from `first_delay` to
 /// [`RETRY_MAX`]. An Agent that is not there at the first start, one that restarts, and a bus
 /// that is gone for a while all end in the same place: the screen follows the Agent again as soon as
 /// it can (`an_agent_that_is_not_there_at_the_start_is_followed_when_it_appears`).
-async fn keep_listening<F, Fut>(
+///
+/// It is not an async function: it runs on a thread of its own, each session is driven to its end
+/// with `block_on`, and the wait between two sessions is an ordinary sleep of that thread.
+fn keep_listening<F, Fut>(
     connect: F,
     follow: Follow,
     publish: impl Fn(String, bool),
@@ -271,12 +274,15 @@ async fn keep_listening<F, Fut>(
 {
     let mut delay = first_delay;
     loop {
-        if let Ok(connection) = connect().await {
-            let ended = serve(&connection, &follow, &publish).await;
-            // A session that got as far as the Agent starts the waits again from the short one.
-            if ended != Ended::NoAgent {
-                delay = first_delay;
+        let ended = futures_lite::future::block_on(async {
+            match connect().await {
+                Ok(connection) => Some(serve(&connection, &follow, &publish).await),
+                Err(_) => None,
             }
+        });
+        // A session that got as far as the Agent starts the waits again from the short one.
+        if matches!(ended, Some(ended) if ended != Ended::NoAgent) {
+            delay = first_delay;
         }
         publish(PromptView::default().to_json(), false);
         std::thread::sleep(delay);
@@ -325,7 +331,7 @@ impl AgentLink {
         self.as_mut().rust_mut().get_mut().listening = true;
         let qt_thread = self.qt_thread();
         std::thread::spawn(move || {
-            futures_lite::future::block_on(keep_listening(
+            keep_listening(
                 Connection::system,
                 follow,
                 |json, reachable| {
@@ -335,7 +341,7 @@ impl AgentLink {
                     });
                 },
                 RETRY_FIRST,
-            ));
+            );
         });
     }
 }
