@@ -121,6 +121,30 @@ fn the_unit_backs_off_instead_of_restarting_every_second() {
     assert_eq!(only(&s, "RestartMaxDelaySec"), "60");
 }
 
+/// A TPM call that never returns must end in a restart (review finding R-29, #371): the unit has a
+/// watchdog, and the provider pings it only while it is not stuck (`a_request_that_never_returns_stops_the_pings`).
+#[test]
+fn the_provider_unit_has_a_watchdog_that_only_the_main_process_may_feed() {
+    let s = service();
+    assert_eq!(only(&s, "WatchdogSec"), "60s");
+    assert_eq!(only(&s, "NotifyAccess"), "main");
+}
+
+/// The unit line is not enough under an enforcing profile: the provider must be allowed to send the
+/// one datagram, and nothing else under `/run` may be written.
+#[test]
+fn the_provider_profile_allows_the_notify_socket_and_no_other_datagram_path() {
+    let rules = rules();
+    assert!(rules.iter().any(|l| l == "/run/systemd/notify w,"));
+    assert!(rules.iter().any(|l| l == "network unix dgram,"));
+    let writes_to_run: Vec<&String> = rules
+        .iter()
+        .filter(|l| l.starts_with("/run/") && l.ends_with(" w,"))
+        .collect();
+    assert_eq!(writes_to_run, ["/run/systemd/notify w,"]);
+    assert!(!rules.iter().any(|l| l.starts_with("network inet")));
+}
+
 #[test]
 fn the_provider_unit_limits_its_memory_tasks_and_files() {
     let s = service();
@@ -144,7 +168,9 @@ fn the_profile_grants_the_tpm_its_socket_and_no_network_but_unix() {
     let devices: Vec<&String> = rules.iter().filter(|r| r.starts_with("/dev/")).collect();
     assert_eq!(devices, ["/dev/tpmrm0 rw,"]);
     let network: Vec<&String> = rules.iter().filter(|r| r.starts_with("network")).collect();
-    assert_eq!(network, ["network unix stream,"]);
+    // The stream socket is the provider's own; the datagram socket is the one datagram of the
+    // watchdog (`the_provider_profile_allows_the_notify_socket_and_no_other_datagram_path`).
+    assert_eq!(network, ["network unix stream,", "network unix dgram,"]);
     assert!(rules.contains(&"deny network inet,".to_string()));
     assert!(rules.contains(&"deny network inet6,".to_string()));
     assert!(rules.contains(&"/run/linuxhello-tpm/tpm.sock rw,".to_string()));

@@ -18,6 +18,7 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use linuxhello_tpm_provider::keys::Tpm;
+use linuxhello_tpm_provider::server::watchdog::{self, Notifier};
 use linuxhello_tpm_provider::server::{ids_of, Server};
 
 /// The socket the Agent connects to, in the runtime directory the unit creates.
@@ -84,6 +85,23 @@ fn guard() -> Result<(), String> {
     }
 }
 
+/// Under a unit with `WatchdogSec=`, starts the thread that tells systemd the provider is alive, and
+/// only while it is not stuck in one request (R-29, #371). Without a watchdog it starts nothing.
+fn start_watchdog(server: &Server) {
+    let (Some(notifier), Some(interval)) = (Notifier::from_env(), watchdog::interval()) else {
+        return;
+    };
+    let busy = server.busy();
+    std::thread::spawn(move || loop {
+        if watchdog::should_ping(&busy) {
+            if let Err(error) = notifier.send(watchdog::WATCHDOG) {
+                eprintln!("linuxhello-tpm-provider: the watchdog ping failed: {error}");
+            }
+        }
+        std::thread::sleep(interval);
+    });
+}
+
 /// Starts the server and returns only when starting fails or the TPM has failed for good.
 fn run() -> Result<(), String> {
     let passwd = std::fs::read_to_string("/etc/passwd").map_err(|e| format!("/etc/passwd: {e}"))?;
@@ -93,6 +111,7 @@ fn run() -> Result<(), String> {
     let tpm = Tpm::open(TPM).map_err(|e| format!("the TPM is not available: {e:?}"))?;
     let server = Server::bind(Path::new(SOCKET), own, agent_uid, agent_gid, tpm)
         .map_err(|e| format!("the socket cannot be bound: {e}"))?;
+    start_watchdog(&server);
     // Returns only when the TPM has failed request after request: the unit starts a new process.
     Err(server.serve_forever())
 }

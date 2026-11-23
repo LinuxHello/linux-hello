@@ -1,7 +1,7 @@
 # AppArmor profile of the Linux Hello TPM provider. Install as
 # /etc/apparmor.d/linuxhello-tpm-provider and load in enforce mode; the systemd unit refuses to start
 # otherwise (AGENTS.md invariant 3). It grants: the TPM resource manager, its own socket, the TSS2
-# libraries, and /etc/passwd to find the Agent's user. It grants no network, no capability, no ptrace,
+# libraries, /etc/passwd to find the Agent's user, and systemd's notification socket for its watchdog. It grants no network, no capability, no ptrace,
 # no bus and no access to home directories or to the Agent's state.
 abi <abi/4.0>,
 
@@ -24,6 +24,11 @@ profile linuxhello-tpm-provider /usr/libexec/linuxhello/linuxhello-tpm-provider 
   network unix stream,
   /run/linuxhello-tpm/ rw,
   /run/linuxhello-tpm/tpm.sock rw,
+
+  # The watchdog: one datagram to the service manager's notification socket (the provider's
+  # server/watchdog.rs); nothing else uses a datagram socket. A unit line alone would not be enough.
+  network unix dgram,
+  /run/systemd/notify w,
 
   # Found in the test VM: something in the TSS2 stack's start-up reads the process's own cgroup.
   owner @{PROC}/@{pid}/cgroup r,
