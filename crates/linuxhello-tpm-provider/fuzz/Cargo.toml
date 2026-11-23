@@ -1,0 +1,36 @@
+# Fuzz targets for the TPM provider's wire format, the one parser in the provider. A separate
+# workspace on a pinned nightly toolchain (rust-toolchain.toml here), because cargo-fuzz needs nightly
+# sanitizer flags. Run with `make fuzz` from the repository root.
+[package]
+name = "linuxhello-tpm-provider-fuzz"
+version = "0.0.0"
+edition = "2021"
+license = "LGPL-3.0-or-later"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[workspace]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+# Without the TPM: the wire module has no TPM code, so the fuzz crate needs no TSS2 libraries.
+[dependencies.linuxhello-tpm-provider]
+path = ".."
+default-features = false
+
+[[bin]]
+name = "request"
+path = "fuzz_targets/request.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "response"
+path = "fuzz_targets/response.rs"
+test = false
+doc = false
+bench = false
