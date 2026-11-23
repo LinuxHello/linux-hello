@@ -50,6 +50,19 @@ use crate::wire::TpmLimits;
 
 pub use crate::wire::{Blobs, AUTH_BYTES};
 
+/// How many wrong tries before its limit the TPM is left alone: the provider never spends the last
+/// one, so that no PIN, and no loop of wrong and right PINs, can drive the TPM into a lockout that
+/// only an administrator ends (#345, review finding R-02).
+pub const RESERVED_TRIES: u32 = 1;
+
+/// Whether a check of a PIN may be made when the TPM has counted `counter` wrong tries of `limit`:
+/// only if one more wrong try would still be [`RESERVED_TRIES`] short of the limit. A limit of zero
+/// leaves no room, which is the safe reading of a TPM that says nothing useful
+/// (`the_last_try_before_the_limit_is_never_spent`).
+pub fn has_room(counter: u32, limit: u32) -> bool {
+    counter.saturating_add(RESERVED_TRIES) < limit
+}
+
 /// Why a TPM operation did not give an answer about the PIN.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TpmError {
@@ -135,6 +148,52 @@ impl Tpm {
             interval_secs: read(PropertyTag::LockoutInterval, "its lockout interval")?,
             recovery_secs: read(PropertyTag::LockoutRecovery, "its lockout recovery")?,
         })
+    }
+
+    /// The TPM's counter of wrong authorisations and the number at which it locks, for the whole
+    /// machine: `(counter, limit)`. The counter only falls with time (every `interval` seconds of
+    /// [`TpmLimits`]), whatever the right PINs that follow a wrong one.
+    ///
+    /// # Errors
+    ///
+    /// [`TpmError::Failed`] when the TPM does not report them.
+    pub fn counters(&mut self) -> Result<(u32, u32), TpmError> {
+        let (data, _) = self
+            .context
+            .execute_without_session(|ctx| {
+                ctx.get_capability(
+                    CapabilityType::TpmProperties,
+                    PropertyTag::LockoutCounter.into(),
+                    2,
+                )
+            })
+            .map_err(classify)?;
+        let CapabilityData::TpmProperties(properties) = data else {
+            return Err(TpmError::Failed(
+                "the TPM answered with another kind of data".to_string(),
+            ));
+        };
+        let read = |tag: PropertyTag, name: &str| -> Result<u32, TpmError> {
+            properties
+                .find(tag)
+                .map(|property| property.value())
+                .ok_or_else(|| TpmError::Failed(format!("the TPM does not report {name}")))
+        };
+        Ok((
+            read(PropertyTag::LockoutCounter, "its counter of wrong tries")?,
+            read(PropertyTag::MaxAuthFail, "its attempt limit")?,
+        ))
+    }
+
+    /// Whether a check of a PIN may be made without risking the lockout of everyone: see
+    /// [`has_room`].
+    ///
+    /// # Errors
+    ///
+    /// As [`Tpm::counters`].
+    pub fn has_headroom(&mut self) -> Result<bool, TpmError> {
+        let (counter, limit) = self.counters()?;
+        Ok(has_room(counter, limit))
     }
 
     /// Makes a root key whose authorisation is `auth`.

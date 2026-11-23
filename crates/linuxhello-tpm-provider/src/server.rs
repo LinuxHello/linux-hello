@@ -176,6 +176,12 @@ impl Server {
         let Some(request) = decode_request(&body) else {
             return;
         };
+        // The Agent gives up after a time and closes the connection. A check that was queued
+        // behind a slow one is not made for a client that is no longer there: the TPM would count a
+        // wrong try that the Agent never records (#345, review finding R-02).
+        if client_gone(&stream) {
+            return;
+        }
         if matches!(request, Request::Limits) {
             let body = match self.tpm.limits() {
                 Ok(limits) => encode_limits(&limits),
@@ -200,6 +206,22 @@ impl Server {
 
     /// What the TPM says to a request.
     fn answer(&mut self, request: Request) -> Response {
+        // The TPM keeps one counter of wrong tries for the whole machine and a lockout needs an
+        // administrator: a check of a PIN is not made when one more wrong try would come within
+        // `RESERVED_TRIES` of the limit, whatever the PIN is. It is a refusal, not a failure of the
+        // TPM, and the Agent reads it as "cannot check now", never as a wrong PIN.
+        if matches!(request, Request::Verify { .. } | Request::ChangeAuth { .. })
+            && matches!(self.tpm.has_headroom(), Ok(false))
+        {
+            eprintln!(
+                "linuxhello-tpm-provider: not asking the TPM: one more wrong try would lock it for everyone"
+            );
+            self.health.note(false);
+            return Response {
+                status: STATUS_FAILED,
+                blobs: None,
+            };
+        }
         let outcome = match request {
             Request::Limits => Err(TpmError::Failed("limits are answered elsewhere".into())),
             Request::Loads { blobs } => self
@@ -239,6 +261,23 @@ impl Server {
             }
         }
     }
+}
+
+/// Whether the client of `stream` has closed its end, which it does when it gives up on the answer.
+/// Asked after the whole request was read, so that the next byte of a client that waits is none
+/// yet (the client keeps the connection open until it has its answer, which the Agent's client
+/// does), and a client that has gone reads as the end of the stream
+/// (`a_request_whose_client_has_already_gone_is_not_asked_of_the_tpm`).
+pub fn client_gone(stream: &UnixStream) -> bool {
+    use std::io::Read;
+    if stream.set_nonblocking(true).is_err() {
+        return false;
+    }
+    let mut byte = [0_u8; 1];
+    let mut reader = stream;
+    let gone = matches!(reader.read(&mut byte), Ok(0));
+    let _ = stream.set_nonblocking(false);
+    gone
 }
 
 /// The user id and the group id of the account `name` in the text of `/etc/passwd`; `None` for a
