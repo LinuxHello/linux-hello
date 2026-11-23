@@ -169,6 +169,11 @@ jobs:
       # Upstream release binary, checksum pinned in the script; compiling it took ~2.5 min.
       - run: scripts/ci/install-tool.sh cargo-audit
       - run: cargo audit
+      # The lock files of the trees outside the root workspace (R-31, #373).
+      - run: |
+          for lock in crates/linuxhello-agent/fuzz/Cargo.lock crates/pam-linuxhello/fuzz/Cargo.lock plasma/Cargo.lock; do
+            cargo audit --file "$lock"
+          done
 
   fuzz:
     name: fuzz
