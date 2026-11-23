@@ -512,6 +512,7 @@ version = "0.0.0"
 dependencies = [
  "libc",
  "linuxhello-dbus",
+ "rustix",
  "tempfile",
  "zeroize",
 ]
