@@ -101,7 +101,7 @@ fn listen_to(address: &str) -> Arc<Mutex<Vec<bool>>> {
     let record = Arc::clone(&seen);
     let address = address.to_string();
     std::thread::spawn(move || {
-        futures_lite::future::block_on(keep_listening(
+        keep_listening(
             || {
                 let address = address.clone();
                 async move {
@@ -113,7 +113,7 @@ fn listen_to(address: &str) -> Arc<Mutex<Vec<bool>>> {
             Follow::Watch,
             move |_json, reachable| record.lock().unwrap().push(reachable),
             Duration::from_millis(50),
-        ));
+        );
     });
     seen
 }
