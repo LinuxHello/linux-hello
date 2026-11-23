@@ -76,6 +76,106 @@ pub trait KeyProbe: Send + Sync {
     }
 }
 
+/// Seconds since the first call, from the monotonic clock: a change of the wall clock neither
+/// keeps an answer for ever nor drops it early.
+fn monotonic_seconds() -> u64 {
+    static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    START
+        .get_or_init(std::time::Instant::now)
+        .elapsed()
+        .as_secs()
+}
+
+/// How long an answer of [`KeyProbe::key_loads`] is kept, in seconds.
+pub const KEY_PROBE_WINDOW_SECS: u64 = 10;
+
+/// How many users' answers [`CachedKeyProbe`] keeps; when the table is full it starts again.
+pub const KEY_PROBE_MAX_USERS: usize = 256;
+
+/// A [`KeyProbe`] that asks the real one at most once per [`KEY_PROBE_WINDOW_SECS`] for each user,
+/// and remembers "cannot ask" too. `GetStatus` asks the TPM provider (a limit of 15 s) while the
+/// Agent's interface is locked, and any local user may call it in a loop: with this, a slow or
+/// hung provider costs one wait per window and user, not one per call
+/// (`a_status_call_storm_asks_the_tpm_once_per_window`, review finding R-20, #362). The cost is
+/// that `tpm-cleared` can show up to a window late.
+pub struct CachedKeyProbe<P> {
+    /// The probe that asks the TPM.
+    inner: P,
+    /// The time in seconds from a monotonic clock; replaced in tests.
+    clock: fn() -> u64,
+    /// The last answer for each user and when it was got.
+    answers: Mutex<HashMap<u32, (u64, Option<bool>)>>,
+}
+
+impl<P: KeyProbe> CachedKeyProbe<P> {
+    /// A cache over `inner` that reads the time from the system clock.
+    pub fn new(inner: P) -> Self {
+        Self::with_clock(inner, monotonic_seconds)
+    }
+
+    /// A cache over `inner` with its own clock.
+    fn with_clock(inner: P, clock: fn() -> u64) -> Self {
+        Self {
+            inner,
+            clock,
+            answers: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// How many users have an answer in the cache.
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.answers
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .len()
+    }
+}
+
+impl<P: KeyProbe> KeyProbe for CachedKeyProbe<P> {
+    fn key_loads(&self, uid: u32) -> Option<bool> {
+        let now = (self.clock)();
+        {
+            let answers = self.answers.lock().unwrap_or_else(PoisonError::into_inner);
+            if let Some((at, answer)) = answers.get(&uid) {
+                if now.saturating_sub(*at) < KEY_PROBE_WINDOW_SECS {
+                    return *answer;
+                }
+            }
+        }
+        // Asked without the lock, so one slow answer does not hold up other users' reads.
+        let answer = self.inner.key_loads(uid);
+        let mut answers = self.answers.lock().unwrap_or_else(PoisonError::into_inner);
+        if answers.len() >= KEY_PROBE_MAX_USERS && !answers.contains_key(&uid) {
+            answers.clear();
+        }
+        answers.insert(uid, (now, answer));
+        answer
+    }
+
+    fn pin_changed_at(&self, uid: u32) -> Option<u64> {
+        self.inner.pin_changed_at(uid)
+    }
+
+    fn pin_record(&self, uid: u32) -> PinRecordState {
+        self.inner.pin_record(uid)
+    }
+}
+
+impl<T: KeyProbe + ?Sized> KeyProbe for Arc<T> {
+    fn key_loads(&self, uid: u32) -> Option<bool> {
+        (**self).key_loads(uid)
+    }
+
+    fn pin_changed_at(&self, uid: u32) -> Option<u64> {
+        (**self).pin_changed_at(uid)
+    }
+
+    fn pin_record(&self, uid: u32) -> PinRecordState {
+        (**self).pin_record(uid)
+    }
+}
+
 /// What the Agent knows about a user's PIN record.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PinRecordState {

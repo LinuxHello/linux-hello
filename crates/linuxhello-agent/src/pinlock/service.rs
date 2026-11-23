@@ -28,12 +28,50 @@ use crate::policy::Policy;
 /// The longest a lockout can be: 24 hours. The policy has no key for it.
 pub const MAX_LOCKOUT_SECS: u64 = 24 * 3600;
 
-/// The wall clock in whole seconds since the Unix epoch; zero if the clock is before it. The lockout
-/// file keeps these times, so they mean the same after a restart.
+/// The time of the lockout, in whole seconds since the Unix epoch: the wall clock read once when
+/// the Agent first asks, then advanced by the kernel's boot clock, which counts suspend and does
+/// not follow a change of the wall clock. Setting the system clock forward while the Agent runs
+/// does not end a lockout (`a_change_of_the_wall_clock_does_not_move_the_lockout_time`, review
+/// finding R-22, #364). The lockout file keeps these times, so they mean the same after a restart;
+/// a clock set while the Agent is down is not seen, which only the TPM's own limit answers.
 pub fn wall_clock_seconds() -> u64 {
+    static ANCHOR: std::sync::OnceLock<LockClock> = std::sync::OnceLock::new();
+    ANCHOR
+        .get_or_init(|| LockClock {
+            wall: system_clock_seconds(),
+            boot: boot_clock_seconds(),
+        })
+        .now(boot_clock_seconds())
+}
+
+/// A wall-clock reading and the boot-clock reading made at the same moment.
+#[derive(Clone, Copy, Debug)]
+struct LockClock {
+    /// Seconds since the Unix epoch by the system clock when the anchor was made.
+    wall: u64,
+    /// Seconds of the boot clock at that moment.
+    boot: u64,
+}
+
+impl LockClock {
+    /// The time when the boot clock reads `boot_now`: the anchor's wall time plus what the boot
+    /// clock has counted since. It does not read the system clock.
+    fn now(&self, boot_now: u64) -> u64 {
+        self.wall + boot_now.saturating_sub(self.boot)
+    }
+}
+
+/// The system clock in whole seconds since the Unix epoch; zero if it is before it.
+fn system_clock_seconds() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs())
+}
+
+/// The kernel's boot clock in whole seconds: it runs while the machine sleeps and nobody can set it.
+fn boot_clock_seconds() -> u64 {
+    let now = rustix::time::clock_gettime(rustix::time::ClockId::Boottime);
+    u64::try_from(now.tv_sec).unwrap_or(0)
 }
 
 /// The limits a [`PinLock`] is built with.
