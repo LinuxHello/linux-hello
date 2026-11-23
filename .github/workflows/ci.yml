@@ -128,7 +128,7 @@ jobs:
         run: |
           apt-get update -qq
           DEBIAN_FRONTEND=noninteractive apt-get install --yes --no-install-recommends \
-            ca-certificates cargo rustc rustfmt rust-clippy g++ pkg-config \
+            ca-certificates cargo rustc rustfmt rust-clippy g++ pkg-config dbus-daemon \
             qt6-base-dev qt6-base-dev-tools qt6-declarative-dev qt6-declarative-dev-tools \
             qml6-module-qttest qml6-module-qtquick qml6-module-qtquick-controls \
             qml6-module-qtquick-templates qml6-module-qtquick-window
@@ -139,7 +139,8 @@ jobs:
         run: |
           cargo fmt --check
           cargo clippy --all-targets -- -D warnings
-          cargo test
+          # --include-ignored: the tests that start a private dbus-daemon are ignored where it is missing
+          cargo test -- --include-ignored
       - name: Qt Quick tests of the Auth Prompt and the greeter
         run: |
           bash plasma/auth-prompt/tests/run.sh
@@ -169,6 +170,11 @@ jobs:
       # Upstream release binary, checksum pinned in the script; compiling it took ~2.5 min.
       - run: scripts/ci/install-tool.sh cargo-audit
       - run: cargo audit
+      # The lock files of the trees outside the root workspace (R-31, #373).
+      - run: |
+          for lock in crates/linuxhello-agent/fuzz/Cargo.lock crates/pam-linuxhello/fuzz/Cargo.lock plasma/Cargo.lock; do
+            cargo audit --file "$lock"
+          done
 
   fuzz:
     name: fuzz
@@ -285,6 +291,10 @@ jobs:
         run: bash scripts/ci/test-repo-hygiene.sh
       - name: Nothing tracked is build output or over 1 MiB
         run: bash scripts/ci/repo-hygiene.sh
+      - name: The installer puts the PAM line where nologin and the delay still apply
+        run: bash scripts/ci/test-pam-insert.sh
+      - name: The unsafe policy cannot be sidestepped
+        run: bash scripts/ci/test-unsafe-policy.sh
 
   docs:
     name: docs
