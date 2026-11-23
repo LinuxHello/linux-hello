@@ -278,6 +278,15 @@ fn a_request_whose_client_has_already_gone_is_not_asked_of_the_tpm() {
     let (path, _dir, _stop) = provider(&soft, me());
     let client = TpmClient::new(&path);
     let blobs = client.enrol(auth(1)).unwrap();
+    // The provider serves one connection at a time. A client that has sent half of a length holds
+    // it for a moment (its limit for a silent client is two seconds), and the Agent's request
+    // queues behind it, as it does behind a slow TPM call. The Agent then gives up and closes the
+    // connection, so by the time the provider takes it, the request and the end of the stream are
+    // both already there. Without the queue the provider could look before the client has closed,
+    // and see a client that is still waiting.
+    let mut blocker = UnixStream::connect(&path).unwrap();
+    blocker.write_all(&[0, 0]).unwrap();
+    std::thread::sleep(Duration::from_millis(300)); // the provider has accepted it and waits
     {
         let mut gone = UnixStream::connect(&path).unwrap();
         let body = encode_request(&Request::Verify {
@@ -286,8 +295,9 @@ fn a_request_whose_client_has_already_gone_is_not_asked_of_the_tpm() {
         })
         .unwrap();
         write_frame(&mut gone, &body).unwrap();
-    } // closed before any answer
-      // The provider serves one connection at a time, in order: this answer comes after it.
+    } // closed before any answer, while it is still queued
+    drop(blocker); // the provider is free, and takes the abandoned request next
+                   // Served in order: this answer comes after the abandoned request was dealt with.
     assert!(client.limits().is_ok());
     assert_eq!(
         soft.open().counters(),
