@@ -348,7 +348,8 @@ fn agent_profile_talks_to_fprintd_and_polkit_and_to_no_other_service() {
                 || rule.contains("peer=(name=net.reactivated.Fprint)")
                 || rule.contains("path=/io/github/LinuxHello/Agent1")
                 || (rule.contains("peer=(name=org.freedesktop.PolicyKit1)")
-                    && rule.contains("member=CheckAuthorization")),
+                    && rule.contains("member=CheckAuthorization"))
+                || rule.contains("peer=(name=org.freedesktop.login1)"),
             "a send rule with another peer: {rule}"
         );
     }
@@ -357,6 +358,43 @@ fn agent_profile_talks_to_fprintd_and_polkit_and_to_no_other_service() {
         .any(|r| r.contains("peer=(name=net.reactivated.Fprint)")
             && r.contains("interface=net.reactivated.Fprint.{Manager,Device}")));
     assert!(profile_rules().contains(&"/etc/passwd r,".to_string()));
+}
+
+/// The Agent asks logind where a `sudo` or `session` caller is, and may do nothing else with it
+/// (ADR-0023, amendment of 2026-11-23; R-04, #347): one method of the manager, and `GetAll` of a
+/// session.
+#[test]
+fn the_agent_profile_asks_logind_for_a_session_and_its_facts_and_nothing_else() {
+    let to_logind: Vec<String> = statements("dbus send")
+        .into_iter()
+        .filter(|r| r.contains("org.freedesktop.login1"))
+        .collect();
+    assert_eq!(to_logind.len(), 2, "{to_logind:?}");
+    let manager = to_logind
+        .iter()
+        .find(|r| r.contains("member=GetSessionByPID"))
+        .expect("the question for the session of a process");
+    assert!(
+        manager.contains("interface=org.freedesktop.login1.Manager"),
+        "{manager}"
+    );
+    assert!(
+        !manager.contains("/session/"),
+        "the manager's own path: {manager}"
+    );
+    assert!(to_logind
+        .iter()
+        .any(|r| r.contains("path=/org/freedesktop/login1/session/*")
+            && r.contains("interface=org.freedesktop.DBus.Properties")
+            && r.contains("member=GetAll")));
+    for rule in &to_logind {
+        assert!(
+            rule.contains("peer=(name=org.freedesktop.login1)"),
+            "{rule}"
+        );
+        assert!(!rule.contains('{'), "no member list: {rule}");
+        assert!(!rule.contains("/**"), "no deep path: {rule}");
+    }
 }
 
 /// The polkit rule that lets the Agent claim and scan a fingerprint reader for another user.

@@ -20,8 +20,8 @@
 
 use futures_lite::StreamExt;
 use linuxhello_dbus::{
-    PromptId, PromptReason, PromptResult, AGENT_BUS_NAME, AGENT_INTERFACE, AGENT_OBJECT_PATH,
-    CAPABILITIES, INTERFACE_VERSION,
+    AuthMethod, PromptId, PromptReason, PromptResult, AGENT_BUS_NAME, AGENT_INTERFACE,
+    AGENT_OBJECT_PATH, CAPABILITIES, INTERFACE_VERSION,
 };
 use std::time::Instant;
 
@@ -35,7 +35,7 @@ use zbus::names::{BusName, UniqueName};
 use zbus::{connection, interface, Connection};
 
 use crate::api::{Api, ApiError, Caller, Notification, PeerName};
-use crate::audit::{Action, Audit};
+use crate::audit::{Action, Audit, Event};
 use crate::methods::fingerprint::{Fprintd, FINGERS};
 use crate::methods::pin::enrol::{run_change, run_check, run_set, CheckJob, Job, PinEnrolment};
 use crate::methods::pin::{KeyProbe, PinInbox, PinVerifier};
@@ -46,8 +46,10 @@ use crate::policy::user_store::UserPolicyStore;
 use crate::state::{Config, Outcome, Update};
 
 pub mod credentials;
+pub mod logind;
 pub mod polkit;
 
+use logind::{needs_local_seat, Locality, SessionProbe};
 use polkit::{Answer, Polkit, RESET_ACTION};
 
 /// How long an authentication may take before it fails with `timeout`.
@@ -117,6 +119,10 @@ pub struct AgentService {
     /// What `Reset` asks before it resets a user's own enrolment; without it `Reset` is
     /// `Unavailable` for anyone but root.
     polkit: Option<Polkit>,
+    /// What says where the caller of a `sudo` or `session` prompt is, before a sensor starts
+    /// (ADR-0023, amendment of 2026-11-23). Without it nothing is asked and nothing is refused:
+    /// that is for a service that is embedded in a test; the Agent's own `main` always sets it.
+    session_probe: Option<Arc<dyn SessionProbe>>,
 }
 
 /// The management of enrolled fingers for the settings page (ADR-0027, point 2).
@@ -145,6 +151,7 @@ impl AgentService {
             updates: None,
             fingerprints: None,
             polkit: None,
+            session_probe: None,
         }
     }
 
@@ -199,6 +206,7 @@ impl AgentService {
             updates: None,
             fingerprints: None,
             polkit: None,
+            session_probe: None,
         }
     }
 
@@ -405,6 +413,9 @@ pub struct Extras {
     pub polkit: Option<Polkit>,
     /// How long an authentication may take; a minute by default.
     pub auth_deadline: Option<Duration>,
+    /// What tells where the caller of a `sudo` or `session` prompt is; without it no caller is
+    /// asked about, which only a test does.
+    pub session_probe: Option<Arc<dyn SessionProbe>>,
 }
 
 /// Serves the Agent's state API with everything in `extras`, and the thread that applies the
@@ -426,6 +437,7 @@ pub async fn serve_with_extras(
     service.pin_change = extras.pin_change;
     service.fingerprints = extras.fingerprints;
     service.polkit = extras.polkit;
+    service.session_probe = extras.session_probe;
     service.api = service.api.with_key_probe(extras.key_probe);
     if let Some(methods) = extras.methods {
         service.methods = methods;
@@ -875,7 +887,9 @@ impl AgentService {
         #[zbus(connection)] connection: &Connection,
     ) -> Result<(), AgentError> {
         self.tick();
-        let caller = caller_of(connection, header.sender()).await;
+        // The process id is the bus daemon's word about the caller, not the caller's own: it is what
+        // logind is asked about when the context needs a seat.
+        let (caller, process) = caller_and_process(connection, header.sender()).await;
         let start = self
             .api
             .begin_authentication(caller, prompt_id, context)
@@ -902,7 +916,21 @@ impl AgentService {
         let methods = (self.methods)(start.subject, &target);
         let deadline = self.auth_deadline;
         let (prompt, opener) = (start.prompt.clone(), start.opener_uid);
+        // Asked on the job's thread, never here under the interface lock: logind may be slow.
+        let seat_check = needs_local_seat(context)
+            .then(|| self.session_probe.clone())
+            .flatten()
+            .map(|probe| (probe, self.api.audit_handle()));
         self.spawn_job(&prompt, opener, move || {
+            let mut methods = methods;
+            if let Some((probe, audit)) = seat_check {
+                // The PIN is never refused for this reason: it is what the TPM checks, from anywhere.
+                let locality = process.map_or(Locality::Unknown, |pid| probe.locality(pid));
+                if let Some(why) = locality.refusal() {
+                    audit.record(Event::sensors_refused(start.subject, why));
+                    methods.retain(|method| method.kind() == AuthMethod::Pin);
+                }
+            }
             let mut reporter = ChannelReporter {
                 updates: updates.clone(),
                 uid: start.opener_uid,

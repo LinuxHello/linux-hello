@@ -17,6 +17,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use linuxhello_agent::audit::Audit;
+use linuxhello_agent::bus::logind::LogindProbe;
 use linuxhello_agent::bus::polkit::Polkit;
 use linuxhello_agent::bus::{bus_alive, serve_with_extras, Extras, Fingerprints, PinChange};
 use linuxhello_agent::methods::fingerprint::{FingerprintMethod, Fprintd};
@@ -195,6 +196,9 @@ async fn run() -> zbus::Result<()> {
             verifier: verifier_for_fingers,
         }),
         polkit: Some(Polkit::default()),
+        // A `sudo` or `session` caller must be at this machine for a sensor to start (ADR-0023,
+        // amendment of 2026-11-23; R-04, #347): logind is asked on the system bus.
+        session_probe: Some(Arc::new(LogindProbe::system())),
     };
     let connection = serve_with_extras(
         Builder::system(),
