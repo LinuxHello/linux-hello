@@ -67,6 +67,9 @@ jobs:
     name: attest
     needs: build
     runs-on: ubuntu-24.04
+    # The protected environment `release` asks the maintainer to approve before anything is signed
+    # (R-06, #349). The environment is a repository setting, not a file.
+    environment: release
     permissions:
       contents: read
       id-token: write # Sigstore signing certificate
