@@ -207,6 +207,25 @@ impl AgentService {
         }
     }
 
+    /// Starts `work` on a thread of its own, or ends the job of `prompt` as a failure and says
+    /// "unavailable" when the system refuses a thread: the job's entry in the state is removed, so
+    /// the prompt does not stay "running" and the Agent does not panic (R-05, #348;
+    /// refusing a thread is not provoked by a test).
+    fn spawn_job(
+        &mut self,
+        prompt: &PromptId,
+        opener: u32,
+        work: impl FnOnce() + Send + 'static,
+    ) -> Result<(), AgentError> {
+        match std::thread::Builder::new()
+            .name("linuxhello-job".into())
+            .spawn(work)
+        {
+            Ok(_) => Ok(()),
+            Err(_) => Err(self.end_unwaited(prompt, opener)),
+        }
+    }
+
     /// Ends a job that could not be given a wait for its prompt, because that prompt already has
     /// one: the prompt must not stay "running" (the way `Authenticate` ends without an updates
     /// channel), and the caller is told the service cannot do it now.
@@ -251,7 +270,8 @@ impl AgentService {
         }) else {
             return Err(self.end_unwaited(&start.prompt, start.opener_uid));
         };
-        std::thread::spawn(move || {
+        let (prompt, opener) = (start.prompt.clone(), start.opener_uid);
+        self.spawn_job(&prompt, opener, move || {
             let job = Job {
                 subject: start.subject,
                 rules: &start.rules,
@@ -274,8 +294,7 @@ impl AgentService {
                 prompt: start.prompt,
                 update: Update::Result(outcome),
             });
-        });
-        Ok(())
+        })
     }
 
     /// The same service with the PIN socket that `ExpectPin` announces to.
@@ -873,7 +892,8 @@ impl AgentService {
         };
         let methods = (self.methods)(start.subject, &target);
         let deadline = self.auth_deadline;
-        std::thread::spawn(move || {
+        let (prompt, opener) = (start.prompt.clone(), start.opener_uid);
+        self.spawn_job(&prompt, opener, move || {
             let mut reporter = ChannelReporter {
                 updates: updates.clone(),
                 uid: start.opener_uid,
@@ -886,8 +906,7 @@ impl AgentService {
                 // Whatever went wrong, the prompt must not stay "running" for ever.
                 reporter.report(Update::Result(Outcome::new(PromptResult::Failure)));
             }
-        });
-        Ok(())
+        })
     }
 
     /// Starts setting the caller's first PIN: the Agent waits for one PIN on the PIN socket and

@@ -352,3 +352,92 @@ fn the_inbox_has_no_wait_by_user() {
         }
     }
 }
+
+/// A verifier that takes its time, as the TPM does, says every PIN is wrong, and counts how often it
+/// was asked.
+struct SlowAndWrong {
+    asked: AtomicU32,
+}
+
+impl PinVerifier for SlowAndWrong {
+    fn available(&self, _uid: u32) -> bool {
+        true
+    }
+
+    fn verify(&self, _uid: u32, _pin: &[u8]) -> Result<bool, VerifyError> {
+        self.asked.fetch_add(1, Ordering::SeqCst);
+        std::thread::sleep(Duration::from_millis(150));
+        Ok(false)
+    }
+}
+
+#[test]
+fn many_prompts_of_one_user_put_no_more_wrong_pins_at_the_tpm_than_the_limit() {
+    // R-02, #345: a user who holds many prompts, each with a job, started all their checks before
+    // the first wrong PIN was counted. The limit is two; of twenty PINs sent at once, two reach the
+    // verifier, and the rest are "no answer" and never reach it.
+    let dir = crate::private_tempdir();
+    let uid = std::fs::metadata(dir.path())
+        .map(|m| std::os::unix::fs::MetadataExt::uid(&m))
+        .unwrap();
+    let lock = Arc::new(PinLockService::start(
+        PinLockFile::new(dir.path().join("pinlock.toml"), uid),
+        LIMITS,
+    ));
+    let verifier = Arc::new(SlowAndWrong {
+        asked: AtomicU32::new(0),
+    });
+    let inbox = Arc::new(PinInbox::default());
+    let mut jobs = Vec::new();
+    for n in 0..20_u8 {
+        let mut method = PinMethod::for_prompt(
+            1000,
+            target(1000, n),
+            &inbox,
+            Arc::clone(&lock),
+            Arc::clone(&verifier) as Arc<dyn PinVerifier>,
+            at_1000,
+        )
+        .unwrap();
+        assert!(inbox.deliver_to(&target(1000, n), Zeroizing::new(b"0000".to_vec())));
+        jobs.push(std::thread::spawn(move || method.run(&Cancel::default())));
+    }
+    let ends: Vec<MethodEnd> = jobs.into_iter().map(|j| j.join().unwrap()).collect();
+    assert_eq!(verifier.asked.load(Ordering::SeqCst), 2, "{ends:?}");
+    let unanswered = ends
+        .iter()
+        .filter(|end| **end == MethodEnd::Unavailable)
+        .count();
+    assert_eq!(unanswered, 18, "{ends:?}");
+    // The user is locked now, as two wrong PINs make them.
+    assert!(matches!(
+        lock.check(1000, 1_000),
+        Err(crate::pinlock::PinLockError::Locked { .. })
+    ));
+}
+
+#[test]
+fn a_pin_that_could_not_be_checked_gives_its_try_back() {
+    // The TPM was not asked: nothing was counted there, so nothing stays counted here.
+    let mut s = setup(true);
+    for n in 0..5 {
+        s.method = PinMethod::for_prompt(
+            1000,
+            target(1000, 10 + n),
+            &s.inbox,
+            Arc::clone(&s.lock),
+            Arc::clone(&s.verifier) as Arc<dyn PinVerifier>,
+            at_1000,
+        )
+        .unwrap();
+        let inbox = Arc::clone(&s.inbox);
+        let end = std::thread::scope(|scope| {
+            let run = scope.spawn(|| s.method.run(&Cancel::default()));
+            assert!(inbox.deliver_to(&target(1000, 10 + n), Zeroizing::new(b"1234".to_vec())));
+            run.join().unwrap()
+        });
+        assert_eq!(end, MethodEnd::Unavailable);
+    }
+    assert_eq!(s.lock.check(1000, 1_000), Ok(()));
+    assert!(s.lock.reserve(1000, 1_000).is_ok());
+}
