@@ -135,7 +135,8 @@ impl PinLockFile {
         let body = toml::to_string(&text).map_err(io::Error::other)?;
         let temporary = self.temporary_path();
         let result = write_new_file(&temporary, body.as_bytes())
-            .and_then(|()| fs::rename(&temporary, &self.path));
+            .and_then(|()| fs::rename(&temporary, &self.path))
+            .and_then(|()| sync_directory_of(&self.path));
         if result.is_err() {
             let _ = fs::remove_file(&temporary);
         }
@@ -147,6 +148,15 @@ impl PinLockFile {
         let mut name = self.path.file_name().unwrap_or_default().to_os_string();
         name.push(".new");
         self.path.with_file_name(name)
+    }
+}
+
+/// Syncs the directory that holds `path`, so that the rename of a new file into it survives a crash
+/// (R-22, #364): without it the file is on disk but its name may not be.
+fn sync_directory_of(path: &Path) -> io::Result<()> {
+    match path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        Some(directory) => fs::File::open(directory)?.sync_all(),
+        None => fs::File::open(".")?.sync_all(),
     }
 }
 
