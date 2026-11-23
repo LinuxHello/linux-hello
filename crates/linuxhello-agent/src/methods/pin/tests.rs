@@ -441,3 +441,67 @@ fn a_pin_that_could_not_be_checked_gives_its_try_back() {
     assert_eq!(s.lock.check(1000, 1_000), Ok(()));
     assert!(s.lock.reserve(1000, 1_000).is_ok());
 }
+
+/// A probe that counts how often the TPM is asked and answers from a script.
+struct CountingProbe {
+    asked: AtomicU32,
+    answer: Option<bool>,
+}
+
+impl KeyProbe for CountingProbe {
+    fn key_loads(&self, _uid: u32) -> Option<bool> {
+        self.asked.fetch_add(1, Ordering::SeqCst);
+        self.answer
+    }
+}
+
+#[test]
+fn a_status_call_storm_asks_the_tpm_once_per_window() {
+    // R-20, #362: `GetStatus` asks the provider, with a limit of 15 s, under the interface lock.
+    // Any local user can call it in a loop, so the answer is kept for a while per user.
+    let probe = CountingProbe {
+        asked: AtomicU32::new(0),
+        answer: Some(true),
+    };
+    static NOW: AtomicU64 = AtomicU64::new(100);
+    NOW.store(100, Ordering::SeqCst);
+    let cached = CachedKeyProbe::with_clock(probe, || NOW.load(Ordering::SeqCst));
+    for _ in 0..50 {
+        assert_eq!(cached.key_loads(1000), Some(true));
+    }
+    assert_eq!(cached.inner.asked.load(Ordering::SeqCst), 1);
+    // Another user has an answer of their own.
+    assert_eq!(cached.key_loads(1001), Some(true));
+    assert_eq!(cached.inner.asked.load(Ordering::SeqCst), 2);
+    // After the window the TPM is asked again.
+    NOW.store(100 + KEY_PROBE_WINDOW_SECS, Ordering::SeqCst);
+    assert_eq!(cached.key_loads(1000), Some(true));
+    assert_eq!(cached.inner.asked.load(Ordering::SeqCst), 3);
+}
+
+#[test]
+fn a_provider_that_cannot_answer_is_not_asked_again_at_once() {
+    // A hung provider must cost one wait per window and user, not one per call.
+    let probe = CountingProbe {
+        asked: AtomicU32::new(0),
+        answer: None,
+    };
+    let cached = CachedKeyProbe::with_clock(probe, || 5);
+    for _ in 0..10 {
+        assert_eq!(cached.key_loads(1000), None);
+    }
+    assert_eq!(cached.inner.asked.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn the_key_probe_cache_does_not_grow_without_bound() {
+    let probe = CountingProbe {
+        asked: AtomicU32::new(0),
+        answer: Some(true),
+    };
+    let cached = CachedKeyProbe::with_clock(probe, || 5);
+    for uid in 0..(KEY_PROBE_MAX_USERS as u32 * 3) {
+        cached.key_loads(uid);
+    }
+    assert!(cached.len() <= KEY_PROBE_MAX_USERS);
+}
