@@ -23,7 +23,6 @@ mod bus;
 pub mod wire;
 
 use std::io::{Read, Write};
-use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -272,13 +271,18 @@ fn read_signal(member: Option<&str>, body: &[Value], prompt: &str) -> Option<Sig
     }
 }
 
+/// How long the module waits to connect to the Agent's PIN socket: as long as it waits to read or
+/// write on it.
+const PIN_CONNECT_LIMIT: Duration = Duration::from_secs(5);
+
 /// The Agent's PIN socket at a path.
 struct SocketPin<'a>(&'a Path);
 
 impl PinPost for SocketPin<'_> {
     fn send(&mut self, pin: &[u8]) -> Result<bool, Fault> {
         let length = u16::try_from(pin.len()).map_err(|_| Fault)?;
-        let mut stream = UnixStream::connect(self.0).map_err(|_| Fault)?;
+        let mut stream =
+            bus::connect_within(self.0, Instant::now() + PIN_CONNECT_LIMIT).map_err(|_| Fault)?;
         stream
             .set_read_timeout(Some(Duration::from_secs(5)))
             .map_err(|_| Fault)?;
@@ -577,6 +581,11 @@ fn steps(
                             // password.
                             return Ok(Code::Unavailable);
                         }
+                    } else if Instant::now() + limits.wait > end {
+                        // Too little of the total is left to read the answer: a PIN sent now would
+                        // be used up and counted, and the module would then answer "unavailable"
+                        // and the password prompt would follow (R-16, #358).
+                        return Ok(Code::Unavailable);
                     } else {
                         agent.call("ExpectPin", &[Arg::Str(prompt)])?;
                         if !pins.send(pin.as_bytes())? {

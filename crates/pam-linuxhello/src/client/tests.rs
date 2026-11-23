@@ -967,3 +967,35 @@ fn an_unavailable_answer_the_person_chose_is_not_announced() {
     );
     assert!(person.shown.is_empty());
 }
+
+#[test]
+fn a_pin_typed_too_late_to_read_the_answer_is_not_sent() {
+    // R-16, #358: a PIN sent when the total has no room left for the answer is used up and counted
+    // by the Agent, and the module then answers "unavailable" and the password prompt follows. The
+    // PIN is not sent when less than the wait for an answer remains.
+    let mut agent = Script {
+        signals: [active(&["pin"]), result("success", "", 0)].into(),
+        ..Script::default()
+    };
+    let mut socket = Socket {
+        accept: true,
+        ..Socket::default()
+    };
+    let mut person = Person {
+        answers: [Some("1234")].into(),
+        ..Person::default()
+    };
+    let late = Instant::now() - (FAST.total - Duration::from_millis(100));
+    let code = run(
+        &mut agent,
+        &mut socket,
+        &mut person,
+        "p1",
+        1000,
+        "sudo",
+        &FAST,
+        late,
+    );
+    assert_eq!(code, Code::Unavailable);
+    assert!(socket.sent.is_empty(), "the PIN must not be sent");
+}
