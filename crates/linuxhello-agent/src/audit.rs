@@ -51,6 +51,9 @@ const ID_POLICY_PIN_ONLY: &str = "050c3a8220f349669c1a7111fad2fc6d";
 /// How many uids the rate limiter remembers at most.
 const MAX_TRACKED_UIDS: usize = 4096;
 
+/// `MESSAGE_ID` of a refusal to start a sensor for a caller that is not at this machine.
+const ID_SENSORS_REFUSED: &str = "c2d8a5e9f4b14a3d8e7f1b6a9d0c3e52";
+
 /// `MESSAGE_ID` of the end of a job: a sign-in, a PIN set or change, a reset or an enrolment.
 const ID_JOB_ENDED: &str = "a1c4e7f2b3d84a6f9e0c5b7d2f813a46";
 
@@ -103,6 +106,32 @@ impl Action {
     }
 }
 
+/// Why the Agent did not start a sensor for a caller (ADR-0023, amendment of 2026-11-23, finding
+/// R-04): what logind said, or that it could not be asked.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SensorsRefusal {
+    /// The caller's session is remote.
+    Remote,
+    /// The caller's session has no seat, or the caller is in no session.
+    NoSeat,
+    /// The caller's session is not the one in front.
+    Inactive,
+    /// logind is not there, did not answer in time, or said something not understood.
+    Unknown,
+}
+
+impl SensorsRefusal {
+    /// The fixed word that names the reason in the record's `LH_REASON`.
+    const fn word(self) -> &'static str {
+        match self {
+            Self::Remote => "remote",
+            Self::NoSeat => "no-seat",
+            Self::Inactive => "inactive",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
 /// What happened.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Kind {
@@ -119,6 +148,8 @@ enum Kind {
     /// A policy could not be loaded and the Agent fell back to PIN-only; the fault says which
     /// layer was to blame.
     PolicyPinOnly(Fault),
+    /// Face and fingerprint were not started for a caller that is not at this machine.
+    SensorsRefused(SensorsRefusal),
     /// A job of the Agent ended with `result` for the user the record's uid names.
     JobEnded {
         /// What the job did.
@@ -204,6 +235,15 @@ impl Event {
         }
     }
 
+    /// Face and fingerprint were not started for the user `subject`, for `why`; the PIN stays.
+    pub fn sensors_refused(subject: u32, why: SensorsRefusal) -> Self {
+        Self {
+            kind: Kind::SensorsRefused(why),
+            uid: Some(subject),
+            peer: None,
+        }
+    }
+
     /// A job of `action` ended with `result`; `subject` is the user it was for. Only the action
     /// and the result (fixed words) are recorded, never anything the user or the job sent.
     pub fn job_ended(subject: u32, action: Action, result: PromptResult) -> Self {
@@ -271,6 +311,13 @@ impl Event {
                 "fallback",
                 "policy fell back to PIN-only",
             ),
+            Kind::SensorsRefused(_) => (
+                "4",
+                ID_SENSORS_REFUSED,
+                "sensors_refused",
+                "refused",
+                "face and fingerprint not started: the caller is not at this machine",
+            ),
             Kind::JobEnded { action, result } => (
                 match result {
                     PromptResult::Success => "5",
@@ -301,6 +348,9 @@ impl Event {
         }
         if let Some(peer) = &self.peer {
             fields.push(("LH_PEER", peer.as_str().to_string()));
+        }
+        if let Kind::SensorsRefused(why) = self.kind {
+            fields.push(("LH_REASON", why.word().to_string()));
         }
         if let Kind::PolicyPinOnly(fault) = self.kind {
             fields.push(("LH_FAULT", fault.word().to_string()));
@@ -429,10 +479,10 @@ impl RateLimiter {
 pub struct Audit {
     /// Where the records go.
     sink: Box<dyn AuditSink>,
-    /// The limit on refusal records per uid: denied, limit reached, invalid argument and a job
-    /// that ended without success each have their own, so a flood of one kind does not hide
+    /// The limit on refusal records per uid: denied, limit reached, invalid argument, a job
+    /// that ended without success and a refusal to start a sensor each have their own, so a flood of one kind does not hide
     /// another.
-    limiters: Mutex<[RateLimiter; 4]>,
+    limiters: Mutex<[RateLimiter; 5]>,
 }
 
 impl Audit {
@@ -467,6 +517,7 @@ impl Audit {
             Kind::JobEnded { result, .. } if result != PromptResult::Success => {
                 Some((3, "job_ended"))
             }
+            Kind::SensorsRefused(_) => Some((4, "sensors_refused")),
             _ => None,
         };
         if let (Some((index, word)), Some(uid)) = (slot, event.uid) {

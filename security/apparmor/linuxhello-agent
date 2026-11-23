@@ -54,6 +54,17 @@ profile linuxhello-agent /usr/libexec/linuxhello/linuxhello-agent flags=(attach_
        peer=(label=unconfined),
   /etc/passwd r,
 
+  # Where the caller is (ADR-0023, amendment of 2026-11-23; review finding R-04, #347): before it
+  # starts a sensor for a `sudo` or `session` prompt, the Agent asks logind which session the
+  # caller's process is in, and reads that session's Remote, Seat and Active. Two calls, nothing
+  # else of logind: it neither lists, nor locks, nor ends a session.
+  dbus send bus=system path=/org/freedesktop/login1
+       interface=org.freedesktop.login1.Manager member=GetSessionByPID
+       peer=(name=org.freedesktop.login1),
+  dbus send bus=system path=/org/freedesktop/login1/session/*
+       interface=org.freedesktop.DBus.Properties member=GetAll
+       peer=(name=org.freedesktop.login1),
+
   # The reset after a forgotten PIN (ADR-0027): the Agent asks polkit whether the caller may do it,
   # and polkit's agent asks the person for the account password. One method, nothing else.
   dbus send bus=system path=/org/freedesktop/PolicyKit1/Authority

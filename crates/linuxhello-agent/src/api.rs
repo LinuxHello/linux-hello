@@ -245,7 +245,7 @@ pub struct Api {
     /// The user policy layer.
     user_policies: Option<UserPolicyStore>,
     /// The audit trail of refusals and policy changes.
-    audit: Audit,
+    audit: Arc<Audit>,
     /// The jobs that are running, by the user who opened the prompt and its id: the flag that stops
     /// the job when the prompt closes, and the job's generation, which its reports must carry.
     running: HashMap<(u32, PromptId), (Cancel, u64)>,
@@ -280,7 +280,7 @@ impl Api {
         Self {
             store: StateStore::new(config),
             user_policies: None,
-            audit: Audit::none(),
+            audit: Arc::new(Audit::none()),
             running: HashMap::new(),
             retiring: HashMap::new(),
             next_generation: 1,
@@ -320,7 +320,15 @@ impl Api {
 
     /// An API that records its refusals and policy changes in `audit`.
     pub fn with_audit(self, audit: Audit) -> Self {
-        Self { audit, ..self }
+        Self {
+            audit: Arc::new(audit),
+            ..self
+        }
+    }
+
+    /// The audit trail, for a job that records something from its own thread.
+    pub fn audit_handle(&self) -> Arc<Audit> {
+        Arc::clone(&self.audit)
     }
 
     /// Records the refusal in `result`, if it is one, and returns the result unchanged. A
