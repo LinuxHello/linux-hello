@@ -219,20 +219,30 @@ mod tests {
         Policy::Effective(merge(&[parse_layer(toml).unwrap()], None).unwrap())
     }
 
+    // The tests below look at `factors` (2 in a matching class, 1 for a relying party no class
+    // matches, `NO_MATCH`) or at `prompt` (`reverify`, where `NO_MATCH` has `presence`). `provider` is `tpm` in both, so a test that
+    // looked at it could not tell a match from no match (review of 2026-11-22, #375).
+
     #[test]
     fn exact_domain_beats_wildcard() {
         let toml = r#"
 [rp_class.exact]
-match = ["bank.example"]
+match = ["www.bank.example"]
 provider = "tpm"
+factors = 2
 
 [rp_class.wildcard]
 match = ["*.bank.example"]
-provider = "keepassxc"
+provider = "tpm"
+prompt = "reverify"
 "#;
         let pol = effective(toml);
-        let dec = pol.decision_for("bank.example");
-        assert_eq!(dec.provider, RpProvider::Tpm);
+        assert_eq!(pol.decision_for("www.bank.example").factors, 2);
+        // The wildcard still serves the names the exact class does not name.
+        assert_eq!(
+            pol.decision_for("pay.bank.example").prompt,
+            RpPrompt::Reverify
+        );
     }
 
     #[test]
@@ -241,14 +251,19 @@ provider = "keepassxc"
 [rp_class.long]
 match = ["*.sub.bank.example"]
 provider = "tpm"
+factors = 2
 
 [rp_class.short]
 match = ["*.bank.example"]
-provider = "keepassxc"
+provider = "tpm"
+prompt = "reverify"
 "#;
         let pol = effective(toml);
-        let dec = pol.decision_for("other.sub.bank.example");
-        assert_eq!(dec.provider, RpProvider::Tpm);
+        assert_eq!(pol.decision_for("other.sub.bank.example").factors, 2);
+        assert_eq!(
+            pol.decision_for("other.bank.example").prompt,
+            RpPrompt::Reverify
+        );
     }
 
     #[test]
@@ -257,10 +272,12 @@ provider = "keepassxc"
 [rp_class.wildcard]
 match = ["*.bank.example"]
 provider = "tpm"
+factors = 2
 "#;
         let pol = effective(toml);
-        let dec = pol.decision_for("bank.example");
-        assert_eq!(dec.provider, RpProvider::Tpm);
+        assert_eq!(pol.decision_for("bank.example").factors, NO_MATCH.factors);
+        // The control: the wildcard does match a name below the apex.
+        assert_eq!(pol.decision_for("www.bank.example").factors, 2);
     }
 
     #[test]
@@ -269,10 +286,14 @@ provider = "tpm"
 [rp_class.wildcard]
 match = ["*.bank.example"]
 provider = "tpm"
+factors = 2
 "#;
         let pol = effective(toml);
-        let dec = pol.decision_for("evilbank.example");
-        assert_eq!(dec.provider, RpProvider::Tpm);
+        assert_eq!(
+            pol.decision_for("evilbank.example").factors,
+            NO_MATCH.factors
+        );
+        assert_eq!(pol.decision_for("www.bank.example").factors, 2);
     }
 
     #[test]
@@ -281,10 +302,11 @@ provider = "tpm"
 [rp_class.bank]
 match = ["bank.example"]
 provider = "tpm"
+factors = 2
 "#;
         let pol = effective(toml);
-        let dec = pol.decision_for("BANK.EXAMPLE");
-        assert_eq!(dec.provider, RpProvider::Tpm);
+        assert_eq!(pol.decision_for("BANK.EXAMPLE").factors, 2);
+        assert_eq!(pol.decision_for("Bank.Example").factors, 2);
     }
 
     #[test]
@@ -293,10 +315,12 @@ provider = "tpm"
 [rp_class.bank]
 match = ["bank.example"]
 provider = "tpm"
+factors = 2
 "#;
         let pol = effective(toml);
-        let dec = pol.decision_for("bank.example.");
-        assert_eq!(dec.provider, RpProvider::Tpm);
+        assert_eq!(pol.decision_for("bank.example.").factors, 2);
+        // Only one dot is removed.
+        assert_eq!(pol.decision_for("bank.example..").factors, NO_MATCH.factors);
     }
 
     #[test]

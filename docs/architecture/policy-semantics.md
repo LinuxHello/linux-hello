@@ -102,7 +102,8 @@ The engine enters the **PIN-only state** when any of these hold:
 
 In the PIN-only state every context allows only `pin`, biometrics are off, relying parties get at least provider `tpm` and prompt `reverify`, and the engine reports why. Which rules it keeps depends on which layer is at fault:
 
-- **The admin layers are at fault** (unreadable, unsafe, unparseable, or contradictory among themselves): PIN rules are the built-in defaults, every context has `factors` 1, and there is no relying-party class.
+- **The admin directory is at fault** (it or its parent is unsafe or cannot be listed), **or the admin files contradict each other**: nothing in it can be trusted, so PIN rules are the built-in defaults, every context has `factors` 1, and there is no relying-party class.
+- **One admin file is at fault** (unreadable, not a regular file, too large, not UTF-8, or it does not parse): the files that can still be read are kept, as for a fault of the user's layer below. A typo in one file therefore cannot lower the minimum length, the lockout or the `factors` that another file asks for (`a_fault_in_one_admin_file_keeps_the_rules_of_the_others`, review finding R-10).
 - **Only the user's layer is at fault** (damaged, or contradictory with the other layers): the state is built on the admin layers and the defaults. It keeps their PIN rules, each context's `factors` and the admin's relying-party classes, so a user's file can never lower an admin rule. A context that then needs two factors is unsatisfiable, not lowered.
 
 A missing file is not an error: it contributes nothing. Only "does not exist" counts as missing; a path that cannot be examined is a failure.
