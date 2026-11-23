@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 use linuxhello_dbus::{AuthMethod, PromptId, PromptReason, PromptResult, PromptState, SIGNALS};
 
-use crate::audit::{Audit, Event};
+use crate::audit::{Action, Audit, Event};
 use crate::methods::pin::KeyProbe;
 use crate::orchestrator::Cancel;
 use crate::pinlock::service::{wall_clock_seconds, LockStatus, PinLockService};
@@ -258,6 +258,8 @@ pub struct Api {
     next_generation: u64,
     /// The user each running job authenticates, for the budget of root's jobs.
     running_subject: HashMap<(u32, PromptId), u32>,
+    /// What each running job does, for the audit record of its end.
+    running_action: HashMap<(u32, PromptId), Action>,
     /// The PIN lock, when the Agent has one.
     pin_lock: Option<Arc<PinLockService>>,
     /// What says whether a user's PIN key is still in the TPM, when the Agent has one.
@@ -283,6 +285,7 @@ impl Api {
             retiring: HashMap::new(),
             next_generation: 1,
             running_subject: HashMap::new(),
+            running_action: HashMap::new(),
             pin_lock: None,
             key_probe: None,
             clock: wall_clock_seconds,
@@ -819,7 +822,7 @@ impl Api {
         self.require_room_for_a_job(uid, subject)?;
         let rule = self.policy_of(subject)?.methods_for(context);
         let stop = Cancel::default();
-        let generation = self.register_job(uid, &prompt, subject, &stop);
+        let generation = self.register_job(uid, &prompt, subject, &stop, Action::SignIn);
         Ok(AuthStart {
             opener_uid: uid,
             prompt,
@@ -881,7 +884,17 @@ impl Api {
         self.require_room_for_a_job(uid, subject)?;
         let rules = self.policy_of(subject)?.pin_rules();
         let stop = Cancel::default();
-        let generation = self.register_job(uid, &prompt, subject, &stop);
+        let generation = self.register_job(
+            uid,
+            &prompt,
+            subject,
+            &stop,
+            if change {
+                Action::PinChange
+            } else {
+                Action::PinSet
+            },
+        );
         Ok(PinStart {
             opener_uid: uid,
             prompt,
@@ -928,7 +941,7 @@ impl Api {
         }
         self.require_room_for_a_job(uid, subject)?;
         let stop = Cancel::default();
-        let generation = self.register_job(uid, &prompt, subject, &stop);
+        let generation = self.register_job(uid, &prompt, subject, &stop, Action::Reset);
         Ok(ResetStart {
             opener_uid: uid,
             prompt,
@@ -958,11 +971,21 @@ impl Api {
             Update::MethodEnded(..) => "MethodEnded",
         };
         let wire = wire_values(&update);
-        let ended = matches!(update, Update::Result(_));
+        let ended = match &update {
+            Update::Result(outcome) => Some(outcome.result),
+            _ => None,
+        };
         let peers = self.store.report(uid, prompt, update).unwrap_or_default();
-        if ended {
-            self.running.remove(&(uid, prompt.clone()));
-            self.running_subject.remove(&(uid, prompt.clone()));
+        if let Some(result) = ended {
+            let key = (uid, prompt.clone());
+            self.running.remove(&key);
+            let subject = self.running_subject.remove(&key);
+            // The end of a job that ran is recorded with what it did and for whom
+            // (`a_finished_sign_in_is_audited_with_its_result_and_user`, R-12, #354).
+            if let Some(action) = self.running_action.remove(&key) {
+                self.audit
+                    .record(Event::job_ended(subject.unwrap_or(uid), action, result));
+            }
         }
         peers
             .into_iter()
@@ -1001,13 +1024,29 @@ impl Api {
     }
 
     /// Records that a job is running for the prompt and returns its generation.
-    fn register_job(&mut self, uid: u32, prompt: &PromptId, subject: u32, stop: &Cancel) -> u64 {
+    fn register_job(
+        &mut self,
+        uid: u32,
+        prompt: &PromptId,
+        subject: u32,
+        stop: &Cancel,
+        action: Action,
+    ) -> u64 {
         let generation = self.next_generation;
         self.next_generation += 1;
         self.running
             .insert((uid, prompt.clone()), (stop.clone(), generation));
         self.running_subject.insert((uid, prompt.clone()), subject);
+        self.running_action.insert((uid, prompt.clone()), action);
         generation
+    }
+
+    /// Says what the running job of the prompt does, when it is not what the call that started it
+    /// stands for (an enrolment starts like a PIN change). The end of the job is audited by it.
+    pub fn set_job_action(&mut self, uid: u32, prompt: &PromptId, action: Action) {
+        if let Some(slot) = self.running_action.get_mut(&(uid, prompt.clone())) {
+            *slot = action;
+        }
     }
 
     /// Stops the job of a prompt and stops counting it as the prompt's job: it keeps its place in
@@ -1017,6 +1056,7 @@ impl Api {
         if let Some((stop, generation)) = self.running.remove(&key) {
             stop.cancel();
             let subject = self.running_subject.remove(&key).unwrap_or(uid);
+            self.running_action.remove(&key);
             self.retiring.insert(generation, (uid, subject));
         }
     }
@@ -3026,6 +3066,106 @@ mod tests {
         let ended = Update::Result(Outcome::new(PromptResult::Failure));
         api.agent_report(1000, &first.prompt, ended);
         assert!(api.begin_authentication(opener, &id, "sudo").is_ok());
+    }
+
+    /// The `LH_EVENT` and `LH_OUTCOME` words of each event in `events`.
+    fn words(events: &[Event]) -> Vec<(String, String)> {
+        events
+            .iter()
+            .map(|event| {
+                let field = |name: &str| {
+                    event
+                        .fields()
+                        .into_iter()
+                        .find(|(key, _)| *key == name)
+                        .map(|(_, value)| value)
+                        .unwrap_or_default()
+                };
+                (field("LH_EVENT"), field("LH_OUTCOME"))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_finished_sign_in_is_audited_with_its_result_and_user() {
+        // R-12, #354: sign-in outcomes left no record.
+        let (mut api, recorder, _tmp, id) = authentication_setup();
+        let opener = on_peer(1000, ":1.1");
+        let start = api.begin_authentication(opener, &id, "login").unwrap();
+        assert!(
+            recorder.events().is_empty(),
+            "nothing is recorded at the start"
+        );
+        let ended = Update::Result(Outcome::new(PromptResult::Success));
+        api.agent_report(1000, &start.prompt, ended);
+        let events = recorder.events();
+        assert_eq!(
+            words(&events),
+            [("sign_in".to_string(), "success".to_string())]
+        );
+        assert!(events[0].fields().contains(&("LH_UID", "1000".to_string())));
+    }
+
+    #[test]
+    fn a_pin_set_a_pin_change_a_reset_and_an_enrolment_are_audited() {
+        // R-12, #354: none of them left a record.
+        let (mut api, recorder, _tmp, id) = authentication_setup();
+        let opener = on_peer(1000, ":1.1");
+        let steps = [
+            (Action::PinSet, PromptResult::Success, "pin_set", "success"),
+            (
+                Action::PinChange,
+                PromptResult::Failure,
+                "pin_change",
+                "failure",
+            ),
+            (Action::Reset, PromptResult::Success, "reset", "success"),
+            (
+                Action::Enrolment,
+                PromptResult::Cancelled,
+                "enrolment",
+                "cancelled",
+            ),
+        ];
+        for (action, result, _, _) in steps {
+            let start = match action {
+                Action::PinSet => api.begin_pin_change(opener, &id, false, false).unwrap(),
+                Action::PinChange | Action::Enrolment => {
+                    api.begin_pin_change(opener, &id, true, true).unwrap()
+                }
+                _ => {
+                    let reset = api.begin_reset(opener, &id).unwrap();
+                    api.agent_report(1000, &reset.prompt, Update::Result(Outcome::new(result)));
+                    continue;
+                }
+            };
+            api.set_job_action(1000, &start.prompt, action);
+            api.agent_report(1000, &start.prompt, Update::Result(Outcome::new(result)));
+        }
+        let expected: Vec<(String, String)> = steps
+            .iter()
+            .map(|(_, _, event, outcome)| ((*event).to_string(), (*outcome).to_string()))
+            .collect();
+        assert_eq!(words(&recorder.events()), expected);
+    }
+
+    #[test]
+    fn a_flood_of_failed_sign_ins_is_rate_limited_per_user() {
+        // A user may repeat a failing sign-in as fast as it fails; the journal must not fill.
+        let (mut api, recorder, _tmp, id) = authentication_setup();
+        let opener = on_peer(1000, ":1.1");
+        for _ in 0..50 {
+            let start = api.begin_authentication(opener, &id, "login").unwrap();
+            let failed = Update::Result(Outcome::new(PromptResult::Failure));
+            api.agent_report(1000, &start.prompt, failed);
+        }
+        assert!(recorder.events().len() <= 6, "{}", recorder.events().len());
+        // A success is always recorded.
+        let start = api.begin_authentication(opener, &id, "login").unwrap();
+        let ok = Update::Result(Outcome::new(PromptResult::Success));
+        api.agent_report(1000, &start.prompt, ok);
+        let last = words(&recorder.events()).pop().unwrap();
+        assert_eq!(last, ("sign_in".to_string(), "success".to_string()));
     }
 
     #[test]
