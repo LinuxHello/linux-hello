@@ -28,12 +28,50 @@ use crate::policy::Policy;
 /// The longest a lockout can be: 24 hours. The policy has no key for it.
 pub const MAX_LOCKOUT_SECS: u64 = 24 * 3600;
 
-/// The wall clock in whole seconds since the Unix epoch; zero if the clock is before it. The lockout
-/// file keeps these times, so they mean the same after a restart.
+/// The time of the lockout, in whole seconds since the Unix epoch: the wall clock read once when
+/// the Agent first asks, then advanced by the kernel's boot clock, which counts suspend and does
+/// not follow a change of the wall clock. Setting the system clock forward while the Agent runs
+/// does not end a lockout (`a_change_of_the_wall_clock_does_not_move_the_lockout_time`, review
+/// finding R-22, #364). The lockout file keeps these times, so they mean the same after a restart;
+/// a clock set while the Agent is down is not seen, which only the TPM's own limit answers.
 pub fn wall_clock_seconds() -> u64 {
+    static ANCHOR: std::sync::OnceLock<LockClock> = std::sync::OnceLock::new();
+    ANCHOR
+        .get_or_init(|| LockClock {
+            wall: system_clock_seconds(),
+            boot: boot_clock_seconds(),
+        })
+        .now(boot_clock_seconds())
+}
+
+/// A wall-clock reading and the boot-clock reading made at the same moment.
+#[derive(Clone, Copy, Debug)]
+struct LockClock {
+    /// Seconds since the Unix epoch by the system clock when the anchor was made.
+    wall: u64,
+    /// Seconds of the boot clock at that moment.
+    boot: u64,
+}
+
+impl LockClock {
+    /// The time when the boot clock reads `boot_now`: the anchor's wall time plus what the boot
+    /// clock has counted since. It does not read the system clock.
+    fn now(&self, boot_now: u64) -> u64 {
+        self.wall + boot_now.saturating_sub(self.boot)
+    }
+}
+
+/// The system clock in whole seconds since the Unix epoch; zero if it is before it.
+fn system_clock_seconds() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs())
+}
+
+/// The kernel's boot clock in whole seconds: it runs while the machine sleeps and nobody can set it.
+fn boot_clock_seconds() -> u64 {
+    let now = rustix::time::clock_gettime(rustix::time::ClockId::Boottime);
+    u64::try_from(now.tv_sec).unwrap_or(0)
 }
 
 /// The limits a [`PinLock`] is built with.
@@ -129,8 +167,11 @@ pub struct PinLockService {
     slot: Arc<(Mutex<Slot>, Condvar)>,
     /// The writer thread; joined on drop so that nothing pending is lost.
     writer: Option<JoinHandle<()>>,
-    /// Set when the TPM's limit lowered the Agent's.
-    tpm_cap: Option<TpmCap>,
+    /// Set when the TPM's limit lowered the Agent's, at start or later
+    /// ([`PinLockService::apply_tpm_limit`]).
+    tpm_cap: Mutex<Option<TpmCap>>,
+    /// Whether the TPM's limit was read when the service started.
+    tpm_limit_known: bool,
 }
 
 impl PinLockService {
@@ -141,6 +182,7 @@ impl PinLockService {
             limits.max_attempts,
             limits.lockout_secs,
             limits.max_lockout_secs,
+            wall_clock_seconds(),
         ) {
             Ok(lock) => State::Trusted(lock),
             Err(_) => {
@@ -162,7 +204,8 @@ impl PinLockService {
             state: Mutex::new(state),
             slot,
             writer: Some(writer),
-            tpm_cap: None,
+            tpm_cap: Mutex::new(None),
+            tpm_limit_known: false,
         }
     }
 
@@ -171,13 +214,42 @@ impl PinLockService {
     pub fn start_capped(file: PinLockFile, limits: Limits, tpm_tries: Option<u32>) -> Self {
         let (limits, cap) = tpm_tries.map_or((limits, None), |tries| limits.capped_by_tpm(tries));
         let mut service = Self::start(file, limits);
-        service.tpm_cap = cap;
+        *service
+            .tpm_cap
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = cap;
+        service.tpm_limit_known = tpm_tries.is_some();
         service
+    }
+
+    /// Whether the TPM's limit was known when the service started; when it was not, the Agent asks
+    /// again later ([`PinLockService::apply_tpm_limit`]).
+    pub fn tpm_limit_known(&self) -> bool {
+        self.tpm_limit_known
     }
 
     /// The cap the TPM's limit put on the Agent's, if it did.
     pub fn tpm_cap(&self) -> Option<TpmCap> {
-        self.tpm_cap
+        *self.tpm_cap.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The TPM's limit became known after the Agent started (the provider was not up yet at boot, so
+    /// the first question went unanswered): lowers the Agent's limit to half of it, as at start,
+    /// and locks the users whose count has reached it. A limit that is not lower changes nothing
+    /// (`a_tpm_limit_that_arrives_later_still_caps_the_agents`, R-02, #345).
+    pub fn apply_tpm_limit(&self, tpm_tries: u32, now: u64) {
+        let mut state = self.state();
+        let State::Trusted(lock) = &mut *state else {
+            return;
+        };
+        let allowed = (tpm_tries / 2).max(1);
+        if allowed >= lock.max_attempts() {
+            return;
+        }
+        lock.lower_limit(allowed, now);
+        self.save(lock);
+        *self.tpm_cap.lock().unwrap_or_else(PoisonError::into_inner) =
+            Some(TpmCap { tpm_tries, allowed });
     }
 
     /// Locks the state, going on after a panic elsewhere: the counter is plain data.
@@ -202,6 +274,50 @@ impl PinLockService {
         match &*self.state() {
             State::Trusted(lock) => lock.check(uid, now),
             State::Untrusted => Err(PinLockError::BadRecords),
+        }
+    }
+
+    /// Reserves one try of `uid` before the TPM is asked: it is counted and saved at once, so that
+    /// the tries that are running never exceed the limit and a crash cannot lose one (R-02, #345).
+    /// Settle the returned [`Attempt`] with [`Attempt::failed`] or [`Attempt::succeeded`]; dropping
+    /// it gives the try back, for a PIN that could not be checked at all.
+    ///
+    /// # Errors
+    ///
+    /// [`PinLockError::Locked`] while the user is locked; [`PinLockError::Busy`] when the tries that
+    /// are running use up the limit; [`PinLockError::BadRecords`] when the lockout file cannot be
+    /// trusted.
+    pub fn reserve(&self, uid: u32, now: u64) -> Result<Attempt<'_>, PinLockError> {
+        let mut state = self.state();
+        let State::Trusted(lock) = &mut *state else {
+            return Err(PinLockError::BadRecords);
+        };
+        lock.reserve(uid, now)?;
+        self.save(lock);
+        Ok(Attempt {
+            service: self,
+            uid,
+            settled: false,
+        })
+    }
+
+    /// Settles a reserved try as wrong: starts the lockout when the limit is reached.
+    fn settle_failed(&self, uid: u32, now: u64) -> Result<u64, PinLockError> {
+        let mut state = self.state();
+        let State::Trusted(lock) = &mut *state else {
+            return Err(PinLockError::BadRecords);
+        };
+        let started = lock.settle_failed(uid, now);
+        self.save(lock);
+        Ok(started)
+    }
+
+    /// Gives a reserved try back.
+    fn give_back(&self, uid: u32) {
+        let mut state = self.state();
+        if let State::Trusted(lock) = &mut *state {
+            lock.give_back(uid);
+            self.save(lock);
         }
     }
 
@@ -244,6 +360,49 @@ impl PinLockService {
                 LockStatus::LockedFor(retry_after_secs)
             }
             Err(PinLockError::BadRecords) => LockStatus::Untrusted,
+            // `check` never says so: only a reservation does.
+            Err(PinLockError::Busy) => LockStatus::Unlocked,
+        }
+    }
+}
+
+/// One try that was reserved before the TPM was asked. Settle it; if it is dropped without an
+/// answer (the PIN could not be checked, the prompt was closed) the try is given back.
+pub struct Attempt<'a> {
+    /// The lock the try was reserved in.
+    service: &'a PinLockService,
+    /// The user whose try it is.
+    uid: u32,
+    /// Whether it was settled.
+    settled: bool,
+}
+
+impl Attempt<'_> {
+    /// The PIN was wrong at time `now`. Returns the lockout in seconds that this started, or 0.
+    ///
+    /// # Errors
+    ///
+    /// [`PinLockError::BadRecords`] when the lockout file cannot be trusted.
+    pub fn failed(mut self, now: u64) -> Result<u64, PinLockError> {
+        self.settled = true;
+        self.service.settle_failed(self.uid, now)
+    }
+
+    /// The PIN was right: forgets the user's record, the tries that were running included.
+    ///
+    /// # Errors
+    ///
+    /// [`PinLockError::BadRecords`] when the lockout file cannot be trusted.
+    pub fn succeeded(mut self) -> Result<(), PinLockError> {
+        self.settled = true;
+        self.service.record_pin_success(self.uid)
+    }
+}
+
+impl Drop for Attempt<'_> {
+    fn drop(&mut self) {
+        if !self.settled {
+            self.service.give_back(self.uid);
         }
     }
 }

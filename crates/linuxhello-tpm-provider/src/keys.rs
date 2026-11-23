@@ -225,6 +225,7 @@ impl Tpm {
     /// a blob that is not a key at all); [`TpmError::Locked`] in lockout.
     pub fn root_key_loads(&mut self, blobs: &Blobs) -> Result<bool, TpmError> {
         let public = Public::unmarshall(&blobs.public).map_err(failed)?;
+        check_template(&public)?;
         let private = Private::try_from(blobs.private.clone()).map_err(failed)?;
         let primary = self.primary;
         let loaded = self
@@ -247,6 +248,7 @@ impl Tpm {
     /// Loads the root key of `blobs` under the primary.
     fn load(&mut self, blobs: &Blobs) -> Result<KeyHandle, TpmError> {
         let public = Public::unmarshall(&blobs.public).map_err(failed)?;
+        check_template(&public)?;
         let private = Private::try_from(blobs.private.clone()).map_err(failed)?;
         let primary = self.primary;
         self.context
@@ -318,6 +320,43 @@ fn storage_template() -> Result<Public, tss_esapi::Error> {
     )
 }
 
+/// Refuses a key that is not the key `enrol` makes: another type, other attributes (above
+/// all one without dictionary-attack protection, `noDA`), a policy, or other parameters. Anyone
+/// with access to the TPM can make a child of the deterministic primary with an authorisation and
+/// attributes of their choice; without this check such a key would load and verify, and its wrong
+/// guesses would never lock (`a_key_with_no_da_is_refused`, review finding R-19, #361). Only the
+/// `unique` field is left out: the TPM fills it in.
+fn check_template(public: &Public) -> Result<(), TpmError> {
+    let want = storage_template().map_err(failed)?;
+    match (public, &want) {
+        (
+            Public::Rsa {
+                object_attributes,
+                name_hashing_algorithm,
+                auth_policy,
+                parameters,
+                ..
+            },
+            Public::Rsa {
+                object_attributes: want_attributes,
+                name_hashing_algorithm: want_name,
+                auth_policy: want_policy,
+                parameters: want_parameters,
+                ..
+            },
+        ) if object_attributes == want_attributes
+            && name_hashing_algorithm == want_name
+            && auth_policy == want_policy
+            && parameters == want_parameters =>
+        {
+            Ok(())
+        }
+        _ => Err(TpmError::Failed(
+            "the key is not one this provider made".to_string(),
+        )),
+    }
+}
+
 /// An authorisation value for the TPM. The TSS library wipes its own copy when it is dropped.
 fn auth_of(auth: &[u8; AUTH_BYTES]) -> Result<Auth, TpmError> {
     Auth::try_from(auth.to_vec()).map_err(failed)
@@ -356,3 +395,6 @@ fn failed(error: impl std::fmt::Display + std::fmt::Debug) -> TpmError {
     // hides what the TPM said; the debug form carries the code.
     TpmError::Failed(format!("{error} ({error:?})"))
 }
+
+#[cfg(test)]
+mod tests;

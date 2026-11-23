@@ -14,13 +14,14 @@
 use std::path::Path;
 use std::process::ExitCode;
 use std::sync::Arc;
+use std::time::Duration;
 
 use linuxhello_agent::audit::Audit;
 use linuxhello_agent::bus::polkit::Polkit;
 use linuxhello_agent::bus::{bus_alive, serve_with_extras, Extras, Fingerprints, PinChange};
 use linuxhello_agent::methods::fingerprint::{FingerprintMethod, Fprintd};
 use linuxhello_agent::methods::pin::tpm::TpmVerifier;
-use linuxhello_agent::methods::pin::{PinInbox, PinMethod, PinVerifier};
+use linuxhello_agent::methods::pin::{CachedKeyProbe, PinInbox, PinMethod, PinVerifier};
 use linuxhello_agent::methods::{face::FaceMethod, username_of};
 use linuxhello_agent::notify::{watchdog_interval, Notifier};
 use linuxhello_agent::orchestrator::Method;
@@ -116,6 +117,22 @@ fn pin_lock() -> PinLockService {
     )
 }
 
+/// When the TPM's limit could not be read at start (the provider is a separate service and may not
+/// be listening yet), asks again every two seconds for a few minutes and lowers the Agent's limit
+/// when it answers: a cap that never applied after boot would let a user make more wrong tries than
+/// the TPM allows before the TPM locks every user (R-02, #345).
+fn cap_when_the_tpm_answers(lock: Arc<PinLockService>) {
+    std::thread::spawn(move || {
+        for _ in 0..150 {
+            std::thread::sleep(Duration::from_secs(2));
+            if let Ok(limits) = TpmClient::new(TPM_SOCKET).limits() {
+                lock.apply_tpm_limit(limits.max_tries, wall_clock_seconds());
+                return;
+            }
+        }
+    });
+}
+
 /// Binds the PIN socket and serves it on a thread, and returns it so that `ExpectPin` can announce
 /// PINs to it. A PIN is not used anywhere yet, so a socket that cannot be bound is reported on
 /// standard error and the Agent goes on serving the bus (`ExpectPin` is then `Unavailable`); the
@@ -147,6 +164,9 @@ fn serve_pin_socket(inbox: Arc<PinInbox>) -> Option<Arc<PinSocket>> {
 async fn run() -> zbus::Result<()> {
     let inbox = Arc::new(PinInbox::default());
     let lock = Arc::new(pin_lock());
+    if !lock.tpm_limit_known() {
+        cap_when_the_tpm_answers(Arc::clone(&lock));
+    }
     let tpm = Arc::new(TpmVerifier::new(
         PinRecordStore::new(USER_POLICY_ROOT, rustix::process::getuid().as_raw()),
         TPM_SOCKET,
@@ -159,7 +179,7 @@ async fn run() -> zbus::Result<()> {
         audit: Some(Audit::journal()),
         pin_socket,
         pin_lock: Some(Arc::clone(&lock)),
-        key_probe: Some(tpm.clone()),
+        key_probe: Some(Arc::new(CachedKeyProbe::new(Arc::clone(&tpm)))),
         pin_change: Some(PinChange {
             inbox: Arc::clone(&inbox),
             enrolment: tpm,

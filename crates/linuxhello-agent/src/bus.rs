@@ -35,7 +35,7 @@ use zbus::names::{BusName, UniqueName};
 use zbus::{connection, interface, Connection};
 
 use crate::api::{Api, ApiError, Caller, Notification, PeerName};
-use crate::audit::Audit;
+use crate::audit::{Action, Audit};
 use crate::methods::fingerprint::{Fprintd, FINGERS};
 use crate::methods::pin::enrol::{run_change, run_check, run_set, CheckJob, Job, PinEnrolment};
 use crate::methods::pin::{KeyProbe, PinInbox, PinVerifier};
@@ -64,6 +64,8 @@ pub struct AgentUpdate {
     uid: u32,
     /// The prompt.
     prompt: PromptId,
+    /// The job that reports: the report is dropped unless it is the prompt's current job (R-21).
+    generation: u64,
     /// What happened.
     update: Update,
 }
@@ -76,6 +78,8 @@ struct ChannelReporter {
     uid: u32,
     /// The prompt.
     prompt: PromptId,
+    /// The job that reports.
+    generation: u64,
 }
 
 impl Reporter for ChannelReporter {
@@ -83,6 +87,7 @@ impl Reporter for ChannelReporter {
         let _ = self.updates.send(AgentUpdate {
             uid: self.uid,
             prompt: self.prompt.clone(),
+            generation: self.generation,
             update,
         });
     }
@@ -207,6 +212,25 @@ impl AgentService {
         }
     }
 
+    /// Starts `work` on a thread of its own, or ends the job of `prompt` as a failure and says
+    /// "unavailable" when the system refuses a thread: the job's entry in the state is removed, so
+    /// the prompt does not stay "running" and the Agent does not panic (R-05, #348;
+    /// refusing a thread is not provoked by a test).
+    fn spawn_job(
+        &mut self,
+        prompt: &PromptId,
+        opener: u32,
+        work: impl FnOnce() + Send + 'static,
+    ) -> Result<(), AgentError> {
+        match std::thread::Builder::new()
+            .name("linuxhello-job".into())
+            .spawn(work)
+        {
+            Ok(_) => Ok(()),
+            Err(_) => Err(self.end_unwaited(prompt, opener)),
+        }
+    }
+
     /// Ends a job that could not be given a wait for its prompt, because that prompt already has
     /// one: the prompt must not stay "running" (the way `Authenticate` ends without an updates
     /// channel), and the caller is told the service cannot do it now.
@@ -251,7 +275,8 @@ impl AgentService {
         }) else {
             return Err(self.end_unwaited(&start.prompt, start.opener_uid));
         };
-        std::thread::spawn(move || {
+        let (prompt, opener) = (start.prompt.clone(), start.opener_uid);
+        self.spawn_job(&prompt, opener, move || {
             let job = Job {
                 subject: start.subject,
                 rules: &start.rules,
@@ -272,10 +297,10 @@ impl AgentService {
             let _ = updates.send(AgentUpdate {
                 uid: start.opener_uid,
                 prompt: start.prompt,
+                generation: start.generation,
                 update: Update::Result(outcome),
             });
-        });
-        Ok(())
+        })
     }
 
     /// The same service with the PIN socket that `ExpectPin` announces to.
@@ -441,9 +466,12 @@ fn apply_updates(
                     };
                     let notes = {
                         let mut service = service.get_mut().await;
-                        service
-                            .api
-                            .agent_report(report.uid, &report.prompt, report.update)
+                        service.api.job_report(
+                            report.uid,
+                            &report.prompt,
+                            report.generation,
+                            report.update,
+                        )
                     };
                     for note in &notes {
                         send(&connection, note).await;
@@ -873,11 +901,13 @@ impl AgentService {
         };
         let methods = (self.methods)(start.subject, &target);
         let deadline = self.auth_deadline;
-        std::thread::spawn(move || {
+        let (prompt, opener) = (start.prompt.clone(), start.opener_uid);
+        self.spawn_job(&prompt, opener, move || {
             let mut reporter = ChannelReporter {
                 updates: updates.clone(),
                 uid: start.opener_uid,
                 prompt: start.prompt.clone(),
+                generation: start.generation,
             };
             let ran = catch_unwind(AssertUnwindSafe(|| {
                 Orchestrator::run(&start.rule, methods, &mut reporter, deadline, &start.stop)
@@ -886,8 +916,7 @@ impl AgentService {
                 // Whatever went wrong, the prompt must not stay "running" for ever.
                 reporter.report(Update::Result(Outcome::new(PromptResult::Failure)));
             }
-        });
-        Ok(())
+        })
     }
 
     /// Starts setting the caller's first PIN: the Agent waits for one PIN on the PIN socket and
@@ -978,6 +1007,8 @@ impl AgentService {
             .api
             .begin_pin_change(caller, prompt_id, true, has_pin)
             .map_err(to_bus)?;
+        self.api
+            .set_job_action(start.opener_uid, &start.prompt, Action::Enrolment);
         // Registered before the call returns, so that a PIN sent right after it is not lost. It
         // waits for the PINs announced for this prompt and for no other (P-46).
         let Some(wait) = pin_change.inbox.wait_for_prompt(PinTarget {
@@ -1001,11 +1032,13 @@ impl AgentService {
                 }
                 drop(wait);
                 let steps = updates.clone();
-                let (uid, prompt) = (start.opener_uid, start.prompt.clone());
+                let (uid, prompt, generation) =
+                    (start.opener_uid, start.prompt.clone(), start.generation);
                 let mut progress = move |step, done| {
                     let _ = steps.send(AgentUpdate {
                         uid,
                         prompt: prompt.clone(),
+                        generation,
                         update: Update::Progress(step, done, 0),
                     });
                 };
@@ -1021,6 +1054,7 @@ impl AgentService {
             let _ = updates.send(AgentUpdate {
                 uid: start.opener_uid,
                 prompt: start.prompt,
+                generation: start.generation,
                 update: Update::Result(outcome),
             });
         });
@@ -1091,6 +1125,7 @@ impl AgentService {
             let _ = updates.send(AgentUpdate {
                 uid: start.opener_uid,
                 prompt: start.prompt,
+                generation: start.generation,
                 update: Update::Result(outcome),
             });
         });

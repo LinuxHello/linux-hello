@@ -54,8 +54,15 @@ pub const EXPECTATION_TTL: Duration = Duration::from_secs(30);
 /// How many control calls may wait for their PIN at once.
 const MAX_EXPECTATIONS: usize = 64;
 
-/// How long the Agent waits for a client to send its frame and close its writing side.
+/// How long the Agent waits for a client to send its frame and close its writing side, in all: the
+/// limit is for the whole connection, not for each read, so a client that sends one byte every
+/// 1.9 seconds cannot hold the socket for minutes (`a_client_that_trickles_bytes_is_dropped_on_time`,
+/// review finding R-15, #357).
 const CLIENT_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// How many control calls one user may have waiting at once, of the 64 for everybody: one user's
+/// processes cannot fill the table and refuse everyone else's PIN (`one_user_cannot_fill_the_table`).
+const MAX_EXPECTATIONS_PER_USER: usize = 8;
 
 /// A process as the kernel reports it for a connection or the bus reports it for a caller.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -197,7 +204,14 @@ impl PinSocket {
         let now = Instant::now();
         table.expire(now, self.ttl);
         table.waiting.retain(|e| e.caller != caller);
-        if table.waiting.len() >= MAX_EXPECTATIONS {
+        if table.waiting.len() >= MAX_EXPECTATIONS
+            || table
+                .waiting
+                .iter()
+                .filter(|e| e.subject == subject)
+                .count()
+                >= MAX_EXPECTATIONS_PER_USER
+        {
             return Err(TooMany);
         }
         table.waiting.push(Expectation {
@@ -272,12 +286,10 @@ impl PinSocket {
         let Some((subject, target)) = self.take(from) else {
             return false;
         };
-        if stream.set_read_timeout(Some(CLIENT_TIMEOUT)).is_err()
-            || stream.set_write_timeout(Some(CLIENT_TIMEOUT)).is_err()
-        {
+        if stream.set_write_timeout(Some(CLIENT_TIMEOUT)).is_err() {
             return false;
         }
-        let Some(pin) = read_frame(stream) else {
+        let Some(pin) = read_frame(stream, Instant::now() + CLIENT_TIMEOUT) else {
             return false;
         };
         sink(Submission {
@@ -300,16 +312,36 @@ fn peer_of(stream: &UnixStream) -> Option<Process> {
 }
 
 /// Reads one frame and the end of the stream. `None` for an empty or oversized PIN, a frame cut
-/// short, anything after the PIN, or a client that does not close its writing side in time.
-fn read_frame(stream: &mut UnixStream) -> Option<Zeroizing<Vec<u8>>> {
+/// short, anything after the PIN, or a client that has not sent the whole frame and closed its
+/// writing side by `deadline`.
+fn read_frame(stream: &mut UnixStream, deadline: Instant) -> Option<Zeroizing<Vec<u8>>> {
+    // Every read waits only for what is left of the connection's time.
+    let mut read_exact = |buffer: &mut [u8]| -> Option<()> {
+        let mut at = 0;
+        while at < buffer.len() {
+            let left = deadline.checked_duration_since(Instant::now())?;
+            stream
+                .set_read_timeout(Some(left.max(Duration::from_millis(1))))
+                .ok()?;
+            match stream.read(&mut buffer[at..]) {
+                Ok(0) | Err(_) => return None,
+                Ok(n) => at += n,
+            }
+        }
+        Some(())
+    };
     let mut length = [0_u8; 2];
-    stream.read_exact(&mut length).ok()?;
+    read_exact(&mut length)?;
     let length = usize::from(u16::from_be_bytes(length));
     if length == 0 || length > MAX_PIN_BYTES {
         return None;
     }
     let mut pin = Zeroizing::new(vec![0_u8; length]);
-    stream.read_exact(&mut pin).ok()?;
+    read_exact(&mut pin)?;
+    let left = deadline.checked_duration_since(Instant::now())?;
+    stream
+        .set_read_timeout(Some(left.max(Duration::from_millis(1))))
+        .ok()?;
     let mut rest = [0_u8; 1];
     match stream.read(&mut rest) {
         Ok(0) => Some(pin),

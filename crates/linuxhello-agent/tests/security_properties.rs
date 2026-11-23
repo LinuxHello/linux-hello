@@ -13,9 +13,9 @@ use linuxhello_dbus::{PromptId, PromptState};
 
 /// P-01: see `docs/security/properties.md`.
 #[test]
-#[ignore = "placeholder, blocked: origin verification and the Agent's D-Bus API are not designed yet"]
+#[ignore = "placeholder, not blocked: the Agent's D-Bus API exists; no test of this property is written yet"]
 fn caller_from_other_origin_is_refused() {
-    unimplemented!("P-01: write this test when it is unblocked");
+    unimplemented!("P-01: write this test");
 }
 
 /// P-02: see `docs/security/properties.md`. Request-layer level; reading the credentials from
@@ -226,16 +226,9 @@ fn unlock_ends_when_the_session_locks() {
 
 /// P-17: see `docs/security/properties.md`.
 #[test]
-#[ignore = "placeholder, blocked: the reset coordinator does not exist yet"]
+#[ignore = "placeholder, not blocked: the Agent's reset exists (`begin_reset` in `src/api.rs`); no test of this property is written yet"]
 fn account_password_never_unlocks_a_key() {
-    unimplemented!("P-17: write this test when it is unblocked");
-}
-
-/// P-19: see `docs/security/properties.md`.
-#[test]
-#[ignore = "placeholder, blocked: the reset coordinator does not exist yet"]
-fn reset_without_account_authentication_is_refused() {
-    unimplemented!("P-19: write this test when it is unblocked");
+    unimplemented!("P-17: write this test");
 }
 
 /// P-24 for the Agent: started outside its AppArmor profile, as every test runs, the program

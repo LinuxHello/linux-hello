@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 use linuxhello_dbus::{AuthMethod, PromptId, PromptReason, PromptResult, PromptState, SIGNALS};
 
-use crate::audit::{Audit, Event};
+use crate::audit::{Action, Audit, Event};
 use crate::methods::pin::KeyProbe;
 use crate::orchestrator::Cancel;
 use crate::pinlock::service::{wall_clock_seconds, LockStatus, PinLockService};
@@ -164,6 +164,9 @@ pub struct AuthStart {
     pub rule: MethodRule,
     /// Set when the prompt closes; the orchestrator stops at once.
     pub stop: Cancel,
+    /// Which job this is: its reports reach the prompt only while this is the prompt's current
+    /// job ([`Api::job_report`], review finding R-21).
+    pub generation: u64,
 }
 
 /// What a started `SetPin` or `ChangePin` needs to run.
@@ -178,6 +181,9 @@ pub struct PinStart {
     pub rules: PinRules,
     /// Set when the prompt closes; the job stops at once.
     pub stop: Cancel,
+    /// Which job this is: its reports reach the prompt only while this is the prompt's current
+    /// job ([`Api::job_report`], review finding R-21).
+    pub generation: u64,
 }
 
 /// A reset the caller may start: whose, and how to stop it (ADR-0027, point 5).
@@ -193,6 +199,9 @@ pub struct ResetStart {
     pub needs_polkit: bool,
     /// Set when the prompt closes; the job stops at once.
     pub stop: Cancel,
+    /// Which job this is: its reports reach the prompt only while this is the prompt's current
+    /// job ([`Api::job_report`], review finding R-21).
+    pub generation: u64,
 }
 
 /// One condition of `GetStatus`, with the detail only root sees.
@@ -220,6 +229,15 @@ pub struct PinRulesReply {
     pub disallowed: Vec<String>,
 }
 
+/// How many authentications and PIN jobs one user may have running at once. A user may open 64
+/// prompts; a job holds threads (and Howdy a Python process), the Agent's unit allows 128 threads
+/// for everybody, and a person needs one or two at a time (review finding R-05, #348).
+pub const MAX_RUNNING_PER_USER: usize = 8;
+
+/// How many jobs root may have running at once: the login screen and PAM open prompts as root for
+/// many users, so it gets a larger budget of its own, still well below the unit's 128 tasks.
+pub const MAX_RUNNING_FOR_ROOT: usize = 32;
+
 /// The request layer over a [`StateStore`].
 pub struct Api {
     /// The per-prompt state and its access rules.
@@ -228,9 +246,20 @@ pub struct Api {
     user_policies: Option<UserPolicyStore>,
     /// The audit trail of refusals and policy changes.
     audit: Audit,
-    /// The authentications that are running, by the user who opened the prompt and its id; the
-    /// flag stops the orchestrator when the prompt closes.
-    running: HashMap<(u32, PromptId), Cancel>,
+    /// The jobs that are running, by the user who opened the prompt and its id: the flag that stops
+    /// the job when the prompt closes, and the job's generation, which its reports must carry.
+    running: HashMap<(u32, PromptId), (Cancel, u64)>,
+    /// Jobs that were stopped because their prompt closed or was opened again, and have not
+    /// reported yet, by generation: the user who opened the prompt and the user it is for. They
+    /// still hold a thread, so they count against the budget, but nothing they report reaches a
+    /// prompt (`a_result_of_a_replaced_prompts_job_does_not_land_on_the_new_prompt`).
+    retiring: HashMap<u64, (u32, u32)>,
+    /// The generation of the next job.
+    next_generation: u64,
+    /// The user each running job authenticates, for the budget of root's jobs.
+    running_subject: HashMap<(u32, PromptId), u32>,
+    /// What each running job does, for the audit record of its end.
+    running_action: HashMap<(u32, PromptId), Action>,
     /// The PIN lock, when the Agent has one.
     pin_lock: Option<Arc<PinLockService>>,
     /// What says whether a user's PIN key is still in the TPM, when the Agent has one.
@@ -253,6 +282,10 @@ impl Api {
             user_policies: None,
             audit: Audit::none(),
             running: HashMap::new(),
+            retiring: HashMap::new(),
+            next_generation: 1,
+            running_subject: HashMap::new(),
+            running_action: HashMap::new(),
             pin_lock: None,
             key_probe: None,
             clock: wall_clock_seconds,
@@ -395,9 +428,11 @@ impl Api {
         if !opener.starts_with(':') || opener.len() > MAX_PEER_NAME {
             return Err(ApiError::InvalidArgument);
         }
-        Ok(self
-            .store
-            .open_named(uid, Peer(opener.to_string()), &prompt, subject_uid)?)
+        self.store
+            .open_named(uid, Peer(opener.to_string()), &prompt, subject_uid)?;
+        // A prompt opened again is a new prompt: the job of the old one is stopped.
+        self.retire_job(uid, &prompt);
+        Ok(())
     }
 
     /// The bus says the connection `peer` left: removes the prompts it opened and its
@@ -420,7 +455,9 @@ impl Api {
     ) -> Result<(), ApiError> {
         let uid = caller.uid.ok_or(ApiError::Denied)?;
         let prompt = parse_prompt(prompt_id)?;
-        Ok(self.store.open(uid, &prompt, subject_uid)?)
+        self.store.open(uid, &prompt, subject_uid)?;
+        self.retire_job(uid, &prompt);
+        Ok(())
     }
 
     /// Applies one change to a prompt and returns the notifications to send, one per
@@ -642,6 +679,44 @@ impl Api {
         store.get(uid).map_err(ApiError::from)
     }
 
+    /// Refuses a job when `uid` already has [`MAX_RUNNING_PER_USER`] running: a user may open many
+    /// prompts, but each running job holds threads, and the Agent's unit allows 128 for everybody
+    /// (`a_user_cannot_run_more_jobs_than_the_limit`, review finding R-05, #348).
+    ///
+    /// Root opens prompts for many users (the login screen, PAM), so for root the budget is per
+    /// subject: each user has [`MAX_RUNNING_PER_USER`] jobs of root's running for them, and root's
+    /// jobs together stay under [`MAX_RUNNING_FOR_ROOT`], below the unit's task limit. One user's
+    /// slow prompts then cannot use up what another user's login needs
+    /// (`root_has_a_budget_per_user_and_a_ceiling`).
+    fn require_room_for_a_job(&self, uid: u32, subject: u32) -> Result<(), ApiError> {
+        let retiring = self.retiring.values().filter(|(owner, _)| *owner == uid);
+        let owned = self
+            .running
+            .keys()
+            .filter(|(owner, _)| *owner == uid)
+            .count()
+            + retiring.count();
+        let full = if uid == 0 {
+            let for_subject = self
+                .running_subject
+                .iter()
+                .filter(|((owner, _), user)| *owner == 0 && **user == subject)
+                .count()
+                + self
+                    .retiring
+                    .values()
+                    .filter(|(owner, user)| *owner == 0 && *user == subject)
+                    .count();
+            for_subject >= MAX_RUNNING_PER_USER || owned >= MAX_RUNNING_FOR_ROOT
+        } else {
+            owned >= MAX_RUNNING_PER_USER
+        };
+        if full {
+            return Err(ApiError::LimitReached);
+        }
+        Ok(())
+    }
+
     /// Refuses a caller that is not the connection that opened the prompt
     /// (`only_the_opener_may_report_or_close_a_prompt`, ADR-0014 amendment of 2026-11-22).
     fn require_opener(&self, caller: &Caller, uid: u32, prompt: &PromptId) -> Result<(), ApiError> {
@@ -744,15 +819,17 @@ impl Api {
         if self.running.contains_key(&(uid, prompt.clone())) {
             return Err(ApiError::LimitReached);
         }
+        self.require_room_for_a_job(uid, subject)?;
         let rule = self.policy_of(subject)?.methods_for(context);
         let stop = Cancel::default();
-        self.running.insert((uid, prompt.clone()), stop.clone());
+        let generation = self.register_job(uid, &prompt, subject, &stop, Action::SignIn);
         Ok(AuthStart {
             opener_uid: uid,
             prompt,
             subject,
             rule,
             stop,
+            generation,
         })
     }
 
@@ -804,15 +881,27 @@ impl Api {
         if self.running.contains_key(&(uid, prompt.clone())) {
             return Err(ApiError::LimitReached);
         }
+        self.require_room_for_a_job(uid, subject)?;
         let rules = self.policy_of(subject)?.pin_rules();
         let stop = Cancel::default();
-        self.running.insert((uid, prompt.clone()), stop.clone());
+        let generation = self.register_job(
+            uid,
+            &prompt,
+            subject,
+            &stop,
+            if change {
+                Action::PinChange
+            } else {
+                Action::PinSet
+            },
+        );
         Ok(PinStart {
             opener_uid: uid,
             prompt,
             subject,
             rules,
             stop,
+            generation,
         })
     }
 
@@ -850,14 +939,16 @@ impl Api {
         if self.running.contains_key(&(uid, prompt.clone())) {
             return Err(ApiError::LimitReached);
         }
+        self.require_room_for_a_job(uid, subject)?;
         let stop = Cancel::default();
-        self.running.insert((uid, prompt.clone()), stop.clone());
+        let generation = self.register_job(uid, &prompt, subject, &stop, Action::Reset);
         Ok(ResetStart {
             opener_uid: uid,
             prompt,
             subject,
             needs_polkit: uid != 0,
             stop,
+            generation,
         })
     }
 
@@ -880,10 +971,21 @@ impl Api {
             Update::MethodEnded(..) => "MethodEnded",
         };
         let wire = wire_values(&update);
-        let ended = matches!(update, Update::Result(_));
+        let ended = match &update {
+            Update::Result(outcome) => Some(outcome.result),
+            _ => None,
+        };
         let peers = self.store.report(uid, prompt, update).unwrap_or_default();
-        if ended {
-            self.running.remove(&(uid, prompt.clone()));
+        if let Some(result) = ended {
+            let key = (uid, prompt.clone());
+            self.running.remove(&key);
+            let subject = self.running_subject.remove(&key);
+            // The end of a job that ran is recorded with what it did and for whom
+            // (`a_finished_sign_in_is_audited_with_its_result_and_user`, R-12, #354).
+            if let Some(action) = self.running_action.remove(&key) {
+                self.audit
+                    .record(Event::job_ended(subject.unwrap_or(uid), action, result));
+            }
         }
         peers
             .into_iter()
@@ -896,14 +998,82 @@ impl Api {
             .collect()
     }
 
+    /// Applies a report of the job with `generation` to the prompt that `uid` opened, only while
+    /// that job is the prompt's current one. A job that was stopped because its prompt closed or
+    /// was opened again reports into nothing: its `Result`, even a `success`, never lands on the
+    /// prompt that took its id, and its end only frees its place in the budget
+    /// (`a_result_of_a_closed_prompts_job_does_not_land_on_a_prompt_opened_later`, R-21, #363).
+    pub fn job_report(
+        &mut self,
+        uid: u32,
+        prompt: &PromptId,
+        generation: u64,
+        update: Update,
+    ) -> Vec<Notification> {
+        let current = self
+            .running
+            .get(&(uid, prompt.clone()))
+            .is_some_and(|(_, running)| *running == generation);
+        if current {
+            return self.agent_report(uid, prompt, update);
+        }
+        if matches!(update, Update::Result(_)) {
+            self.retiring.remove(&generation);
+        }
+        Vec::new()
+    }
+
+    /// Records that a job is running for the prompt and returns its generation.
+    fn register_job(
+        &mut self,
+        uid: u32,
+        prompt: &PromptId,
+        subject: u32,
+        stop: &Cancel,
+        action: Action,
+    ) -> u64 {
+        let generation = self.next_generation;
+        self.next_generation += 1;
+        self.running
+            .insert((uid, prompt.clone()), (stop.clone(), generation));
+        self.running_subject.insert((uid, prompt.clone()), subject);
+        self.running_action.insert((uid, prompt.clone()), action);
+        generation
+    }
+
+    /// Says what the running job of the prompt does, when it is not what the call that started it
+    /// stands for (an enrolment starts like a PIN change). The end of the job is audited by it.
+    pub fn set_job_action(&mut self, uid: u32, prompt: &PromptId, action: Action) {
+        if let Some(slot) = self.running_action.get_mut(&(uid, prompt.clone())) {
+            *slot = action;
+        }
+    }
+
+    /// Stops the job of a prompt and stops counting it as the prompt's job: it keeps its place in
+    /// the budget until it reports its end ([`Api::job_report`]).
+    fn retire_job(&mut self, uid: u32, prompt: &PromptId) {
+        let key = (uid, prompt.clone());
+        if let Some((stop, generation)) = self.running.remove(&key) {
+            stop.cancel();
+            let subject = self.running_subject.remove(&key).unwrap_or(uid);
+            self.running_action.remove(&key);
+            self.retiring.insert(generation, (uid, subject));
+        }
+    }
+
     /// Stops the authentication of every prompt that no longer exists: it was closed, its opener
-    /// left, or it was idle too long. The orchestrator then ends with the result `cancelled`.
+    /// left, or it was idle too long. The orchestrator then ends with the result `cancelled`, and
+    /// the job no longer belongs to any prompt.
     fn stop_orphans(&mut self) {
         let store = &self.store;
-        for ((uid, prompt), stop) in &self.running {
-            if store.subject_of(*uid, prompt, None).is_err() {
-                stop.cancel();
-            }
+        let orphans: Vec<(u32, PromptId)> = self
+            .running
+            .keys()
+            .filter(|(uid, prompt)| store.subject_of(*uid, prompt, None).is_err())
+            .cloned()
+            .collect();
+        for (uid, prompt) in orphans {
+            self.retire_job(uid, &prompt);
         }
     }
 
@@ -2760,12 +2930,13 @@ mod tests {
     }
 
     #[test]
-    fn a_full_table_is_limit_reached() {
+    fn a_user_with_eight_calls_waiting_is_limit_reached() {
         let (mut api, _recorder, socket, _path, _dir) = pin_setup();
         let id = prompt("p1");
         api.open_prompt_from(on_peer(1000, ":1.1"), ":1.1", &id, Some(1000))
             .unwrap();
-        for pid in 0..64 {
+        // Eight waiting control calls are a user's share of the table (R-15, #357).
+        for pid in 0..8 {
             assert_eq!(
                 api.expect_pin(on_peer(1000, ":1.1"), Some(1000 + pid), &id, Some(&socket)),
                 Ok(())
@@ -2895,6 +3066,268 @@ mod tests {
         let ended = Update::Result(Outcome::new(PromptResult::Failure));
         api.agent_report(1000, &first.prompt, ended);
         assert!(api.begin_authentication(opener, &id, "sudo").is_ok());
+    }
+
+    /// The `LH_EVENT` and `LH_OUTCOME` words of each event in `events`.
+    fn words(events: &[Event]) -> Vec<(String, String)> {
+        events
+            .iter()
+            .map(|event| {
+                let field = |name: &str| {
+                    event
+                        .fields()
+                        .into_iter()
+                        .find(|(key, _)| *key == name)
+                        .map(|(_, value)| value)
+                        .unwrap_or_default()
+                };
+                (field("LH_EVENT"), field("LH_OUTCOME"))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_finished_sign_in_is_audited_with_its_result_and_user() {
+        // R-12, #354: sign-in outcomes left no record.
+        let (mut api, recorder, _tmp, id) = authentication_setup();
+        let opener = on_peer(1000, ":1.1");
+        let start = api.begin_authentication(opener, &id, "login").unwrap();
+        assert!(
+            recorder.events().is_empty(),
+            "nothing is recorded at the start"
+        );
+        let ended = Update::Result(Outcome::new(PromptResult::Success));
+        api.agent_report(1000, &start.prompt, ended);
+        let events = recorder.events();
+        assert_eq!(
+            words(&events),
+            [("sign_in".to_string(), "success".to_string())]
+        );
+        assert!(events[0].fields().contains(&("LH_UID", "1000".to_string())));
+    }
+
+    #[test]
+    fn a_pin_set_a_pin_change_a_reset_and_an_enrolment_are_audited() {
+        // R-12, #354: none of them left a record.
+        let (mut api, recorder, _tmp, id) = authentication_setup();
+        let opener = on_peer(1000, ":1.1");
+        let steps = [
+            (Action::PinSet, PromptResult::Success, "pin_set", "success"),
+            (
+                Action::PinChange,
+                PromptResult::Failure,
+                "pin_change",
+                "failure",
+            ),
+            (Action::Reset, PromptResult::Success, "reset", "success"),
+            (
+                Action::Enrolment,
+                PromptResult::Cancelled,
+                "enrolment",
+                "cancelled",
+            ),
+        ];
+        for (action, result, _, _) in steps {
+            let start = match action {
+                Action::PinSet => api.begin_pin_change(opener, &id, false, false).unwrap(),
+                Action::PinChange | Action::Enrolment => {
+                    api.begin_pin_change(opener, &id, true, true).unwrap()
+                }
+                _ => {
+                    let reset = api.begin_reset(opener, &id).unwrap();
+                    api.agent_report(1000, &reset.prompt, Update::Result(Outcome::new(result)));
+                    continue;
+                }
+            };
+            api.set_job_action(1000, &start.prompt, action);
+            api.agent_report(1000, &start.prompt, Update::Result(Outcome::new(result)));
+        }
+        let expected: Vec<(String, String)> = steps
+            .iter()
+            .map(|(_, _, event, outcome)| ((*event).to_string(), (*outcome).to_string()))
+            .collect();
+        assert_eq!(words(&recorder.events()), expected);
+    }
+
+    #[test]
+    fn a_flood_of_failed_sign_ins_is_rate_limited_per_user() {
+        // A user may repeat a failing sign-in as fast as it fails; the journal must not fill.
+        let (mut api, recorder, _tmp, id) = authentication_setup();
+        let opener = on_peer(1000, ":1.1");
+        for _ in 0..50 {
+            let start = api.begin_authentication(opener, &id, "login").unwrap();
+            let failed = Update::Result(Outcome::new(PromptResult::Failure));
+            api.agent_report(1000, &start.prompt, failed);
+        }
+        assert!(recorder.events().len() <= 6, "{}", recorder.events().len());
+        // A success is always recorded.
+        let start = api.begin_authentication(opener, &id, "login").unwrap();
+        let ok = Update::Result(Outcome::new(PromptResult::Success));
+        api.agent_report(1000, &start.prompt, ok);
+        let last = words(&recorder.events()).pop().unwrap();
+        assert_eq!(last, ("sign_in".to_string(), "success".to_string()));
+    }
+
+    #[test]
+    fn a_result_of_a_replaced_prompts_job_does_not_land_on_the_new_prompt() {
+        // R-21, #363: the same connection opens the prompt again while a job runs. The job is
+        // stopped, and what it reports later belongs to the old prompt and is dropped, even a
+        // `success`; the new prompt can start its own authentication at once.
+        let (mut api, _recorder, _tmp, id) = authentication_setup();
+        let opener = on_peer(1000, ":1.1");
+        let old = api.begin_authentication(opener, &id, "login").unwrap();
+        api.open_prompt_from(opener, ":1.1", &id, Some(1000))
+            .unwrap();
+        assert!(
+            old.stop.is_cancelled(),
+            "the replaced prompt's job is stopped"
+        );
+        let new = api.begin_authentication(opener, &id, "sudo").unwrap();
+        assert_ne!(old.generation, new.generation);
+        let late = Update::Result(Outcome::new(PromptResult::Success));
+        api.job_report(1000, &parse_prompt(&id).unwrap(), old.generation, late);
+        assert_eq!(
+            api.get_state(opener, &id).unwrap().result,
+            None,
+            "a late result of the old job is not applied to the new prompt"
+        );
+        let own = Update::Result(Outcome::new(PromptResult::Failure));
+        api.job_report(1000, &parse_prompt(&id).unwrap(), new.generation, own);
+        assert_eq!(
+            api.get_state(opener, &id).unwrap().result.as_deref(),
+            Some("failure"),
+            "the new job's own result is applied"
+        );
+    }
+
+    #[test]
+    fn a_result_of_a_closed_prompts_job_does_not_land_on_a_prompt_opened_later() {
+        // R-21, #363: after a close the job's entry used to live until the thread reported, so a
+        // prompt opened under the same id got `LimitReached` and then the old result.
+        let (mut api, _recorder, _tmp, id) = authentication_setup();
+        let opener = on_peer(1000, ":1.1");
+        let old = api.begin_authentication(opener, &id, "login").unwrap();
+        api.close_prompt(opener, &id).unwrap();
+        assert!(old.stop.is_cancelled());
+        api.open_prompt_from(opener, ":1.1", &id, Some(1000))
+            .unwrap();
+        let new = api.begin_authentication(opener, &id, "login").unwrap();
+        let late = Update::Result(Outcome::new(PromptResult::Success));
+        api.job_report(1000, &parse_prompt(&id).unwrap(), old.generation, late);
+        assert_eq!(api.get_state(opener, &id).unwrap().result, None);
+        assert_ne!(old.generation, new.generation);
+    }
+
+    #[test]
+    fn a_stopped_job_still_counts_against_the_budget_until_it_ends() {
+        // R-05 and R-21 together: stopping a job by replacing its prompt must not let a user start
+        // an endless number of new ones while the old threads wind down.
+        let (mut api, _recorder, _tmp, _id) = authentication_setup();
+        let opener = on_peer(1000, ":1.1");
+        let mut old = Vec::new();
+        for n in 0..MAX_RUNNING_PER_USER {
+            let id = prompt(&format!("retire{n}"));
+            api.open_prompt_from(opener, ":1.1", &id, Some(1000))
+                .unwrap();
+            old.push((
+                id.clone(),
+                api.begin_authentication(opener, &id, "login").unwrap(),
+            ));
+        }
+        for (id, _) in &old {
+            api.open_prompt_from(opener, ":1.1", id, Some(1000))
+                .unwrap();
+        }
+        assert!(matches!(
+            api.begin_authentication(opener, &old[0].0, "login"),
+            Err(ApiError::LimitReached)
+        ));
+        let ended = Update::Result(Outcome::new(PromptResult::Cancelled));
+        api.job_report(
+            1000,
+            &parse_prompt(&old[0].0).unwrap(),
+            old[0].1.generation,
+            ended,
+        );
+        assert!(api.begin_authentication(opener, &old[0].0, "login").is_ok());
+    }
+
+    #[test]
+    fn a_user_cannot_run_more_jobs_than_the_limit() {
+        // R-05, #348: a user may open many prompts, but only MAX_RUNNING_PER_USER jobs run at once,
+        // so one local user cannot use up the threads of the whole Agent. Another user is not held
+        // back, and the end of a job makes room.
+        let (mut api, _recorder, _tmp, _id) = authentication_setup();
+        let opener = on_peer(1000, ":1.1");
+        let mut started = Vec::new();
+        for n in 0..MAX_RUNNING_PER_USER {
+            let id = prompt(&format!("jobs{n}"));
+            api.open_prompt_from(opener, ":1.1", &id, Some(1000))
+                .unwrap();
+            started.push(api.begin_authentication(opener, &id, "login").unwrap());
+        }
+        let one_more = prompt("one-more");
+        api.open_prompt_from(opener, ":1.1", &one_more, Some(1000))
+            .unwrap();
+        assert!(matches!(
+            api.begin_authentication(opener, &one_more, "login"),
+            Err(ApiError::LimitReached)
+        ));
+        // Another user is not held back by it.
+        let other = prompt("other-user");
+        api.open_prompt_from(on_peer(1001, ":1.2"), ":1.2", &other, Some(1001))
+            .unwrap();
+        assert!(api
+            .begin_authentication(on_peer(1001, ":1.2"), &other, "login")
+            .is_ok());
+        // A job that ends makes room.
+        let ended = Update::Result(Outcome::new(PromptResult::Failure));
+        api.agent_report(1000, &started[0].prompt, ended);
+        assert!(api.begin_authentication(opener, &one_more, "login").is_ok());
+    }
+
+    #[test]
+    fn root_has_a_budget_per_user_and_a_ceiling() {
+        // The login screen opens prompts as root for many users: one user's prompts use up that
+        // user's budget and nobody else's, and root's jobs together are bounded.
+        let (mut api, _recorder, _tmp, _id) = authentication_setup();
+        let root = on_peer(0, ":1.9");
+        for n in 0..MAX_RUNNING_PER_USER {
+            let id = prompt(&format!("root-job{n}"));
+            api.open_prompt_from(root, ":1.9", &id, Some(1000)).unwrap();
+            assert!(api.begin_authentication(root, &id, "login").is_ok());
+        }
+        let one_more = prompt("root-one-more");
+        api.open_prompt_from(root, ":1.9", &one_more, Some(1000))
+            .unwrap();
+        assert!(matches!(
+            api.begin_authentication(root, &one_more, "login"),
+            Err(ApiError::LimitReached)
+        ));
+        // Another user's login is not held back by it.
+        let other = prompt("root-other-user");
+        api.open_prompt_from(root, ":1.9", &other, Some(1001))
+            .unwrap();
+        assert!(api.begin_authentication(root, &other, "login").is_ok());
+    }
+
+    #[test]
+    fn root_jobs_together_stay_under_the_ceiling() {
+        let (mut api, _recorder, _tmp, _id) = authentication_setup();
+        let root = on_peer(0, ":1.9");
+        for n in 0..MAX_RUNNING_FOR_ROOT {
+            let uid = 2000 + u32::try_from(n).unwrap();
+            let id = prompt(&format!("ceiling{n}"));
+            api.open_prompt_from(root, ":1.9", &id, Some(uid)).unwrap();
+            assert!(api.begin_authentication(root, &id, "login").is_ok());
+        }
+        let one_more = prompt("ceiling-one-more");
+        api.open_prompt_from(root, ":1.9", &one_more, Some(5000))
+            .unwrap();
+        assert!(matches!(
+            api.begin_authentication(root, &one_more, "login"),
+            Err(ApiError::LimitReached)
+        ));
     }
 
     #[test]

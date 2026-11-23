@@ -384,3 +384,78 @@ fn signals_before_the_agent_is_known_are_dropped() {
     assert_eq!(heard.sender.as_deref(), Some(":1.5"));
     server.join().unwrap();
 }
+
+/// A listener whose queue of waiting connections is full, so that the next `connect` has nowhere
+/// to go. Returns the directory, the path and the connections that fill the queue.
+fn full_listener() -> (
+    tempfile::TempDir,
+    std::path::PathBuf,
+    Vec<rustix::fd::OwnedFd>,
+    rustix::fd::OwnedFd,
+) {
+    use rustix::net::{
+        bind, connect, listen, socket_with, AddressFamily, SocketAddrUnix, SocketFlags, SocketType,
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("full");
+    let address = SocketAddrUnix::new(&path).unwrap();
+    let server = socket_with(
+        AddressFamily::UNIX,
+        SocketType::STREAM,
+        SocketFlags::CLOEXEC,
+        None,
+    )
+    .unwrap();
+    bind(&server, &address).unwrap();
+    listen(&server, 0).unwrap();
+    // Nobody accepts: connect until the queue says "again".
+    let mut held = Vec::new();
+    loop {
+        let client = socket_with(
+            AddressFamily::UNIX,
+            SocketType::STREAM,
+            SocketFlags::CLOEXEC | SocketFlags::NONBLOCK,
+            None,
+        )
+        .unwrap();
+        match connect(&client, &address) {
+            Ok(()) => held.push(client),
+            Err(rustix::io::Errno::AGAIN) => break,
+            Err(other) => panic!("{other}"),
+        }
+    }
+    (dir, path, held, server)
+}
+
+#[test]
+fn a_bus_with_a_full_queue_cannot_hold_the_module_beyond_its_limit() {
+    // R-16, #358: `UnixStream::connect` sleeps without limit when the queue of a socket is full,
+    // and the 250 ms limit started only after the connection. Now the connect itself is bounded.
+    let (_dir, path, _held, _server) = full_listener();
+    let started = Instant::now();
+    let result = Bus::connect(&path, Duration::from_millis(200));
+    let took = started.elapsed();
+    assert!(
+        matches!(result, Err(BusError::Timeout)),
+        "{:?}",
+        result.err()
+    );
+    assert!(took < Duration::from_millis(1000), "{took:?}");
+}
+
+#[test]
+fn connect_within_reaches_a_socket_that_has_room() {
+    let (_dir, path, _listener) = listen();
+    let stream = connect_within(&path, Instant::now() + Duration::from_millis(500));
+    assert!(stream.is_ok());
+}
+
+#[test]
+fn connect_within_says_unreachable_for_a_path_nobody_listens_on() {
+    let dir = tempfile::tempdir().unwrap();
+    let stream = connect_within(
+        &dir.path().join("none"),
+        Instant::now() + Duration::from_millis(500),
+    );
+    assert!(matches!(stream, Err(BusError::Unreachable)));
+}

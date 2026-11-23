@@ -39,6 +39,29 @@ fn the_crate_matches_rfc_9106() {
 }
 
 #[test]
+fn the_stretching_memory_holds_pin_derived_values_until_wiped() {
+    // R-28, #370: the library leaves its blocks as they are when it is done. The control shows that
+    // they hold values; `stretch` runs in memory of its own that is wiped when it is dropped, and
+    // the wipe of a block does clear it.
+    let blocks = Argon2Params::new(FAST.memory_kib, FAST.passes, FAST.lanes, Some(OUTPUT_BYTES))
+        .unwrap()
+        .block_count();
+    let mut memory = vec![Block::default(); blocks];
+    let inside = stretch_in(b"1234", &salt(), &FAST, &mut memory).unwrap();
+    assert!(
+        memory.iter().any(|b| b.as_ref().iter().any(|&w| w != 0)),
+        "the control: the library leaves its blocks filled"
+    );
+    assert_eq!(
+        inside.as_bytes(),
+        stretch(b"1234", &salt(), &FAST).unwrap().as_bytes(),
+        "the same result in memory of the caller's"
+    );
+    memory.zeroize();
+    assert!(memory.iter().all(|b| b.as_ref().iter().all(|&w| w == 0)));
+}
+
+#[test]
 fn the_same_pin_salt_and_parameters_give_the_same_result() {
     let a = stretch(b"1234", &salt(), &FAST).unwrap();
     let b = stretch(b"1234", &salt(), &FAST).unwrap();
@@ -176,4 +199,26 @@ fn the_cost_of_the_default_parameters() {
         stretch(b"123456", &salt(), &Params::DEFAULT).unwrap();
     }
     println!("default parameters: {:?} per PIN", started.elapsed() / runs);
+}
+
+#[test]
+fn at_most_four_stretchings_run_at_once() {
+    // R-05, #348: sixteen threads stretch together; no more than MAX_AT_ONCE are ever inside at
+    // the same time, and every one of them still gets its answer.
+    let threads: Vec<_> = (0..16)
+        .map(|n| {
+            std::thread::spawn(move || {
+                let pin = format!("12345{n}");
+                stretch(pin.as_bytes(), &salt(), &FAST).map(|s| *s.as_bytes())
+            })
+        })
+        .collect();
+    for thread in threads {
+        assert!(thread.join().unwrap().is_ok());
+    }
+    let most = MOST_AT_ONCE.load(std::sync::atomic::Ordering::SeqCst);
+    assert!(
+        (1..=MAX_AT_ONCE).contains(&most),
+        "{most} stretchings ran at once"
+    );
 }

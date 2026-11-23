@@ -11,6 +11,12 @@
 //! success never does, so someone at the keyboard cannot guess PINs between the owner's
 //! biometric unlocks.
 //!
+//! An attempt is counted *before* the TPM is asked ([`PinLock::reserve`]) and the count is taken
+//! back when the PIN turns out right or could not be checked at all. The TPM counts a wrong PIN the
+//! moment it sees it, so a user who holds many prompts cannot get more tries in flight than the
+//! limit allows: the tries that are running are already counted (review finding R-02, #345,
+//! `at_most_the_limit_of_attempts_are_in_flight`).
+//!
 //! Security property: `one_users_failed_pins_cannot_lock_out_another_user` (P-14).
 //!
 //! C4 component: `pinManager` ([workspace.dsl](https://github.com/LinuxHello/linux-hello-architecture/blob/main/workspace.dsl))
@@ -41,9 +47,12 @@ pub enum PinLockError {
         /// Seconds until the lockout ends.
         retry_after_secs: u64,
     },
-    /// Saved records that cannot be trusted: more failures than the limit allows, or one uid
-    /// twice. The caller refuses the attempt; it does not start from an empty counter.
+    /// Saved records that cannot be trusted: one uid twice, or a file that cannot be read. The
+    /// caller refuses the attempt; it does not start from an empty counter.
     BadRecords,
+    /// Every try the limit allows is already running: another would be one too many for the TPM.
+    /// The caller treats it as "no answer", not as a wrong PIN.
+    Busy,
 }
 
 /// The per-uid counter of failed PIN attempts. Nothing is shared between uids.
@@ -72,28 +81,126 @@ impl PinLock {
         }
     }
 
-    /// Rebuilds the counter from saved records.
+    /// Rebuilds the counter from saved records at time `now`. A record whose `failures` is at or
+    /// above the limit (an administrator lowered the limit, or the TPM's cap applies now and did not
+    /// when it was saved, or tries were running when the Agent stopped) is not a damaged file: that
+    /// user has used up their tries and is locked from `now` for the first lockout of this limit,
+    /// and nobody else is touched (`a_lowered_limit_locks_only_the_users_who_passed_it`, R-13).
     ///
     /// # Errors
     ///
-    /// [`PinLockError::BadRecords`] for a record whose `failures` is at or above the limit,
-    /// or a uid that appears twice.
+    /// [`PinLockError::BadRecords`] for a uid that appears twice.
     pub fn restore(
         max_attempts: u32,
         lockout_secs: u64,
         max_lockout_secs: u64,
+        now: u64,
         records: Vec<Record>,
     ) -> Result<Self, PinLockError> {
         let mut lock = Self::new(max_attempts, lockout_secs, max_lockout_secs);
-        for record in records {
+        for mut record in records {
             if record.failures >= lock.max_attempts {
-                return Err(PinLockError::BadRecords);
+                lock.start_lockout(&mut record, now);
             }
             if lock.records.insert(record.uid, record).is_some() {
                 return Err(PinLockError::BadRecords);
             }
         }
         Ok(lock)
+    }
+
+    /// Lowers the limit to `max_attempts` at time `now`, when it is lower than the present one: a
+    /// user whose count has reached the new limit is locked, as after a restart with the new limit
+    /// (`a_lowered_limit_locks_only_the_users_who_passed_it`).
+    pub fn lower_limit(&mut self, max_attempts: u32, now: u64) {
+        let max_attempts = max_attempts.max(1);
+        if max_attempts >= self.max_attempts {
+            return;
+        }
+        self.max_attempts = max_attempts;
+        let over: Vec<u32> = self
+            .records
+            .values()
+            .filter(|r| r.failures >= max_attempts)
+            .map(|r| r.uid)
+            .collect();
+        for uid in over {
+            if let Some(mut record) = self.records.remove(&uid) {
+                self.start_lockout(&mut record, now);
+                self.records.insert(uid, record);
+            }
+        }
+    }
+
+    /// The limit now: the wrong PINs that start a lockout.
+    pub fn max_attempts(&self) -> u32 {
+        self.max_attempts
+    }
+
+    /// Starts the next lockout of `record` at `now`; returns its length in seconds.
+    fn start_lockout(&self, record: &mut Record, now: u64) -> u64 {
+        record.lockouts = record.lockouts.saturating_add(1);
+        record.failures = 0;
+        let doublings = (record.lockouts - 1).min(32);
+        let length = self
+            .lockout_secs
+            .saturating_mul(1_u64 << doublings)
+            .min(self.max_lockout_secs);
+        record.locked_until = now.saturating_add(length);
+        length
+    }
+
+    /// Reserves one try for `uid` at time `now`, before the TPM is asked: it is counted as a wrong
+    /// PIN at once and saved, so that a crash between the TPM's answer and the write cannot lose
+    /// it. [`PinLock::settle_failed`] confirms it, [`PinLock::record_pin_success`] and
+    /// [`PinLock::give_back`] take it back.
+    ///
+    /// # Errors
+    ///
+    /// [`PinLockError::Locked`] while the uid is locked; [`PinLockError::Busy`] when the tries that
+    /// are running already use up the limit.
+    pub fn reserve(&mut self, uid: u32, now: u64) -> Result<(), PinLockError> {
+        self.check(uid, now)?;
+        let record = self.records.entry(uid).or_insert(Record {
+            uid,
+            failures: 0,
+            lockouts: 0,
+            locked_until: 0,
+        });
+        if record.failures >= self.max_attempts {
+            return Err(PinLockError::Busy);
+        }
+        record.failures += 1;
+        Ok(())
+    }
+
+    /// A reserved try turned out wrong at time `now`: it is already counted, so this only starts the
+    /// lockout when the count has reached the limit. Returns the lockout in seconds, or 0. A user
+    /// whose record is gone (a correct PIN in between) or who is locked is not counted again.
+    pub fn settle_failed(&mut self, uid: u32, now: u64) -> u64 {
+        let Some(mut record) = self.records.remove(&uid) else {
+            return 0;
+        };
+        let length = if now < record.locked_until || record.failures < self.max_attempts {
+            0
+        } else {
+            self.start_lockout(&mut record, now)
+        };
+        self.records.insert(uid, record);
+        length
+    }
+
+    /// Takes back a reserved try that never got an answer from the TPM (the verifier was
+    /// unavailable, or the prompt was closed): nothing was counted by the TPM, so nothing stays
+    /// counted here.
+    pub fn give_back(&mut self, uid: u32) {
+        let Some(record) = self.records.get_mut(&uid) else {
+            return;
+        };
+        record.failures = record.failures.saturating_sub(1);
+        if record.failures == 0 && record.lockouts == 0 && record.locked_until == 0 {
+            self.records.remove(&uid);
+        }
     }
 
     /// Whether `uid` may try a PIN at time `now`.
@@ -127,14 +234,9 @@ impl PinLock {
         if record.failures < self.max_attempts {
             return 0;
         }
-        record.lockouts = record.lockouts.saturating_add(1);
-        record.failures = 0;
-        let doublings = (record.lockouts - 1).min(32);
-        let length = self
-            .lockout_secs
-            .saturating_mul(1_u64 << doublings)
-            .min(self.max_lockout_secs);
-        record.locked_until = now.saturating_add(length);
+        let mut record = record.clone();
+        let length = self.start_lockout(&mut record, now);
+        self.records.insert(uid, record);
         length
     }
 
@@ -215,7 +317,7 @@ mod tests {
         }
         lock.record_failure(2000, 0);
         let saved = lock.records();
-        let restored = PinLock::restore(3, 60, 3600, saved.clone()).unwrap();
+        let restored = PinLock::restore(3, 60, 3600, 0, saved.clone()).unwrap();
         assert_eq!(restored.records(), saved);
         assert_eq!(restored.check(1000, 30), lock.check(1000, 30));
         assert!(restored.check(1000, 30).is_err());
@@ -224,17 +326,7 @@ mod tests {
     }
 
     #[test]
-    fn unreadable_records_are_refused() {
-        let over_the_limit = Record {
-            uid: 1000,
-            failures: 3,
-            lockouts: 0,
-            locked_until: 0,
-        };
-        assert_eq!(
-            PinLock::restore(3, 60, 3600, vec![over_the_limit]).unwrap_err(),
-            PinLockError::BadRecords
-        );
+    fn a_uid_that_appears_twice_is_refused() {
         let twice = Record {
             uid: 1000,
             failures: 1,
@@ -242,8 +334,97 @@ mod tests {
             locked_until: 0,
         };
         assert_eq!(
-            PinLock::restore(3, 60, 3600, vec![twice.clone(), twice]).unwrap_err(),
+            PinLock::restore(3, 60, 3600, 0, vec![twice.clone(), twice]).unwrap_err(),
             PinLockError::BadRecords
         );
+    }
+
+    #[test]
+    fn a_lowered_limit_locks_only_the_users_who_passed_it() {
+        // Saved when the limit was five; the limit is three now (R-13, #355).
+        let records = vec![
+            Record {
+                uid: 1000,
+                failures: 4,
+                lockouts: 0,
+                locked_until: 0,
+            },
+            Record {
+                uid: 1001,
+                failures: 2,
+                lockouts: 0,
+                locked_until: 0,
+            },
+        ];
+        let lock = PinLock::restore(3, 60, 3600, 500, records).unwrap();
+        assert_eq!(
+            lock.check(1000, 510),
+            Err(PinLockError::Locked {
+                retry_after_secs: 50
+            })
+        );
+        assert_eq!(lock.check(1000, 560), Ok(()));
+        // The user who is under the new limit keeps their count and is not locked.
+        assert_eq!(lock.check(1001, 510), Ok(()));
+        assert_eq!(
+            lock.records()
+                .iter()
+                .find(|r| r.uid == 1001)
+                .map(|r| r.failures),
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn at_most_the_limit_of_attempts_are_in_flight() {
+        let mut lock = PinLock::new(3, 60, 3600);
+        for _ in 0..3 {
+            assert_eq!(lock.reserve(1000, 0), Ok(()));
+        }
+        // Three tries are running: a fourth would be one too many for the TPM, wrong or not.
+        assert_eq!(lock.reserve(1000, 0), Err(PinLockError::Busy));
+        // Another user is not affected.
+        assert_eq!(lock.reserve(2000, 0), Ok(()));
+        // One comes back without an answer from the TPM: there is room again.
+        lock.give_back(1000);
+        assert_eq!(lock.reserve(1000, 0), Ok(()));
+    }
+
+    #[test]
+    fn a_reserved_try_that_fails_starts_the_lockout_at_the_limit() {
+        let mut lock = PinLock::new(2, 60, 3600);
+        lock.reserve(1000, 0).unwrap();
+        lock.reserve(1000, 0).unwrap();
+        assert_eq!(lock.settle_failed(1000, 0), 60);
+        assert_eq!(
+            lock.reserve(1000, 10),
+            Err(PinLockError::Locked {
+                retry_after_secs: 50
+            })
+        );
+        // The second failure arrives while the user is locked: not counted again.
+        assert_eq!(lock.settle_failed(1000, 10), 0);
+        // After the lockout the count starts again.
+        assert_eq!(lock.reserve(1000, 61), Ok(()));
+    }
+
+    #[test]
+    fn a_correct_pin_in_between_forgets_the_tries_that_were_running() {
+        let mut lock = PinLock::new(3, 60, 3600);
+        lock.reserve(1000, 0).unwrap();
+        lock.reserve(1000, 0).unwrap();
+        lock.record_pin_success(1000);
+        // The second try ends wrong after the right one: nothing is counted for it.
+        assert_eq!(lock.settle_failed(1000, 0), 0);
+        assert_eq!(lock.reserve(1000, 0), Ok(()));
+    }
+
+    #[test]
+    fn giving_back_the_last_try_leaves_no_record() {
+        let mut lock = PinLock::new(3, 60, 3600);
+        lock.reserve(1000, 0).unwrap();
+        lock.give_back(1000);
+        assert!(lock.records().is_empty());
+        lock.give_back(1000);
     }
 }

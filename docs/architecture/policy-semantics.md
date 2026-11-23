@@ -39,6 +39,8 @@ A policy file is TOML. Every table and key is optional. Any key, table or value 
 | | `factors` | integer, 1–2 |
 | | `require_second_credential` | boolean |
 
+`history` above 0 makes the Agent keep, in the user's PIN record, a salted fingerprint of each former PIN (made with Argon2id, the slow function that stretches a PIN), at most 24 whatever the policy says, so that a PIN cannot be reused. The current PIN can only be tested by the TPM, which counts wrong tries. A fingerprint of a former PIN can be tested by anyone who can read the record file, on their own processor and without a limit: about 19 minutes for every four-digit PIN. People often choose a new PIN close to the old one, so switching `history` on makes the record file more sensitive; the default 0 keeps nothing ([ADR-0021, amendment of 2026-11-23](https://github.com/LinuxHello/linux-hello-architecture/blob/main/adr/0021-pin-transport.md)).
+
 `lockout_attempts` and `lockout_minutes` configure the Agent's own per-user counter (`PinLock`, P-14), not the TPM's dictionary-attack parameters, which Linux Hello never changes: the TPM keeps one counter for the whole machine, so the Agent stops a user's repeated failures before they reach it.
 
 A relying-party pattern is either an exact domain (`bank.example`) or `*.` followed by a domain (`*.bank.example`), which matches every subdomain but not the domain itself. Domains are compared in lower case, without a trailing dot. Any other pattern, including `*` alone, a `*` anywhere else, or an empty label, makes the file unparseable.
@@ -52,11 +54,11 @@ A relying-party pattern is either an exact domain (`bank.example`) or `*.` follo
 | Every context | `login`, `unlock`: pin, fingerprint, face; `sudo`: pin, fingerprint; `session`: pin, fingerprint, face and `reverify_after` 8h |
 | Relying parties | provider `tpm`. Unmatched relying parties get `tpm`, `presence`, 1 factor, and no second credential. |
 
-Face is Howdy, which has no liveness check and whose IR use cannot be verified by Linux Hello. By default a photograph-class attack then grants `sudo`.
+Face is Howdy, which has no liveness check and whose IR use cannot be verified by Linux Hello. By default a photograph-class attack therefore works in the contexts that list face: `login`, `unlock` and `session`. `sudo` does not list face by default, so it is not open to it until an administrator adds face to that context.
 
 No `reverify_after` on `session` means one login unlocks passkey use until logout, however long the machine is left.
 
-An unmatched relying party gets `provider = tpm`, so by default a passkey may be created as a software key. Until an administrator adds a class (or sets `provider`), a passkey for a relying party no class matches can only be created with the TPM, so a machine without an enrolled TPM key cannot create one.
+An unmatched relying party gets `provider = tpm`, so by default a passkey for it is created in the TPM and never as a software key. Until an administrator adds a class (or sets `provider`), a passkey for a relying party no class matches can only be created with the TPM, so a machine without an enrolled TPM key cannot create one.
 
 An administrator can loosen each of these with one key in `/etc/linuxhello/policy.d/`.
 
@@ -102,7 +104,8 @@ The engine enters the **PIN-only state** when any of these hold:
 
 In the PIN-only state every context allows only `pin`, biometrics are off, relying parties get at least provider `tpm` and prompt `reverify`, and the engine reports why. Which rules it keeps depends on which layer is at fault:
 
-- **The admin layers are at fault** (unreadable, unsafe, unparseable, or contradictory among themselves): PIN rules are the built-in defaults, every context has `factors` 1, and there is no relying-party class.
+- **The admin directory is at fault** (it or its parent is unsafe or cannot be listed), **or the admin files contradict each other**: nothing in it can be trusted, so PIN rules are the built-in defaults, every context has `factors` 1, and there is no relying-party class.
+- **One admin file is at fault** (unreadable, not a regular file, too large, not UTF-8, or it does not parse): the files that can still be read are kept, as for a fault of the user's layer below. A typo in one file therefore cannot lower the minimum length, the lockout or the `factors` that another file asks for (`a_fault_in_one_admin_file_keeps_the_rules_of_the_others`, review finding R-10).
 - **Only the user's layer is at fault** (damaged, or contradictory with the other layers): the state is built on the admin layers and the defaults. It keeps their PIN rules, each context's `factors` and the admin's relying-party classes, so a user's file can never lower an admin rule. A context that then needs two factors is unsatisfiable, not lowered.
 
 A missing file is not an error: it contributes nothing. Only "does not exist" counts as missing; a path that cannot be examined is a failure.

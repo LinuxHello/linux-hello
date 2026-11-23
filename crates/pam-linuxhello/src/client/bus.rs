@@ -81,6 +81,53 @@ struct Raw {
     bytes: Vec<u8>,
 }
 
+/// How long to wait between two tries to connect to a socket whose queue is full.
+const CONNECT_RETRY: Duration = Duration::from_millis(5);
+
+/// Connects to the Unix socket at `path` and gives up at `deadline`. `UnixStream::connect` sleeps
+/// without limit when the queue of a listening socket is full, and a limit that starts after it
+/// returns does not help; here the socket is made non-blocking, a full queue (`EAGAIN`) is tried
+/// again until the deadline, and the stream is made blocking again once it is connected
+/// (`a_bus_with_a_full_queue_cannot_hold_the_module_beyond_its_limit`, review finding R-16,
+/// #358).
+///
+/// # Errors
+///
+/// [`BusError::Timeout`] when the queue stays full until `deadline`, [`BusError::Unreachable`]
+/// when the path is too long, nobody listens there, or the socket cannot be made.
+pub(crate) fn connect_within(path: &Path, deadline: Instant) -> Result<UnixStream, BusError> {
+    use rustix::io::Errno;
+    use rustix::net::{
+        connect, socket_with, AddressFamily, SocketAddrUnix, SocketFlags, SocketType,
+    };
+    let address = SocketAddrUnix::new(path).map_err(|_| BusError::Unreachable)?;
+    let socket = socket_with(
+        AddressFamily::UNIX,
+        SocketType::STREAM,
+        SocketFlags::CLOEXEC | SocketFlags::NONBLOCK,
+        None,
+    )
+    .map_err(|_| BusError::Unreachable)?;
+    loop {
+        match connect(&socket, &address) {
+            Ok(()) => break,
+            Err(Errno::AGAIN | Errno::INTR) => {
+                let now = Instant::now();
+                if now >= deadline {
+                    return Err(BusError::Timeout);
+                }
+                std::thread::sleep(CONNECT_RETRY.min(deadline - now));
+            }
+            Err(_) => return Err(BusError::Unreachable),
+        }
+    }
+    let stream = UnixStream::from(socket);
+    stream
+        .set_nonblocking(false)
+        .map_err(|_| BusError::Unreachable)?;
+    Ok(stream)
+}
+
 /// One connection to the bus.
 pub struct Bus {
     /// The socket.
@@ -102,7 +149,7 @@ impl Bus {
     /// [`BusError`] when any step fails or `limit` passes.
     pub fn connect(path: &Path, limit: Duration) -> Result<Self, BusError> {
         let deadline = Instant::now() + limit;
-        let stream = UnixStream::connect(path).map_err(|_| BusError::Unreachable)?;
+        let stream = connect_within(path, deadline)?;
         let mut bus = Self {
             stream,
             serial: 0,

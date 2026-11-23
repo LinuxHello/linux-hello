@@ -10,7 +10,7 @@
 //!
 //! C4 container: `tpmProvider` ([workspace.dsl](https://github.com/LinuxHello/linux-hello-architecture/blob/main/workspace.dsl))
 
-#![deny(unsafe_code)]
+#![forbid(unsafe_code)]
 
 pub mod client;
 pub mod wire;

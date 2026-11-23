@@ -473,6 +473,8 @@ fn agent_profile_allows_the_notify_socket_and_no_other_datagram_path() {
 fn agent_unit_bounds_its_memory_tasks_and_open_files() {
     let s = service_settings();
     assert_eq!(only(&s, "MemoryMax"), "1G");
+    // R-28, #370: PIN material never goes to swap.
+    assert_eq!(only(&s, "MemorySwapMax"), "0");
     assert_eq!(only(&s, "TasksMax"), "128");
     assert_eq!(only(&s, "LimitNOFILE"), "1024");
 }

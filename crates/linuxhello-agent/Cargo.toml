@@ -15,7 +15,7 @@ futures-lite = "2"
 linuxhello-dbus = { path = "../linuxhello-dbus" }
 # Only its client and wire format: the TPM library stays off, so the Agent links no C library.
 linuxhello-tpm-provider = { path = "../linuxhello-tpm-provider", default-features = false }
-rustix = { version = "1", default-features = false, features = ["std", "net", "process"] }
+rustix = { version = "1", default-features = false, features = ["std", "net", "process", "time"] }
 serde = { version = "1", features = ["derive"] }
 toml = "1.1"
 unicode-normalization = "0.1.26"

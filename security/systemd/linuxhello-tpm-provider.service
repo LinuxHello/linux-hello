@@ -24,6 +24,8 @@ RestartSteps=5
 RestartMaxDelaySec=60
 # The provider holds one TPM connection and serves one client at a time; it needs little.
 MemoryMax=128M
+# Nothing of the provider goes to swap: it holds the values that open a user's key.
+MemorySwapMax=0
 TasksMax=16
 LimitNOFILE=256
 

@@ -21,7 +21,9 @@
 //!
 //! C4 component: `pinManager` ([workspace.dsl](https://github.com/LinuxHello/linux-hello-architecture/blob/main/workspace.dsl))
 
-use argon2::{Algorithm, Argon2, Params as Argon2Params, Version};
+use std::sync::{Condvar, Mutex, PoisonError};
+
+use argon2::{Algorithm, Argon2, Block, Params as Argon2Params, Version};
 use unicode_normalization::UnicodeNormalization;
 use zeroize::{Zeroize, Zeroizing};
 
@@ -125,7 +127,45 @@ fn normalise(pin: &[u8]) -> Result<(Zeroizing<[u8; NORMALISED_BYTES]>, usize), K
     Ok((buffer, used))
 }
 
-/// Stretches `pin` with `salt` and `params`: NFKC, then Argon2id, 32 bytes out.
+/// How many stretchings may run at once, in the whole Agent. Each one allocates up to
+/// [`Params::DEFAULT`]'s 64 MiB, and the unit's `MemoryMax` is 1 GiB, so a user who started many PIN
+/// checks at once could use the memory of everybody else's; the rest wait for a place
+/// (`at_most_four_stretchings_run_at_once`, review finding R-05, #348).
+const MAX_AT_ONCE: usize = 4;
+
+/// The places for stretchings: how many are taken, and who waits.
+static PLACES: (Mutex<usize>, Condvar) = (Mutex::new(0), Condvar::new());
+
+/// A place for one stretching, given back when dropped.
+struct Place;
+
+impl Place {
+    /// Waits for a place.
+    fn take() -> Self {
+        let (taken, freed) = &PLACES;
+        let mut taken = taken.lock().unwrap_or_else(PoisonError::into_inner);
+        while *taken >= MAX_AT_ONCE {
+            taken = freed.wait(taken).unwrap_or_else(PoisonError::into_inner);
+        }
+        *taken += 1;
+        Self
+    }
+}
+
+impl Drop for Place {
+    fn drop(&mut self) {
+        let (taken, freed) = &PLACES;
+        *taken.lock().unwrap_or_else(PoisonError::into_inner) -= 1;
+        freed.notify_one();
+    }
+}
+
+/// The most stretchings that have run at once since the process started, for the test.
+#[cfg(test)]
+static MOST_AT_ONCE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Stretches `pin` with `salt` and `params`: NFKC, then Argon2id, 32 bytes out. At most four
+/// (`MAX_AT_ONCE`) stretchings run at once; a call waits for its turn, before it takes its memory.
 ///
 /// # Errors
 ///
@@ -139,6 +179,40 @@ pub fn stretch(
     if !params.acceptable() {
         return Err(KdfError::BadParams);
     }
+    let _place = Place::take();
+    #[cfg(test)]
+    {
+        let now = *PLACES.0.lock().unwrap_or_else(PoisonError::into_inner);
+        MOST_AT_ONCE.fetch_max(now, std::sync::atomic::Ordering::SeqCst);
+    }
+    let blocks = Argon2Params::new(
+        params.memory_kib,
+        params.passes,
+        params.lanes,
+        Some(OUTPUT_BYTES),
+    )
+    .map_err(|_| KdfError::BadParams)?
+    .block_count();
+    // The memory of the stretching is ours, not the library's: argon2 frees its own blocks without
+    // wiping them, and they hold values derived from the PIN. These are wiped when `memory` is
+    // dropped, on every path (`the_stretching_memory_holds_pin_derived_values_until_wiped`,
+    // review finding R-28, #370).
+    let mut memory: Zeroizing<Vec<Block>> = Zeroizing::new(Vec::new());
+    memory
+        .try_reserve_exact(blocks)
+        .map_err(|_| KdfError::Failed)?;
+    memory.resize(blocks, Block::default());
+    stretch_in(pin, salt, params, &mut memory)
+}
+
+/// [`stretch`] in the memory the caller gives, which must have the number of blocks Argon2 wants for `params` and
+/// is left holding what the stretching computed: the caller wipes it.
+fn stretch_in(
+    pin: &[u8],
+    salt: &[u8; SALT_BYTES],
+    params: &Params,
+    memory: &mut [Block],
+) -> Result<Stretched, KdfError> {
     let (normalised, used) = normalise(pin)?;
     let argon_params = Argon2Params::new(
         params.memory_kib,
@@ -150,7 +224,7 @@ pub fn stretch(
     let argon = Argon2::new(Algorithm::Argon2id, Version::V0x13, argon_params);
     let mut out = Zeroizing::new([0_u8; OUTPUT_BYTES]);
     argon
-        .hash_password_into(&normalised[..used], salt, &mut *out)
+        .hash_password_into_with_memory(&normalised[..used], salt, &mut *out, memory)
         .map_err(|_| KdfError::Failed)?;
     // `normalised` is wiped when it goes out of scope; say so for the part that was in use too.
     drop(normalised);
