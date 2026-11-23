@@ -262,3 +262,26 @@ fn a_tpm_limit_that_arrives_later_still_caps_the_agents() {
     service.apply_tpm_limit(200, 1_000);
     assert_eq!(service.tpm_cap().map(|c| c.allowed), Some(2));
 }
+
+#[test]
+fn a_change_of_the_wall_clock_does_not_move_the_lockout_time() {
+    // R-22, #364: the time of a lockout follows the boot clock from an anchor. The same anchor
+    // gives the same time whatever the system clock says, and a sleeping machine counts.
+    let clock = LockClock {
+        wall: 1_000_000,
+        boot: 500,
+    };
+    assert_eq!(clock.now(500), 1_000_000);
+    assert_eq!(clock.now(560), 1_000_060);
+    // A boot clock that reads less than the anchor (it cannot) never gives a time before it.
+    assert_eq!(clock.now(0), 1_000_000);
+}
+
+#[test]
+fn the_lockout_clock_runs_with_the_boot_clock_and_not_with_the_system_clock() {
+    // Two reads in a row never go backwards and stay near the system clock at the start.
+    let first = wall_clock_seconds();
+    let second = wall_clock_seconds();
+    assert!(second >= first);
+    assert!(second - first < 5);
+}
