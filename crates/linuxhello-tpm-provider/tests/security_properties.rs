@@ -21,16 +21,16 @@ fn biometric_match_alone_never_releases_a_key() {
 
 /// P-08: see `docs/security/properties.md`.
 #[test]
-#[ignore = "placeholder, blocked: the TPM key service does not exist yet"]
+#[ignore = "placeholder, not blocked: the key service exists (`src/keys.rs`); no test of this property is written yet"]
 fn tpm_keys_are_created_non_exportable() {
-    unimplemented!("P-08: write this test when it is unblocked");
+    unimplemented!("P-08: write this test");
 }
 
 /// P-09: see `docs/security/properties.md`.
 #[test]
-#[ignore = "placeholder, blocked: the TPM key service does not exist yet"]
+#[ignore = "placeholder, not blocked: the key service exists (`src/keys.rs`); no test of this property is written yet"]
 fn no_interface_returns_private_key_material() {
-    unimplemented!("P-09: write this test when it is unblocked");
+    unimplemented!("P-09: write this test");
 }
 
 /// P-11: see `docs/security/properties.md`.
@@ -56,9 +56,9 @@ fn old_pin_is_refused_after_a_change() {
 
 /// P-18: see `docs/security/properties.md`.
 #[test]
-#[ignore = "placeholder, blocked: the TPM key service and the reset coordinator do not exist yet"]
+#[ignore = "placeholder, not blocked: the provider's key service and the Agent's reset exist; the test needs a software TPM and is not written yet"]
 fn reset_destroys_root_key_and_every_child_key() {
-    unimplemented!("P-18: write this test when it is unblocked");
+    unimplemented!("P-18: write this test");
 }
 
 /// P-22: see `docs/security/properties.md`.
@@ -70,7 +70,7 @@ fn malformed_ctap_request_is_refused() {
 
 /// P-24: see `docs/security/properties.md`.
 #[test]
-#[ignore = "placeholder, blocked: the provider's start-up code does not exist yet"]
+#[ignore = "placeholder, not blocked: the start-up check exists (`src/main.rs`); no test of it is written yet"]
 fn tpm_provider_refuses_to_start_without_enforced_apparmor_profile() {
-    unimplemented!("P-24: write this test when it is unblocked");
+    unimplemented!("P-24: write this test");
 }
