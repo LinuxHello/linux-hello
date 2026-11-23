@@ -64,6 +64,8 @@ pub struct AgentUpdate {
     uid: u32,
     /// The prompt.
     prompt: PromptId,
+    /// The job that reports: the report is dropped unless it is the prompt's current job (R-21).
+    generation: u64,
     /// What happened.
     update: Update,
 }
@@ -76,6 +78,8 @@ struct ChannelReporter {
     uid: u32,
     /// The prompt.
     prompt: PromptId,
+    /// The job that reports.
+    generation: u64,
 }
 
 impl Reporter for ChannelReporter {
@@ -83,6 +87,7 @@ impl Reporter for ChannelReporter {
         let _ = self.updates.send(AgentUpdate {
             uid: self.uid,
             prompt: self.prompt.clone(),
+            generation: self.generation,
             update,
         });
     }
@@ -292,6 +297,7 @@ impl AgentService {
             let _ = updates.send(AgentUpdate {
                 uid: start.opener_uid,
                 prompt: start.prompt,
+                generation: start.generation,
                 update: Update::Result(outcome),
             });
         })
@@ -460,9 +466,12 @@ fn apply_updates(
                     };
                     let notes = {
                         let mut service = service.get_mut().await;
-                        service
-                            .api
-                            .agent_report(report.uid, &report.prompt, report.update)
+                        service.api.job_report(
+                            report.uid,
+                            &report.prompt,
+                            report.generation,
+                            report.update,
+                        )
                     };
                     for note in &notes {
                         send(&connection, note).await;
@@ -898,6 +907,7 @@ impl AgentService {
                 updates: updates.clone(),
                 uid: start.opener_uid,
                 prompt: start.prompt.clone(),
+                generation: start.generation,
             };
             let ran = catch_unwind(AssertUnwindSafe(|| {
                 Orchestrator::run(&start.rule, methods, &mut reporter, deadline, &start.stop)
@@ -1020,11 +1030,13 @@ impl AgentService {
                 }
                 drop(wait);
                 let steps = updates.clone();
-                let (uid, prompt) = (start.opener_uid, start.prompt.clone());
+                let (uid, prompt, generation) =
+                    (start.opener_uid, start.prompt.clone(), start.generation);
                 let mut progress = move |step, done| {
                     let _ = steps.send(AgentUpdate {
                         uid,
                         prompt: prompt.clone(),
+                        generation,
                         update: Update::Progress(step, done, 0),
                     });
                 };
@@ -1040,6 +1052,7 @@ impl AgentService {
             let _ = updates.send(AgentUpdate {
                 uid: start.opener_uid,
                 prompt: start.prompt,
+                generation: start.generation,
                 update: Update::Result(outcome),
             });
         });
@@ -1110,6 +1123,7 @@ impl AgentService {
             let _ = updates.send(AgentUpdate {
                 uid: start.opener_uid,
                 prompt: start.prompt,
+                generation: start.generation,
                 update: Update::Result(outcome),
             });
         });
