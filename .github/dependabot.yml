@@ -15,6 +15,10 @@ updates:
     schedule:
       interval: weekly
   - package-ecosystem: cargo
+    directory: /crates/linuxhello-tpm-provider/fuzz
+    schedule:
+      interval: weekly
+  - package-ecosystem: cargo
     directory: /plasma
     schedule:
       interval: weekly

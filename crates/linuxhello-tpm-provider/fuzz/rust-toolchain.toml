@@ -1,0 +1,5 @@
+# cargo-fuzz needs nightly. Pinned so a nightly change cannot move the fuzz gate;
+# bump by pull request, like the stable toolchain at the repository root.
+[toolchain]
+channel = "nightly-2026-10-20"
+profile = "minimal"
