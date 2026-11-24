@@ -264,3 +264,37 @@ fn a_software_tpm_keeps_no_connection_of_the_test_process_open() {
         soft.pid()
     );
 }
+
+#[test]
+fn the_last_try_before_the_limit_is_never_spent() {
+    use linuxhello_tpm_provider::keys::{has_room, RESERVED_TRIES};
+    assert_eq!(RESERVED_TRIES, 1);
+    // Of a limit of four: tries 0, 1 and 2 may be made (the third wrong one would be the third of
+    // four), and the fourth is the one nobody gets.
+    assert!(has_room(0, 4) && has_room(1, 4) && has_room(2, 4));
+    assert!(!has_room(3, 4) && !has_room(4, 4) && !has_room(u32::MAX, 4));
+    // A limit of one or zero leaves no room, and a counter at the top does not overflow.
+    assert!(!has_room(0, 1) && !has_room(0, 0));
+    assert!(!has_room(u32::MAX, u32::MAX));
+}
+
+#[test]
+fn the_tpm_reports_its_counter_of_wrong_tries_and_its_limit() {
+    let Some(soft) = SoftTpm::start() else { return };
+    if lock_after_three(&soft).is_none() {
+        assert!(
+            std::env::var("LH_REQUIRE_SWTPM").is_err(),
+            "tpm2-tools are required here"
+        );
+        eprintln!("SKIPPED: tpm2_dictionarylockout is not installed or refused");
+        return;
+    }
+    let mut tpm = soft.open();
+    assert_eq!(tpm.counters(), Ok((0, 3)));
+    let blobs = tpm.enrol(&auth(1)).unwrap();
+    assert_eq!(tpm.verify(&blobs, &auth(9)), Ok(false));
+    assert_eq!(tpm.counters(), Ok((1, 3)));
+    assert_eq!(tpm.has_headroom(), Ok(true));
+    assert_eq!(tpm.verify(&blobs, &auth(9)), Ok(false));
+    assert_eq!(tpm.has_headroom(), Ok(false), "two of three are spent");
+}

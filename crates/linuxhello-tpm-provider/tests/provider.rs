@@ -4,13 +4,14 @@
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
+use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::time::Duration;
 
 use linuxhello_tpm_provider::client::{ClientError, TpmClient};
 use linuxhello_tpm_provider::server::Server;
 use linuxhello_tpm_provider::testing::SoftTpm;
-use linuxhello_tpm_provider::wire::{Auth, AUTH_BYTES};
+use linuxhello_tpm_provider::wire::{encode_request, write_frame, Auth, Request, AUTH_BYTES};
 use zeroize::Zeroizing;
 
 /// The group id of this test, which stands for the Agent's group.
@@ -170,4 +171,140 @@ fn private_tempdir() -> tempfile::TempDir {
         .permissions(std::fs::Permissions::from_mode(0o700))
         .tempdir()
         .expect("a temporary directory")
+}
+
+/// Sets the dictionary-attack limit of the TPM to `tries` wrong authorisations, with the tools of
+/// tpm2-tools; `None` when they are not installed or refuse, and then the test says it was skipped
+/// (and fails where `LH_REQUIRE_SWTPM` is set).
+fn set_max_tries(soft: &SoftTpm, tries: u32) -> Option<()> {
+    let status = Command::new("tpm2_dictionarylockout")
+        .args([
+            "--setup-parameters".to_string(),
+            format!("--max-tries={tries}"),
+            "--recovery-time=1000".to_string(),
+            "--lockout-recovery-time=1000".to_string(),
+        ])
+        .env(
+            "TPM2TOOLS_TCTI",
+            format!("swtpm:host=127.0.0.1,port={}", soft.port),
+        )
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .ok()?;
+    status.success().then_some(())
+}
+
+/// Skips the test when the limit cannot be set, unless the environment says it must run.
+fn limit_or_skip(soft: &SoftTpm, tries: u32) -> bool {
+    if set_max_tries(soft, tries).is_some() {
+        return true;
+    }
+    assert!(
+        std::env::var("LH_REQUIRE_SWTPM").is_err(),
+        "tpm2-tools are required here"
+    );
+    eprintln!("SKIPPED: tpm2_dictionarylockout is not installed or refused");
+    false
+}
+
+#[test]
+fn the_provider_does_not_ask_the_tpm_when_one_more_wrong_try_would_lock_it_for_everyone() {
+    // #345, cause 2: the TPM keeps one counter of wrong tries for the whole machine, and a lockout
+    // needs an administrator. The last try before the limit is never spent by the provider, so
+    // nobody can drive the TPM into it, with a wrong PIN or with a loop of "four wrong, one right".
+    let Some(soft) = SoftTpm::start() else { return };
+    if !limit_or_skip(&soft, 4) {
+        return;
+    }
+    let (path, _dir, _stop) = provider(&soft, me());
+    let client = TpmClient::new(&path);
+    let blobs = client.enrol(auth(1)).unwrap();
+    for _ in 0..3 {
+        assert_eq!(client.verify(blobs.clone(), auth(9)), Ok(false));
+    }
+    assert_eq!(
+        soft.open().counters(),
+        Ok((3, 4)),
+        "three of four are spent"
+    );
+    // Even the right PIN is not tried, and a change, which checks the old PIN, is not either.
+    assert_eq!(
+        client.verify(blobs.clone(), auth(1)).err(),
+        Some(ClientError::Failed)
+    );
+    assert_eq!(
+        client.change_auth(blobs, auth(1), auth(2)).err(),
+        Some(ClientError::Failed)
+    );
+    assert_eq!(
+        soft.open().counters(),
+        Ok((3, 4)),
+        "nothing was spent, and the TPM is not locked"
+    );
+}
+
+#[test]
+fn a_refusal_to_ask_the_tpm_is_not_a_failure_of_the_tpm() {
+    // Five refusals in a row must not end the provider, which stops after five failures of the TPM.
+    let Some(soft) = SoftTpm::start() else { return };
+    if !limit_or_skip(&soft, 3) {
+        return;
+    }
+    let (path, _dir, _stop) = provider(&soft, me());
+    let client = TpmClient::new(&path);
+    let blobs = client.enrol(auth(1)).unwrap();
+    assert_eq!(client.verify(blobs.clone(), auth(9)), Ok(false));
+    assert_eq!(client.verify(blobs.clone(), auth(9)), Ok(false));
+    for _ in 0..8 {
+        assert_eq!(
+            client.verify(blobs.clone(), auth(1)).err(),
+            Some(ClientError::Failed)
+        );
+    }
+    // Still serving, and still answering what does not count a try.
+    assert_eq!(client.key_loads(blobs), Ok(true));
+}
+
+#[test]
+fn a_request_whose_client_has_already_gone_is_not_asked_of_the_tpm() {
+    // #345, cause 4: the Agent gives up after a time and closes the connection, but the provider
+    // used to do the check later all the same, and the TPM counted a wrong try that the Agent never
+    // recorded.
+    let Some(soft) = SoftTpm::start() else { return };
+    if !limit_or_skip(&soft, 4) {
+        return;
+    }
+    let (path, _dir, _stop) = provider(&soft, me());
+    let client = TpmClient::new(&path);
+    let blobs = client.enrol(auth(1)).unwrap();
+    // The provider serves one connection at a time. A client that has sent half of a length holds
+    // it for a moment (its limit for a silent client is two seconds), and the Agent's request
+    // queues behind it, as it does behind a slow TPM call. The Agent then gives up and closes the
+    // connection, so by the time the provider takes it, the request and the end of the stream are
+    // both already there. Without the queue the provider could look before the client has closed,
+    // and see a client that is still waiting.
+    let mut blocker = UnixStream::connect(&path).unwrap();
+    blocker.write_all(&[0, 0]).unwrap();
+    std::thread::sleep(Duration::from_millis(300)); // the provider has accepted it and waits
+    {
+        let mut gone = UnixStream::connect(&path).unwrap();
+        let body = encode_request(&Request::Verify {
+            blobs: blobs.clone(),
+            auth: auth(9),
+        })
+        .unwrap();
+        write_frame(&mut gone, &body).unwrap();
+    } // closed before any answer, while it is still queued
+    drop(blocker); // the provider is free, and takes the abandoned request next
+                   // Served in order: this answer comes after the abandoned request was dealt with.
+    assert!(client.limits().is_ok());
+    assert_eq!(
+        soft.open().counters(),
+        Ok((0, 4)),
+        "the abandoned try was not made"
+    );
+    // A client that waits for its answer is served as before.
+    assert_eq!(client.verify(blobs, auth(9)), Ok(false));
+    assert_eq!(soft.open().counters(), Ok((1, 4)));
 }
