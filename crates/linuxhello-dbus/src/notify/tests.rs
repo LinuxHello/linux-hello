@@ -7,8 +7,8 @@ use super::*;
 
 #[test]
 fn a_watchdog_ping_is_one_datagram_to_the_notify_socket() {
-    let dir = crate::private_tempdir();
-    let path = dir.path().join("notify");
+    let path = std::env::temp_dir().join(format!("lh-notify-{}-ping", std::process::id()));
+    let _ = std::fs::remove_file(&path);
     let server = UnixDatagram::bind(&path).unwrap();
     server
         .set_read_timeout(Some(Duration::from_secs(2)))
@@ -18,6 +18,7 @@ fn a_watchdog_ping_is_one_datagram_to_the_notify_socket() {
     let mut buffer = [0_u8; 64];
     let length = server.recv(&mut buffer).unwrap();
     assert_eq!(&buffer[..length], b"WATCHDOG=1");
+    let _ = std::fs::remove_file(&path);
 }
 
 #[test]

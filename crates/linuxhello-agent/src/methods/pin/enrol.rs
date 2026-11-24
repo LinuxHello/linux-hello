@@ -186,6 +186,10 @@ pub fn run_change(job: &Job<'_>, wait: &PinWait, cancel: &Cancel) -> Outcome {
     if !rules_ok(&new, job.rules) {
         return failure(PromptReason::None);
     }
+    // The time is read again now that the PINs are here: the wait took up to `job.wait` for each,
+    // and a lockout this try starts must count from now, not from before the wait
+    // (`a_lockout_started_by_a_wrong_current_pin_counts_from_when_the_pin_arrived`, R-22, #364).
+    let now = (job.clock)();
     // The try is reserved before the TPM is asked, like a sign-in's (R-02, #345).
     let attempt = match job.lock.reserve(job.subject, now) {
         Ok(attempt) => attempt,
@@ -257,6 +261,8 @@ pub fn run_check(job: &CheckJob<'_>, wait: &PinWait, cancel: &Cancel) -> Result<
     let Some(pin) = wait.next(cancel, job.wait) else {
         return Err(failure(PromptReason::Timeout));
     };
+    // The time is read again now that the PIN is here, as in `run_change` (R-22, #364).
+    let now = (job.clock)();
     // The try is reserved before the TPM is asked, like a sign-in's (R-02, #345).
     let attempt = match job.lock.reserve(job.subject, now) {
         Ok(attempt) => attempt,

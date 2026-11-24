@@ -15,7 +15,10 @@ use std::io::{self, ErrorKind};
 use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
+use std::sync::Arc;
 use std::time::Duration;
+
+pub mod watchdog;
 
 use crate::keys::{Tpm, TpmError};
 use crate::wire::{
@@ -58,6 +61,8 @@ pub struct Server {
     listener: UnixListener,
     /// The TPM.
     tpm: Tpm,
+    /// Whether a request is running and since when, for the watchdog's thread.
+    busy: Arc<watchdog::Busy>,
     /// The only user id that is served.
     agent_uid: u32,
     /// How the TPM has been answering.
@@ -115,9 +120,15 @@ impl Server {
         Ok(Self {
             listener,
             tpm,
+            busy: Arc::new(watchdog::Busy::default()),
             agent_uid,
             health: Health::default(),
         })
+    }
+
+    /// What the watchdog's thread reads to tell whether the provider is stuck in a request.
+    pub fn busy(&self) -> Arc<watchdog::Busy> {
+        Arc::clone(&self.busy)
     }
 
     /// Takes one connection and handles it. A refused client is not an error.
@@ -127,7 +138,9 @@ impl Server {
     /// An error of accepting the connection.
     pub fn serve_one(&mut self) -> io::Result<()> {
         let (stream, _) = self.listener.accept()?;
+        self.busy.begin();
         self.handle(stream);
+        self.busy.end();
         Ok(())
     }
 

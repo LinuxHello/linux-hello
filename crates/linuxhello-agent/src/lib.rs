@@ -9,7 +9,6 @@ pub mod api;
 pub mod audit;
 pub mod bus;
 pub mod methods;
-pub mod notify;
 pub mod orchestrator;
 pub mod pinkdf;
 pub mod pinlock;
