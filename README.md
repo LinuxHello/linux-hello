@@ -11,12 +11,18 @@ PIN-rooted, biometric-unlocked passkeys and secrets for the Linux desktop: a Win
 
 Homepage: [linuxhello.github.io](https://linuxhello.github.io/).
 
-**Status:** pre-alpha. Nothing here authenticates anyone yet.
+**Status:** pre-alpha. There are no releases and no external audit, so do not use it to protect real accounts. It is no longer only a design: a first prototype unlocks `sudo` with a PIN or a fingerprint.
 
-- **Built and tested:** the Agent's state API on the system bus ([ADR-0014](https://github.com/LinuxHello/linux-hello-architecture/blob/main/adr/0014-agent-bus.md)) with its bus policy, systemd unit and AppArmor profile, checked on a real bus under an enforcing profile on Ubuntu 24.04 and 26.04; the routing policy engine; each user's policy layer, kept by the Agent and set over D-Bus ([ADR-0018](https://github.com/LinuxHello/linux-hello-architecture/blob/main/adr/0018-user-policy-layer.md)).
+- **Built and tested:**
+  - the Agent, the system service at the centre: the state API on the system bus ([ADR-0014](https://github.com/LinuxHello/linux-hello-architecture/blob/main/adr/0014-agent-bus.md)) with its bus policy, systemd unit and AppArmor profile, checked on a real bus under an enforcing profile on Ubuntu 24.04 and 26.04; the routing policy engine and each user's policy layer ([ADR-0018](https://github.com/LinuxHello/linux-hello-architecture/blob/main/adr/0018-user-policy-layer.md)); the PIN, stretched with Argon2id and checked by the TPM, with a lockout per user ([ADR-0021](https://github.com/LinuxHello/linux-hello-architecture/blob/main/adr/0021-pin-transport.md)); the fingerprint method through fprintd and the face method through Howdy; the status interface ([ADR-0024](https://github.com/LinuxHello/linux-hello-architecture/blob/main/adr/0024-agent-status-interface.md)); audit records; and the reset after a forgotten PIN ([ADR-0027](https://github.com/LinuxHello/linux-hello-architecture/blob/main/adr/0027-settings-page-calls.md));
+  - the TPM provider, the one program that talks to the TPM: it makes a user's root key, checks a PIN against it and changes the PIN in place. It is tested on a software TPM; a hardware TPM is not tested yet;
+  - the PAM module, which asks the Agent in `sudo`, at the login screen, at the lock screen and when a session is unlocked, and leaves the account password in charge when Linux Hello is not there ([ADR-0023](https://github.com/LinuxHello/linux-hello-architecture/blob/main/adr/0023-pam-module-and-login-failure.md)), and `linuxhello-ctl`, which sets and changes the PIN and shows the state;
+  - the Plasma parts: the Agent Link, the Auth Prompt and Linux Hello's own login screen for greetd, tested in a desktop test VM.
 - **Prototyped, not in this repository:** the virtual CTAP authenticator, which created and used TPM-backed credentials with libfido2, Chromium and Firefox in a test VM ([spike 0094](https://github.com/LinuxHello/linux-hello-architecture/blob/main/spikes/0094-virtual-ctap-end-to-end.md)).
 - **Try it:** a first prototype unlocks `sudo` (and, if you choose, the Plasma lock screen) with a PIN kept by the TPM or a fingerprint; [docs/prototype.md](docs/prototype.md) says how to install it, try it and remove it.
-- **Next:** passkeys in the browser through the virtual security key, and the Plasma prompt. The [spikes](https://github.com/LinuxHello/linux-hello-architecture/blob/main/spikes/README.md) of Milestone 0 are mostly answered; the open ones are listed in the backlog.
+- **Not built yet:** passkeys in the browser through the virtual security key (the KeePassXC bridge is a stub), the page in Plasma's System Settings, and tests on a hardware TPM.
+- **Reviewed, not audited:** an AI-assisted review of the architecture and the code on 22 November 2026 found one high, twelve medium and nineteen low findings. Most of the fixes are merged or in review, and [the status of each finding](https://linuxhello.github.io/security-review.html#fixes) is public. It is not an independent audit; none has been done.
+- **Next:** passkeys in the browser through the virtual security key, and the Plasma prompt on the lock screen. The [spikes](https://github.com/LinuxHello/linux-hello-architecture/blob/main/spikes/README.md) of Milestone 0 are mostly answered; the open ones are listed in the backlog.
 
 ## What it is
 

@@ -2,7 +2,7 @@
 
 Linux Hello decides who gets into a machine and who may use its passkeys. We treat every weakness as serious, including ones that only weaken a defence in depth.
 
-> **Status: pre-alpha.** Nothing in this repository authenticates anyone yet. Do not use it to protect real accounts. No release has had an external security audit, and none will be called stable before one has.
+> **Status: pre-alpha.** A first prototype can unlock `sudo`, but nothing in this repository is ready to protect real accounts, so do not use it for that. No release has had an external security audit, and none will be called stable before one has.
 
 ## Reporting a vulnerability
 
