@@ -125,7 +125,7 @@ Never propose or write anything that breaks these. If a task seems to need it, s
 
 ## Gates
 
-CI runs these on every pull request; all are required. After writing code, run `make fix` (rustfmt, then clippy's machine-applicable fixes) and fix what remains by hand. Then run `make gates`, which runs exactly the CI gates, before you squash, push or call a change done:
+CI runs these on every pull request. After writing code, run `make fix` (rustfmt, then clippy's machine-applicable fixes) and fix what remains by hand. Then run `make gates`, which runs exactly the CI gates, before you squash, push or call a change done:
 
 ```sh
 cargo fmt --all --check
@@ -143,7 +143,9 @@ bash scripts/ci/agent-links-no-tpm.sh   # the Agent links no TPM library (it rea
 
 **Stage files by path.** `git add <path> ...`, never `git add -A` or `git add .`, and read `git status --short` and `git diff --cached --stat` before every commit. A new fuzz crate once went into `main` with its `target/` and `corpus/` (35 MiB of build output) because of `git add -A`; every new cargo-fuzz crate gets the `.gitignore` of the others (`target`, `corpus`, `artifacts`, `coverage`) when it is created. `repo-hygiene.sh` refuses tracked build output and files over 1 MiB (list one that belongs in `scripts/ci/large-files-allowed.txt`).
 
-The `quality-gate` check passes only when all of these passed. It then signs a Sigstore attestation for the commit ([ADR-0006](https://github.com/LinuxHello/linux-hello-architecture/blob/main/adr/0006-attested-quality-gates-and-releases.md)). The gate list is [`scripts/ci/quality-gates.txt`](scripts/ci/quality-gates.txt), and `make verify-gate SHA=<commit>` checks the attestation for a commit on `main`.
+The `quality-gate` check passes only when every job in [`scripts/ci/quality-gates.txt`](scripts/ci/quality-gates.txt) passed: `fmt`, `clippy`, `test`, `cargo-deny`, `cargo-audit`, `unsafe-policy`, `fuzz` and `docs` (the `docs` job runs the documentation build and the C4 check). It then signs a Sigstore attestation for the commit ([ADR-0006](https://github.com/LinuxHello/linux-hello-architecture/blob/main/adr/0006-attested-quality-gates-and-releases.md)), and `make verify-gate SHA=<commit>` checks the attestation for a commit on `main`.
+
+What blocks a merge is the ruleset of `main`, not this list: at the time of writing (2026-11-23) it requires `fmt`, `clippy`, `test`, `cargo-deny`, `cargo-audit`, `fuzz`, `dco` and `quality-gate`. `repo-hygiene` (no tracked build output, no file over 1 MiB), `agent-links-no-tpm`, `confinement` and the Plasma jobs also run on every pull request and report a failure, but they do not block a merge and the attestation does not cover them; `make gates` runs the first two. Adding a job to `quality-gates.txt` changes what the attestation claims, so that is the maintainer's decision, and so is a change to the ruleset.
 
 CI also runs CodeQL (security), dependency review (new vulnerable or disallowed dependencies) and SonarQube Cloud (code quality and coverage). Treat their findings like a failing test: fix the cause, or explain in the pull request why it is a false positive.
 
